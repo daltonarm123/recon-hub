@@ -185,9 +185,8 @@ def require_access(request: Request, admin_only: bool = False) -> Dict[str, Any]
 
 
 # -------------------- Routes --------------------
-@app.get("/")
-def root():
-    # Always respond, even if env is missing (helps troubleshooting)
+@app.get("/api/status")
+def api_status():
     missing = missing_required()
     return {"service": "recon-hub-api", "ok": True, "missing_env": missing}
 
@@ -296,3 +295,17 @@ def latest_spy(request: Request, kingdom: str):
 def admin_reindex(request: Request):
     require_access(request, admin_only=True)
     return {"ok": True, "message": "Admin reindex requested."}
+
+# -------------------- Frontend (SPA) --------------------
+STATIC_DIR = Path(__file__).resolve().parent / "static"
+INDEX_FILE = STATIC_DIR / "index.html"
+
+if STATIC_DIR.exists() and INDEX_FILE.exists():
+    app.mount("/assets", StaticFiles(directory=STATIC_DIR / "assets"), name="assets")
+
+    @app.get("/{full_path:path}", include_in_schema=False)
+    def serve_spa(full_path: str):
+        candidate = STATIC_DIR / full_path
+        if full_path and candidate.exists() and candidate.is_file():
+            return FileResponse(candidate)
+        return FileResponse(INDEX_FILE)
