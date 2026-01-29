@@ -136,7 +136,7 @@ function Research() {
     return <Card title="Research">Coming next: research history per kingdom.</Card>;
 }
 function Calc() {
-    return <Card title="Calculator">Next: build the exact calculator UI from your screenshot.</Card>;
+    return <Card title="Calculator">Next: build the exact calculator.</Card>;
 }
 function Admin() {
     return <Card title="Admin Panel">Coming next: admin tools (reindex, imports, manage kingdoms).</Card>;
