@@ -15,8 +15,8 @@ DISCORD_CLIENT_ID = os.getenv("DISCORD_CLIENT_ID")
 DISCORD_CLIENT_SECRET = os.getenv("DISCORD_CLIENT_SECRET")
 DISCORD_REDIRECT_URI = os.getenv("DISCORD_REDIRECT_URI")  # https://.../auth/discord/callback
 DISCORD_GUILD_ID = os.getenv("DISCORD_GUILD_ID")
-DISCORD_RECON_ROLE_ID = os.getenv("DISCORD_RECON_ROLE_ID")
-ADMIN_DISCORD_IDS = os.getenv("ADMIN_DISCORD_IDS", "")
+DISCORD_RECON_ROLE_ID = os.getenv("DISCORD_RECON_ROLE_ID") or os.getenv("RECON_ROLE_ID")
+ADMIN_DISCORD_IDS = os.getenv("ADMIN_DISCORD_IDS") or os.getenv("DEV_USER_IDS", "")
 JWT_SECRET = os.getenv("JWT_SECRET")
 FRONTEND_URL = os.getenv("FRONTEND_URL", "http://localhost:3000")
 
