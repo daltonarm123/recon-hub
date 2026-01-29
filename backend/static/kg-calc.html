@@ -21,9 +21,7 @@
             --font: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial;
         }
 
-        * {
-            box-sizing: border-box
-        }
+        * { box-sizing: border-box }
 
         body {
             margin: 0;
@@ -52,16 +50,16 @@
             gap: 2px;
         }
 
-            .title h1 {
-                margin: 0;
-                font-size: 18px;
-                letter-spacing: .2px;
-            }
+        .title h1 {
+            margin: 0;
+            font-size: 18px;
+            letter-spacing: .2px;
+        }
 
-            .title .sub {
-                color: var(--muted);
-                font-size: 12px;
-            }
+        .title .sub {
+            color: var(--muted);
+            font-size: 12px;
+        }
 
         .pillrow {
             display: flex;
@@ -83,9 +81,7 @@
             align-items: center;
         }
 
-            .pill input {
-                transform: translateY(1px);
-            }
+        .pill input { transform: translateY(1px); }
 
         .grid {
             display: grid;
@@ -94,9 +90,7 @@
         }
 
         @media (max-width: 980px) {
-            .grid {
-                grid-template-columns: 1fr;
-            }
+            .grid { grid-template-columns: 1fr; }
         }
 
         .card {
@@ -117,25 +111,23 @@
             gap: 10px;
         }
 
-            .cardHeader .h {
-                display: flex;
-                flex-direction: column;
-                gap: 2px;
-            }
-
-                .cardHeader .h .t {
-                    font-weight: 700;
-                    font-size: 13px;
-                }
-
-                .cardHeader .h .d {
-                    font-size: 12px;
-                    color: var(--muted);
-                }
-
-        .cardBody {
-            padding: 12px 14px;
+        .cardHeader .h {
+            display: flex;
+            flex-direction: column;
+            gap: 2px;
         }
+
+        .cardHeader .h .t {
+            font-weight: 700;
+            font-size: 13px;
+        }
+
+        .cardHeader .h .d {
+            font-size: 12px;
+            color: var(--muted);
+        }
+
+        .cardBody { padding: 12px 14px; }
 
         .rows {
             display: flex;
@@ -151,9 +143,7 @@
             min-height: var(--rowH);
         }
 
-            .row.compact {
-                min-height: var(--rowH);
-            }
+        .row.compact { min-height: var(--rowH); }
 
         .lbl {
             font-size: 12px;
@@ -173,9 +163,7 @@
             outline: none;
         }
 
-        .inp {
-            height: var(--rowH);
-        }
+        .inp { height: var(--rowH); }
 
         .ta {
             min-height: 120px;
@@ -202,15 +190,13 @@
             font-size: 12px;
         }
 
-            .btn:hover {
-                border-color: rgba(90,160,255,.6);
-            }
+        .btn:hover { border-color: rgba(90,160,255,.6); }
 
-            .btn.ghost {
-                background: rgba(255,255,255,.06);
-                border: 1px solid var(--border);
-                color: var(--muted);
-            }
+        .btn.ghost {
+            background: rgba(255,255,255,.06);
+            border: 1px solid var(--border);
+            color: var(--muted);
+        }
 
         .status {
             margin-top: 10px;
@@ -228,10 +214,10 @@
             background: rgba(255,255,255,.04);
         }
 
-            .kv b {
-                color: var(--text);
-                font-weight: 700;
-            }
+        .kv b {
+            color: var(--text);
+            font-weight: 700;
+        }
 
         .divider {
             height: 1px;
@@ -253,6 +239,10 @@
             gap: 10px;
         }
 
+        @media (max-width: 980px) {
+            .twocol { grid-template-columns: 1fr; }
+        }
+
         .troopList {
             display: flex;
             flex-direction: column;
@@ -270,6 +260,15 @@
         .hint {
             font-size: 11px;
             color: rgba(231,236,255,.65);
+        }
+
+        /* --- SAFETY: FORCE DESKTOP SIDE-BY-SIDE --- */
+        @media (min-width: 1100px) {
+            .wrap { max-width: 1400px; }
+            .grid {
+                grid-template-columns: 1fr 1fr !important;
+                align-items: start !important;
+            }
         }
     </style>
 </head>
@@ -326,6 +325,9 @@
                                     <input class="inp" id="atkArc" type="number" min="0" step="1" value="0" />
                                 </div>
                             </div>
+
+                            <!-- ✅ FIX: this second column MUST be wrapped in .rows -->
+                            <div class="rows">
                                 <div class="row compact">
                                     <div class="lbl">Spies Sent</div>
                                     <input class="inp" id="atkSpies" type="number" min="0" step="1" value="0" />
@@ -617,21 +619,9 @@
             };
         }
 
-        // ---------- BATTLE MATH (ADDED) ----------
-        // If you later split units into Footmen/Pike/Arch/HC/LC/Knights, just change this mapping.
-        // Right now your UI has aggregate Infantry/Cavalry/Archers/
-        // We'll treat:
-        // - Infantry weight = 1
-        // - Archers weight = 1
-        // - Cavalry weight = 7 (heavy-cav style, because KG AP math uses HC=7)
-        const WEIGHTS = {
-            infantry: 1,
-            archers: 1,
-            cavalry: 7,
-        };
+        // ---------- BATTLE MATH ----------
+        const WEIGHTS = { infantry: 1, archers: 1, cavalry: 7 };
 
-        // These thresholds are calibrated to your examples (close as possible from what you pasted).
-        // ratio = attackerPower / defenderDP
         const OUTCOME_THRESHOLDS = [
             { name: "FAIL / LOSS", min: 0.0, max: 0.95 },
             { name: "STALEMATE", min: 0.95, max: 1.10 },
@@ -642,7 +632,6 @@
         ];
 
         function extractDefenderDPFromSpyText(text) {
-            // Supports both "Approximate defensive power*: 49948" and other spacing
             const m = String(text || "").match(/Approximate defensive power\*?\s*:\s*([0-9,]+)/i);
             if (!m) return null;
             return Number(m[1].replace(/,/g, ""));
@@ -658,7 +647,6 @@
                 arc * WEIGHTS.archers +
                 cav * WEIGHTS.cavalry;
 
-            // bonuses
             const bonusPct = (parseNumberLoose(el("atkBonus").value) ?? 0);
             const moralePct = (parseNumberLoose(el("atkMorale").value) ?? 0);
 
@@ -687,7 +675,6 @@
         el("tgCompact").addEventListener("change", applyCompact);
         applyCompact();
 
-        // seed troop rows
         addTroopRow("", 0);
         addTroopRow("", 0);
 
@@ -748,7 +735,6 @@
                 }
             }
 
-            // ADDED: also parse defender DP and show it in status
             const dp = extractDefenderDPFromSpyText(txt);
 
             setStatus(el("defStatus"), [
@@ -805,7 +791,6 @@
             setStatus(el("atkStatus"), [{ k: "Copied", v: "attack JSON to clipboard" }]);
         });
 
-        // UPDATED: real calculation (no more stub)
         el("btnCalc").addEventListener("click", () => {
             const spyText = el("spyPaste").value || "";
             const defDP = extractDefenderDPFromSpyText(spyText);
