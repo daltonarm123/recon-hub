@@ -108,6 +108,47 @@ function Card({ title, children }) {
     );
 }
 
+function NumBox({ value, onChange }) {
+    return (
+        <input
+            inputMode="numeric"
+            value={value ?? ""}
+            onChange={(e) => {
+                // allow empty, digits, commas
+                const raw = e.target.value;
+                const cleaned = raw.replace(/[^\d,]/g, "");
+                onChange(cleaned);
+            }}
+            placeholder="0"
+            className="w-full rounded-xl border border-slate-800 bg-slate-950 px-3 py-2 text-sm text-slate-100 outline-none focus:border-slate-700"
+        />
+    );
+}
+
+function Toggle({ label, checked, onChange }) {
+    return (
+        <label className="flex items-center justify-between gap-3 rounded-xl border border-slate-800 bg-slate-950 px-3 py-2">
+            <span className="text-sm text-slate-200">{label}</span>
+            <button
+                type="button"
+                onClick={() => onChange(!checked)}
+                className={[
+                    "relative h-6 w-11 rounded-full border transition",
+                    checked ? "border-indigo-500 bg-indigo-600" : "border-slate-700 bg-slate-900",
+                ].join(" ")}
+            >
+                <span
+                    className={[
+                        "absolute top-0.5 h-5 w-5 rounded-full bg-white transition",
+                        checked ? "left-5" : "left-0.5",
+                    ].join(" ")}
+                />
+            </button>
+        </label>
+    );
+}
+
+
 function Dashboard({ me }) {
     return (
         <div className="grid gap-4 md:grid-cols-3">
