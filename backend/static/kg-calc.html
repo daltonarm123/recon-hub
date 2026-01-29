@@ -326,11 +326,6 @@
                                     <input class="inp" id="atkArc" type="number" min="0" step="1" value="0" />
                                 </div>
                             </div>
-                            <div class="rows">
-                                <div class="row compact">
-                                    <div class="lbl">Siege</div>
-                                    <input class="inp" id="atkSiege" type="number" min="0" step="1" value="0" />
-                                </div>
                                 <div class="row compact">
                                     <div class="lbl">Spies Sent</div>
                                     <input class="inp" id="atkSpies" type="number" min="0" step="1" value="0" />
@@ -624,12 +619,11 @@
 
         // ---------- BATTLE MATH (ADDED) ----------
         // If you later split units into Footmen/Pike/Arch/HC/LC/Knights, just change this mapping.
-        // Right now your UI has aggregate Infantry/Cavalry/Archers/Siege.
+        // Right now your UI has aggregate Infantry/Cavalry/Archers/
         // We'll treat:
         // - Infantry weight = 1
         // - Archers weight = 1
         // - Cavalry weight = 7 (heavy-cav style, because KG AP math uses HC=7)
-        // - Siege is ignored for hit outcome (kept for later town-breach math)
         const WEIGHTS = {
             infantry: 1,
             archers: 1,
@@ -709,7 +703,7 @@
         });
 
         el("btnClearAtk").addEventListener("click", () => {
-            ["atkInf", "atkCav", "atkArc", "atkSiege", "atkSpies", "atkCastles", "atkBonus", "atkMorale"].forEach(id => el(id).value = 0);
+            ["atkInf", "atkCav", "atkArc", "atkSpies", "atkCastles", "atkBonus", "atkMorale"].forEach(id => el(id).value = 0);
             setStatus(el("atkStatus"), [{ k: "Attack", v: "cleared" }]);
         });
 
@@ -795,7 +789,6 @@
                     infantry: parseNumberLoose(el("atkInf").value) ?? 0,
                     cavalry: parseNumberLoose(el("atkCav").value) ?? 0,
                     archers: parseNumberLoose(el("atkArc").value) ?? 0,
-                    siege: parseNumberLoose(el("atkSiege").value) ?? 0,
                     spiesSent: parseNumberLoose(el("atkSpies").value) ?? 0,
                     castles: parseNumberLoose(el("atkCastles").value) ?? 0,
                 },
