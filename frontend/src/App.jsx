@@ -325,7 +325,6 @@ Knights: 789
         </div>
     );
 }
-}
 function Admin() {
     return <Card title="Admin Panel">Coming next: admin tools (reindex, imports, manage kingdoms).</Card>;
 }
