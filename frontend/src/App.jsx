@@ -32,7 +32,10 @@ function AppShell({ me, setMe }) {
                         <Tab to="/kingdoms" icon={<ScrollText className="h-4 w-4" />} label="Kingdoms" />
                         <Tab to="/reports" icon={<FlaskConical className="h-4 w-4" />} label="Reports" />
                         <Tab to="/research" icon={<ScrollText className="h-4 w-4" />} label="Research" />
-                        <Tab to="/calc" icon={<Calculator className="h-4 w-4" />} label="Calc" />
+
+                        {/* Calc tab -> static page */}
+                        <TabHref href="/kg-calc.html" icon={<Calculator className="h-4 w-4" />} label="Calc" />
+
                         {me?.is_admin && <Tab to="/admin" icon={<Crown className="h-4 w-4" />} label="Admin" />}
                     </nav>
 
@@ -73,7 +76,10 @@ function AppShell({ me, setMe }) {
                     <Route path="/kingdoms" element={<Kingdoms />} />
                     <Route path="/reports" element={<Reports />} />
                     <Route path="/research" element={<Research />} />
+
+                    {/* Old in-app calc can stay (optional) */}
                     <Route path="/calc" element={<Calc />} />
+
                     <Route path="/admin" element={me?.is_admin ? <Admin /> : <NoAccess />} />
                     <Route path="*" element={<NotFound />} />
                 </Routes>
@@ -99,6 +105,21 @@ function Tab({ to, icon, label }) {
     );
 }
 
+function TabHref({ href, icon, label }) {
+    return (
+        <a
+            href={href}
+            className={cx(
+                "inline-flex items-center gap-2 rounded-lg px-3 py-2 text-sm",
+                "text-slate-300 hover:bg-slate-900 hover:text-white"
+            )}
+        >
+            {icon}
+            {label}
+        </a>
+    );
+}
+
 function Card({ title, children }) {
     return (
         <div className="rounded-2xl border border-slate-800 bg-slate-900 p-5 shadow">
@@ -114,7 +135,6 @@ function NumBox({ value, onChange }) {
             inputMode="numeric"
             value={value ?? ""}
             onChange={(e) => {
-                // allow empty, digits, commas
                 const raw = e.target.value;
                 const cleaned = raw.replace(/[^\d,]/g, "");
                 onChange(cleaned);
@@ -148,7 +168,6 @@ function Toggle({ label, checked, onChange }) {
     );
 }
 
-
 function Dashboard({ me }) {
     return (
         <div className="grid gap-4 md:grid-cols-3">
@@ -176,6 +195,7 @@ function Reports() {
 function Research() {
     return <Card title="Research">Coming next: research history per kingdom.</Card>;
 }
+
 function Calc() {
     const UNITS = [
         { key: "peasants", label: "Peasants" },
@@ -188,8 +208,6 @@ function Calc() {
         { key: "heavy_cav", label: "Heavy Cavalry", mounted: true },
         { key: "knights", label: "Knights", mounted: true },
         { key: "castles", label: "Castles" },
-        { key: "siege", label: "Siege" },
-        { key: "wine", label: "Wine" },
     ];
 
     const empty = () => Object.fromEntries(UNITS.map((u) => [u.key, ""]));
@@ -199,8 +217,8 @@ function Calc() {
 
     const [armor, setArmor] = useState(false);
     const [warDip, setWarDip] = useState(false);
-    const [wrath, setWrath] = useState(false); // +5% all troop attack
-    const [steeds, setSteeds] = useState(false); // +5% mounted troop attack
+    const [wrath, setWrath] = useState(false);
+    const [steeds, setSteeds] = useState(false);
 
     const [spyText, setSpyText] = useState("");
     const [parseMsg, setParseMsg] = useState("");
@@ -216,9 +234,7 @@ function Calc() {
         setParseMsg("");
     };
 
-    // ---- Spy report parsing (fills DEF column by default) ----
     function parseSpyReportToCounts(text) {
-        // Normalizes various spellings
         const alias = [
             ["peasants", ["peasants", "peasant"]],
             ["foot", ["foot soldiers", "footmen", "foot soldier"]],
@@ -230,8 +246,6 @@ function Calc() {
             ["heavy_cav", ["heavy cavalry", "heavy cav", "hcav"]],
             ["knights", ["knights", "knight"]],
             ["castles", ["castles", "castle"]],
-            ["siege", ["siege", "siege engines", "siege engine"]],
-            ["wine", ["wine"]],
         ];
 
         const out = {};
@@ -239,7 +253,6 @@ function Calc() {
 
         const lines = text.split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
 
-        // Matches: "Archers: 12345" or "Archers 12345"
         const numFromLine = (line) => {
             const m = line.match(/(\d[\d,]*)\s*$/);
             if (!m) return null;
@@ -251,7 +264,6 @@ function Calc() {
 
             for (const [key, names] of alias) {
                 for (const name of names) {
-                    // allow ":" or just whitespace separator
                     if (lower.startsWith(name + ":") || lower.startsWith(name + " ")) {
                         const n = numFromLine(line);
                         if (n !== null) out[key] = n;
@@ -278,7 +290,6 @@ function Calc() {
         <div className="space-y-4">
             <Card title="Calculator">
                 <div className="grid gap-4 lg:grid-cols-[1fr,340px] lg:items-start">
-                    {/* Left: Inputs table */}
                     <div className="overflow-hidden rounded-2xl border border-slate-800 bg-slate-950">
                         <div className="grid grid-cols-[1fr,160px,160px] gap-3 border-b border-slate-800 px-4 py-3 text-sm font-semibold text-slate-200">
                             <div className="flex items-center gap-3">
@@ -298,14 +309,8 @@ function Calc() {
                                 <div key={u.key} className="grid grid-cols-[1fr,160px,160px] items-center gap-3 px-4 py-2">
                                     <div className="text-sm text-slate-200">{u.label}</div>
 
-                                    <NumBox
-                                        value={atk[u.key]}
-                                        onChange={(v) => setAtk((p) => ({ ...p, [u.key]: v }))}
-                                    />
-                                    <NumBox
-                                        value={def[u.key]}
-                                        onChange={(v) => setDef((p) => ({ ...p, [u.key]: v }))}
-                                    />
+                                    <NumBox value={atk[u.key]} onChange={(v) => setAtk((p) => ({ ...p, [u.key]: v }))} />
+                                    <NumBox value={def[u.key]} onChange={(v) => setDef((p) => ({ ...p, [u.key]: v }))} />
                                 </div>
                             ))}
                         </div>
@@ -317,13 +322,10 @@ function Calc() {
                                 <Toggle label="Attacking Wrath (+5%)" checked={wrath} onChange={setWrath} />
                                 <Toggle label="Steed’s Fury (+5% mounted)" checked={steeds} onChange={setSteeds} />
                             </div>
-                            <div className="mt-2 text-xs text-slate-400">
-                                Note: Home Defense removed.
-                            </div>
+                            <div className="mt-2 text-xs text-slate-400">Note: Home Defense removed.</div>
                         </div>
                     </div>
 
-                    {/* Right: Paste spy report */}
                     <div className="space-y-4">
                         <div className="rounded-2xl border border-slate-800 bg-slate-900 p-5 shadow">
                             <div className="mb-2 text-sm font-semibold text-slate-200">Paste Spy Report</div>
@@ -336,11 +338,11 @@ function Calc() {
                                 onChange={(e) => setSpyText(e.target.value)}
                                 rows={10}
                                 className="w-full rounded-xl border border-slate-800 bg-slate-950 px-3 py-2 text-sm text-slate-100 outline-none focus:border-slate-700"
-                                placeholder="Example:
+                                placeholder={`Example:
 Archers: 12345
 Crossbow: 456
 Knights: 789
-..."
+...`}
                             />
 
                             <div className="mt-3 flex items-center gap-2">
@@ -356,9 +358,7 @@ Knights: 789
 
                         <div className="rounded-2xl border border-slate-800 bg-slate-900 p-5 shadow">
                             <div className="mb-2 text-sm font-semibold text-slate-200">Results</div>
-                            <div className="text-sm text-slate-300">
-                                Next step: calculate attack/defense points + show outcome tier.
-                            </div>
+                            <div className="text-sm text-slate-300">Next step: calculate attack/defense points + show outcome tier.</div>
                         </div>
                     </div>
                 </div>
@@ -366,6 +366,7 @@ Knights: 789
         </div>
     );
 }
+
 function Admin() {
     return <Card title="Admin Panel">Coming next: admin tools (reindex, imports, manage kingdoms).</Card>;
 }
