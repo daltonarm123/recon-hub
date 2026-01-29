@@ -297,15 +297,40 @@ def admin_reindex(request: Request):
     return {"ok": True, "message": "Admin reindex requested."}
 
 # -------------------- Frontend (SPA) --------------------
+from pathlib import Path
+from fastapi.staticfiles import StaticFiles
+from fastapi.responses import FileResponse, JSONResponse
+
 STATIC_DIR = Path(__file__).resolve().parent / "static"
+ASSETS_DIR = STATIC_DIR / "assets"
 INDEX_FILE = STATIC_DIR / "index.html"
 
-if STATIC_DIR.exists() and INDEX_FILE.exists():
-    app.mount("/assets", StaticFiles(directory=STATIC_DIR / "assets"), name="assets")
+# Mount assets if present (do not silently skip the whole frontend)
+if ASSETS_DIR.exists():
+    app.mount("/assets", StaticFiles(directory=str(ASSETS_DIR)), name="assets")
 
-    @app.get("/{full_path:path}", include_in_schema=False)
-    def serve_spa(full_path: str):
-        candidate = STATIC_DIR / full_path
-        if full_path and candidate.exists() and candidate.is_file():
-            return FileResponse(candidate)
-        return FileResponse(INDEX_FILE)
+def _frontend_missing():
+    return JSONResponse(
+        {
+            "detail": "Frontend not found on server.",
+            "expected_index": str(INDEX_FILE),
+            "static_dir_exists": STATIC_DIR.exists(),
+            "assets_dir_exists": ASSETS_DIR.exists(),
+        },
+        status_code=500,
+    )
+
+@app.get("/", include_in_schema=False)
+def spa_root():
+    if INDEX_FILE.exists():
+        return FileResponse(str(INDEX_FILE))
+    return _frontend_missing()
+
+@app.get("/{full_path:path}", include_in_schema=False)
+def serve_spa(full_path: str):
+    candidate = STATIC_DIR / full_path
+    if full_path and candidate.exists() and candidate.is_file():
+        return FileResponse(str(candidate))
+    if INDEX_FILE.exists():
+        return FileResponse(str(INDEX_FILE))
+    return _frontend_missing()
