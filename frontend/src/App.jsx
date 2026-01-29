@@ -136,7 +136,195 @@ function Research() {
     return <Card title="Research">Coming next: research history per kingdom.</Card>;
 }
 function Calc() {
-    return <Card title="Calculator">Next: build the exact calculator.</Card>;
+    const UNITS = [
+        { key: "peasants", label: "Peasants" },
+        { key: "foot", label: "Foot Soldiers" },
+        { key: "pike", label: "Pikeman" },
+        { key: "elite", label: "Elite" },
+        { key: "archers", label: "Archers" },
+        { key: "crossbow", label: "Crossbow" },
+        { key: "light_cav", label: "Light Cavalry", mounted: true },
+        { key: "heavy_cav", label: "Heavy Cavalry", mounted: true },
+        { key: "knights", label: "Knights", mounted: true },
+        { key: "castles", label: "Castles" },
+        { key: "siege", label: "Siege" },
+        { key: "wine", label: "Wine" },
+    ];
+
+    const empty = () => Object.fromEntries(UNITS.map((u) => [u.key, ""]));
+
+    const [atk, setAtk] = useState(empty());
+    const [def, setDef] = useState(empty());
+
+    const [armor, setArmor] = useState(false);
+    const [warDip, setWarDip] = useState(false);
+    const [wrath, setWrath] = useState(false); // +5% all troop attack
+    const [steeds, setSteeds] = useState(false); // +5% mounted troop attack
+
+    const [spyText, setSpyText] = useState("");
+    const [parseMsg, setParseMsg] = useState("");
+
+    const resetAll = () => {
+        setAtk(empty());
+        setDef(empty());
+        setArmor(false);
+        setWarDip(false);
+        setWrath(false);
+        setSteeds(false);
+        setSpyText("");
+        setParseMsg("");
+    };
+
+    // ---- Spy report parsing (fills DEF column by default) ----
+    function parseSpyReportToCounts(text) {
+        // Normalizes various spellings
+        const alias = [
+            ["peasants", ["peasants", "peasant"]],
+            ["foot", ["foot soldiers", "footmen", "foot soldier"]],
+            ["pike", ["pikeman", "pikes", "pike men"]],
+            ["elite", ["elite", "elites"]],
+            ["archers", ["archers", "archer"]],
+            ["crossbow", ["crossbow", "crossbows", "crossbowmen", "crossbow men"]],
+            ["light_cav", ["light cavalry", "light cav", "lcav"]],
+            ["heavy_cav", ["heavy cavalry", "heavy cav", "hcav"]],
+            ["knights", ["knights", "knight"]],
+            ["castles", ["castles", "castle"]],
+            ["siege", ["siege", "siege engines", "siege engine"]],
+            ["wine", ["wine"]],
+        ];
+
+        const out = {};
+        for (const [key] of alias) out[key] = "";
+
+        const lines = text.split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
+
+        // Matches: "Archers: 12345" or "Archers 12345"
+        const numFromLine = (line) => {
+            const m = line.match(/(\d[\d,]*)\s*$/);
+            if (!m) return null;
+            return m[1].replace(/,/g, "");
+        };
+
+        for (const line of lines) {
+            const lower = line.toLowerCase();
+
+            for (const [key, names] of alias) {
+                for (const name of names) {
+                    // allow ":" or just whitespace separator
+                    if (lower.startsWith(name + ":") || lower.startsWith(name + " ")) {
+                        const n = numFromLine(line);
+                        if (n !== null) out[key] = n;
+                    }
+                }
+            }
+        }
+
+        return out;
+    }
+
+    const parseAndFill = () => {
+        const counts = parseSpyReportToCounts(spyText);
+        const filled = Object.values(counts).some((v) => String(v).trim() !== "");
+        if (!filled) {
+            setParseMsg("Couldn’t find troop lines. Paste the section that lists troops (e.g., “Archers: 12345”).");
+            return;
+        }
+        setDef((prev) => ({ ...prev, ...counts }));
+        setParseMsg("Filled defending kingdom counts from spy report ✅");
+    };
+
+    return (
+        <div className="space-y-4">
+            <Card title="Calculator">
+                <div className="grid gap-4 lg:grid-cols-[1fr,340px] lg:items-start">
+                    {/* Left: Inputs table */}
+                    <div className="overflow-hidden rounded-2xl border border-slate-800 bg-slate-950">
+                        <div className="grid grid-cols-[1fr,160px,160px] gap-3 border-b border-slate-800 px-4 py-3 text-sm font-semibold text-slate-200">
+                            <div className="flex items-center gap-3">
+                                <button
+                                    onClick={resetAll}
+                                    className="rounded-lg border border-slate-800 bg-slate-900 px-3 py-2 text-xs font-semibold text-slate-100 hover:bg-slate-800"
+                                >
+                                    Reset Info
+                                </button>
+                            </div>
+                            <div className="text-center">Attacking Force</div>
+                            <div className="text-center">Defending Kingdom</div>
+                        </div>
+
+                        <div className="divide-y divide-slate-900">
+                            {UNITS.map((u) => (
+                                <div key={u.key} className="grid grid-cols-[1fr,160px,160px] items-center gap-3 px-4 py-2">
+                                    <div className="text-sm text-slate-200">{u.label}</div>
+
+                                    <NumBox
+                                        value={atk[u.key]}
+                                        onChange={(v) => setAtk((p) => ({ ...p, [u.key]: v }))}
+                                    />
+                                    <NumBox
+                                        value={def[u.key]}
+                                        onChange={(v) => setDef((p) => ({ ...p, [u.key]: v }))}
+                                    />
+                                </div>
+                            ))}
+                        </div>
+
+                        <div className="border-t border-slate-800 px-4 py-3">
+                            <div className="grid gap-2 sm:grid-cols-2">
+                                <Toggle label="Armor?" checked={armor} onChange={setArmor} />
+                                <Toggle label="War Dip?" checked={warDip} onChange={setWarDip} />
+                                <Toggle label="Attacking Wrath (+5%)" checked={wrath} onChange={setWrath} />
+                                <Toggle label="Steed’s Fury (+5% mounted)" checked={steeds} onChange={setSteeds} />
+                            </div>
+                            <div className="mt-2 text-xs text-slate-400">
+                                Note: Home Defense removed.
+                            </div>
+                        </div>
+                    </div>
+
+                    {/* Right: Paste spy report */}
+                    <div className="space-y-4">
+                        <div className="rounded-2xl border border-slate-800 bg-slate-900 p-5 shadow">
+                            <div className="mb-2 text-sm font-semibold text-slate-200">Paste Spy Report</div>
+                            <div className="text-xs text-slate-400 mb-3">
+                                Paste the troop section. We’ll auto-fill the defending kingdom.
+                            </div>
+
+                            <textarea
+                                value={spyText}
+                                onChange={(e) => setSpyText(e.target.value)}
+                                rows={10}
+                                className="w-full rounded-xl border border-slate-800 bg-slate-950 px-3 py-2 text-sm text-slate-100 outline-none focus:border-slate-700"
+                                placeholder="Example:
+Archers: 12345
+Crossbow: 456
+Knights: 789
+..."
+                            />
+
+                            <div className="mt-3 flex items-center gap-2">
+                                <button
+                                    onClick={parseAndFill}
+                                    className="rounded-lg bg-indigo-600 px-3 py-2 text-sm font-semibold hover:bg-indigo-500"
+                                >
+                                    Parse & Fill
+                                </button>
+                                {parseMsg && <div className="text-xs text-slate-300">{parseMsg}</div>}
+                            </div>
+                        </div>
+
+                        <div className="rounded-2xl border border-slate-800 bg-slate-900 p-5 shadow">
+                            <div className="mb-2 text-sm font-semibold text-slate-200">Results</div>
+                            <div className="text-sm text-slate-300">
+                                Next step: calculate attack/defense points + show outcome tier.
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </Card>
+        </div>
+    );
+}
 }
 function Admin() {
     return <Card title="Admin Panel">Coming next: admin tools (reindex, imports, manage kingdoms).</Card>;
