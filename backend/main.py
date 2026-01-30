@@ -296,6 +296,13 @@ def admin_reindex(request: Request):
     require_access(request, admin_only=True)
     return {"ok": True, "message": "Admin reindex requested."}
 
+
+# -------------------- Calc redirect (safety) --------------------
+# Even if the SPA router changes, hitting /calc should always land on the v2 static file.
+@app.get("/calc", include_in_schema=False)
+def calc_redirect():
+    return RedirectResponse(url="/kg-calc.html", status_code=302)
+
 # -------------------- Frontend (SPA) --------------------
 from pathlib import Path
 from fastapi.staticfiles import StaticFiles

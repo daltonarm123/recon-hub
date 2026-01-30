@@ -2,6 +2,15 @@ import { BrowserRouter, Routes, Route, NavLink, Navigate } from "react-router-do
 import { useEffect, useState } from "react";
 import { Shield, Calculator, LayoutDashboard, ScrollText, FlaskConical, Crown, LogOut } from "lucide-react";
 
+// Hard redirect to the static calculator file.
+// We do this (instead of <Navigate/>) so it always loads /kg-calc.html as a real file.
+function CalcRedirect() {
+    useEffect(() => {
+        window.location.replace("/kg-calc.html");
+    }, []);
+    return null;
+}
+
 function cx(...classes) {
     return classes.filter(Boolean).join(" ");
 }
@@ -77,8 +86,11 @@ function AppShell({ me, setMe }) {
                     <Route path="/reports" element={<Reports />} />
                     <Route path="/research" element={<Research />} />
 
-                    {/* Old in-app calc can stay (optional) */}
-                    <Route path="/calc" element={<Calc />} />
+                    {/* Unify calc: /calc always redirects to the v2 static calculator */}
+                    <Route path="/calc" element={<CalcRedirect />} />
+
+                    {/* If you still want to keep the old React calc around for reference */}
+                    <Route path="/calc-old" element={<Calc />} />
 
                     <Route path="/admin" element={me?.is_admin ? <Admin /> : <NoAccess />} />
                     <Route path="*" element={<NotFound />} />
