@@ -666,7 +666,7 @@
       archers: 1,
       lightCav: 5,
       heavyCav: 7,
-      knights: 9
+      knights: 15
     };
 
     // ratio = attackerPower / defenderDP
@@ -685,31 +685,38 @@
       return Number(m[1].replace(/,/g, ""));
     }
 
-    function computeAttackPower() {
-      const foot = parseNumberLoose(el("atkFoot")?.value) ?? 0;
-      const pike = parseNumberLoose(el("atkPike")?.value) ?? 0;
-      const arc  = parseNumberLoose(el("atkArc")?.value) ?? 0;
+        function computeAttackPower() {
+            const foot = parseNumberLoose(el("atkFoot").value) ?? 0;
+            const pike = parseNumberLoose(el("atkPike").value) ?? 0;
+            const arc = parseNumberLoose(el("atkArc").value) ?? 0;
 
-      const lc = parseNumberLoose(el("atkLCav")?.value) ?? 0;
-      const hc = parseNumberLoose(el("atkHCav")?.value) ?? 0;
-      const kn = parseNumberLoose(el("atkKnights")?.value) ?? 0;
+            const lcav = parseNumberLoose(el("atkLCav").value) ?? 0;
+            const hcav = parseNumberLoose(el("atkHCav").value) ?? 0;
+            const knights = parseNumberLoose(el("atkKnights").value) ?? 0;
 
-      let power =
-        foot * WEIGHTS.footmen +
-        pike * WEIGHTS.pikemen +
-        arc  * WEIGHTS.archers +
-        lc   * WEIGHTS.lightCav +
-        hc   * WEIGHTS.heavyCav +
-        kn   * WEIGHTS.knights;
+            // Base AP (from the troop stats table you pasted)
+            let power =
+                foot * WEIGHTS.footmen +
+                pike * WEIGHTS.pikemen +
+                arc * WEIGHTS.archers +
+                lcav * WEIGHTS.lightCav +
+                hcav * WEIGHTS.heavyCav +
+                knights * WEIGHTS.knights;
 
-      const bonusPct  = (parseNumberLoose(el("atkBonus")?.value) ?? 0);
-      const moralePct = (parseNumberLoose(el("atkMorale")?.value) ?? 0);
+            // Manual modifiers (always apply)
+            const bonusPct = parseNumberLoose(el("atkBonus").value) ?? 0;
+            const moralePct = parseNumberLoose(el("atkMorale").value) ?? 0;
 
-      power *= (1 + (bonusPct / 100));
-      power *= (1 + (moralePct / 100));
+            power *= (1 + bonusPct / 100);
+            power *= (1 + moralePct / 100);
 
-      return Math.max(0, power);
-    }
+            // Option A placeholders (simple + predictable)
+            if (el("tgUseResearch").checked) power *= 1.10; // +10%
+            if (el("tgUseBonuses").checked) power *= 1.05; // +5%
+
+            return Math.max(0, power);
+        }
+
 
     function pickOutcome(ratio) {
       for (const t of OUTCOME_THRESHOLDS) {
