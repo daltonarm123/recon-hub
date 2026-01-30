@@ -1,336 +1,388 @@
 import os
-import time
-import secrets
-from typing import Optional, Set, Dict, Any, List
+import re
+import json
+from datetime import datetime
 from pathlib import Path
-from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse
+from typing import Any, Dict, List, Optional
 
-import httpx
-from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import RedirectResponse, JSONResponse
+import psycopg2
+from psycopg2.extras import RealDictCursor, Json
+
+from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
+from fastapi.staticfiles import StaticFiles
 
-import jwt  # PyJWT
+BASE_DIR = Path(__file__).resolve().parent
+STATIC_DIR = BASE_DIR / "static"
 
-# -------------------- Config --------------------
-DISCORD_CLIENT_ID = os.getenv("DISCORD_CLIENT_ID")
-DISCORD_CLIENT_SECRET = os.getenv("DISCORD_CLIENT_SECRET")
-DISCORD_REDIRECT_URI = os.getenv("DISCORD_REDIRECT_URI")  # https://.../auth/discord/callback
-DISCORD_GUILD_ID = os.getenv("DISCORD_GUILD_ID")
-
-# Accept either name (your Render env uses RECON_ROLE_ID)
-DISCORD_RECON_ROLE_ID = os.getenv("DISCORD_RECON_ROLE_ID") or os.getenv("RECON_ROLE_ID")
-
-# Accept either name (your Render env uses DEV_USER_IDS)
-ADMIN_DISCORD_IDS = os.getenv("ADMIN_DISCORD_IDS") or os.getenv("DEV_USER_IDS", "")
-
-JWT_SECRET = os.getenv("JWT_SECRET")
-FRONTEND_URL = os.getenv("FRONTEND_URL", "http://localhost:3000")
-
-JWT_ISSUER = "recon-hub-api"
-JWT_AUDIENCE = "recon-hub-web"
-SESSION_COOKIE = "rh_session"
-STATE_COOKIE = "rh_oauth_state"
-
-
-def missing_required() -> List[str]:
-    missing = []
-    if not DISCORD_CLIENT_ID:
-        missing.append("DISCORD_CLIENT_ID")
-    if not DISCORD_CLIENT_SECRET:
-        missing.append("DISCORD_CLIENT_SECRET")
-    if not DISCORD_REDIRECT_URI:
-        missing.append("DISCORD_REDIRECT_URI")
-    if not DISCORD_GUILD_ID:
-        missing.append("DISCORD_GUILD_ID")
-    # We accept DISCORD_RECON_ROLE_ID OR RECON_ROLE_ID, but report both for clarity
-    if not (os.getenv("DISCORD_RECON_ROLE_ID") or os.getenv("RECON_ROLE_ID")):
-        missing.append("DISCORD_RECON_ROLE_ID (or RECON_ROLE_ID)")
-    if not JWT_SECRET:
-        missing.append("JWT_SECRET")
-    return missing
-
-
-ADMIN_SET: Set[str] = set(x.strip() for x in ADMIN_DISCORD_IDS.split(",") if x.strip())
-
-# -------------------- App --------------------
-app = FastAPI(title="Recon Hub API")
+# ---- FastAPI ----
+app = FastAPI()
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[FRONTEND_URL, "http://localhost:3000"],
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# -------------------- Helpers --------------------
-def _make_state() -> str:
-    return secrets.token_urlsafe(32)
+# ---- Static (SPA + assets) ----
+if (STATIC_DIR / "assets").exists():
+    app.mount("/assets", StaticFiles(directory=str(STATIC_DIR / "assets")), name="assets")
 
 
-def _jwt_encode(payload: Dict[str, Any]) -> str:
-    return jwt.encode(payload, JWT_SECRET, algorithm="HS256")
+@app.get("/")
+def root():
+    index_path = STATIC_DIR / "index.html"
+    if not index_path.exists():
+        return JSONResponse({"ok": True, "service": "recon-hub", "note": "static index.html not found"})
+    return FileResponse(str(index_path))
 
 
-def _jwt_decode(token: str) -> Dict[str, Any]:
-    return jwt.decode(
-        token, JWT_SECRET, algorithms=["HS256"], issuer=JWT_ISSUER, audience=JWT_AUDIENCE
-    )
+@app.get("/calc")
+def calc_redirect():
+    # Option A: always use the static v2 calculator
+    return RedirectResponse(url="/kg-calc.html", status_code=302)
 
 
-def _cookie_opts(prod: bool) -> Dict[str, Any]:
-    return {"httponly": True, "secure": prod, "samesite": "lax", "path": "/"}
+@app.get("/kg-calc.html")
+def serve_calc():
+    p = STATIC_DIR / "kg-calc.html"
+    if not p.exists():
+        raise HTTPException(status_code=404, detail="kg-calc.html not found")
+    return FileResponse(str(p))
 
 
-def _is_prod() -> bool:
-    return os.getenv("RENDER", "").lower() == "true" or os.getenv("RENDER_EXTERNAL_URL") is not None
+@app.get("/api/status")
+def status():
+    return {"ok": True, "service": "recon-hub", "ts": datetime.utcnow().isoformat() + "Z"}
 
 
-def _require_config():
-    missing = missing_required()
-    if missing:
-        # Don't crash deploy — just block auth until env is fixed
-        raise HTTPException(status_code=500, detail=f"Server missing env vars: {', '.join(missing)}")
+# -------------------------
+# Postgres helpers
+# -------------------------
+def _get_dsn() -> str:
+    dsn = os.getenv("DATABASE_URL") or os.getenv("POSTGRES_URL") or ""
+    if not dsn:
+        raise HTTPException(status_code=500, detail="DATABASE_URL is not set on the server")
+    return dsn
 
 
-async def discord_exchange_code(code: str) -> Dict[str, Any]:
-    token_url = "https://discord.com/api/oauth2/token"
-    data = {
-        "client_id": DISCORD_CLIENT_ID,
-        "client_secret": DISCORD_CLIENT_SECRET,
-        "grant_type": "authorization_code",
-        "code": code,
-        "redirect_uri": DISCORD_REDIRECT_URI,
-    }
-    headers = {"Content-Type": "application/x-www-form-urlencoded"}
-
-    async with httpx.AsyncClient(timeout=15) as client:
-        r = await client.post(token_url, data=data, headers=headers)
-        if r.status_code != 200:
-            raise HTTPException(status_code=401, detail=f"Discord token exchange failed: {r.text}")
-        return r.json()
+def _connect():
+    return psycopg2.connect(_get_dsn(), cursor_factory=RealDictCursor)
 
 
-async def discord_get_user(access_token: str) -> Dict[str, Any]:
-    async with httpx.AsyncClient(timeout=15) as client:
-        r = await client.get(
-            "https://discord.com/api/users/@me",
-            headers={"Authorization": f"Bearer {access_token}"},
+def _ensure_tables(conn) -> None:
+    """
+    Creates Recon Hub tables (prefixed rh_) that do NOT conflict with your existing bot tables.
+    """
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS rh_kingdoms (
+                kingdom_name TEXT PRIMARY KEY,
+                alliance TEXT,
+                last_seen TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            );
+            """
         )
-        if r.status_code != 200:
-            raise HTTPException(status_code=401, detail=f"Discord /users/@me failed: {r.text}")
-        return r.json()
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS rh_spy_reports (
+                id BIGSERIAL PRIMARY KEY,
+                kingdom_name TEXT NOT NULL,
+                alliance TEXT,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                defender_dp BIGINT,
+                castles BIGINT,
+                troops JSONB,
+                resources JSONB,
+                raw_text TEXT
+            );
+            """
+        )
+        cur.execute(
+            "CREATE INDEX IF NOT EXISTS rh_spy_reports_kingdom_created_idx ON rh_spy_reports (kingdom_name, created_at DESC);"
+        )
+    conn.commit()
 
 
-async def discord_get_member_roles(access_token: str) -> Set[str]:
-    """
-    GET /users/@me/guilds/{guild_id}/member -> returns roles[]
-    Requires scope: guilds.members.read
-    """
-    url = f"https://discord.com/api/users/@me/guilds/{DISCORD_GUILD_ID}/member"
-    async with httpx.AsyncClient(timeout=15) as client:
-        r = await client.get(url, headers={"Authorization": f"Bearer {access_token}"})
-        if r.status_code != 200:
-            raise HTTPException(
-                status_code=403,
-                detail=f"Guild member lookup failed (user in server? scopes ok?): {r.text}",
-            )
-        data = r.json()
-        roles = data.get("roles", []) or []
-        return set(str(x) for x in roles)
+# -------------------------
+# Spy report parsing (basic, consistent with your JS parser)
+# -------------------------
+def _grab_line(text: str, label: str) -> Optional[str]:
+    m = re.search(rf"^\s*{re.escape(label)}\s*:\s*(.+?)\s*$", text, flags=re.I | re.M)
+    return m.group(1).strip() if m else None
 
 
-def compute_access(user_id: str, roles: Set[str]) -> Dict[str, bool]:
-    is_admin = str(user_id) in ADMIN_SET
-    has_recon = str(DISCORD_RECON_ROLE_ID) in roles
-    allowed = is_admin or has_recon
-    return {"allowed": allowed, "is_admin": is_admin, "has_recon": has_recon}
-
-
-def session_payload(user: Dict[str, Any], access: Dict[str, bool]) -> Dict[str, Any]:
-    now = int(time.time())
-    return {
-        "iss": JWT_ISSUER,
-        "aud": JWT_AUDIENCE,
-        "iat": now,
-        "exp": now + 60 * 60 * 24 * 7,
-        "discord_id": str(user["id"]),
-        "username": user.get("username"),
-        "global_name": user.get("global_name"),
-        "avatar": user.get("avatar"),
-        "is_admin": bool(access["is_admin"]),
-        "has_recon": bool(access["has_recon"]),
-    }
-
-
-def get_session(request: Request) -> Optional[Dict[str, Any]]:
-    token = request.cookies.get(SESSION_COOKIE)
-    if not token:
+def _num(s: Optional[str]) -> Optional[int]:
+    if s is None:
+        return None
+    s2 = re.sub(r"[,\s]+", "", s.strip())
+    if not s2:
         return None
     try:
-        return _jwt_decode(token)
+        return int(float(s2))
     except Exception:
         return None
 
 
-def require_access(request: Request, admin_only: bool = False) -> Dict[str, Any]:
-    sess = get_session(request)
-    if not sess:
-        raise HTTPException(status_code=401, detail="Not authenticated.")
-    if admin_only and not sess.get("is_admin"):
-        raise HTTPException(status_code=403, detail="Admin only.")
-    return sess
+def _section(text: str, header: str, stop_headers: List[str]) -> str:
+    m = re.search(rf"^\s*{re.escape(header)}\s*$", text, flags=re.I | re.M)
+    if not m:
+        return ""
+    start = m.end()
+    tail = text[start:]
+    end = len(tail)
+    for sh in stop_headers:
+        sm = re.search(rf"^\s*{re.escape(sh)}\s*$", tail, flags=re.I | re.M)
+        if sm:
+            end = min(end, sm.start())
+    return tail[:end].strip()
 
 
-# -------------------- Routes --------------------
-@app.get("/api/status")
-def api_status():
-    missing = missing_required()
-    return {"service": "recon-hub-api", "ok": True, "missing_env": missing}
+def _parse_kv_lines(chunk: str) -> Dict[str, int]:
+    out: Dict[str, int] = {}
+    for line in chunk.splitlines():
+        m = re.match(r"^\s*([^:]{1,80}?)\s*:\s*([0-9][0-9,\s]*)\s*$", line)
+        if not m:
+            continue
+        k = m.group(1).strip()
+        v = _num(m.group(2))
+        if v is None:
+            continue
+        out[k] = v
+    return out
 
 
-@app.get("/health")
-def health():
-    return {"ok": True}
+def parse_spy_report(text: str) -> Dict[str, Any]:
+    target = _grab_line(text, "Target")
+    alliance = _grab_line(text, "Alliance")
+    castles = _num(_grab_line(text, "Number of Castles"))
+    dp = None
+    m = re.search(r"Approximate defensive power\*?\s*:\s*([0-9,]+)", text, flags=re.I)
+    if m:
+        dp = _num(m.group(1))
 
-
-@app.get("/healthz")
-def healthz():
-    return {"ok": True}
-
-
-@app.get("/auth/discord/login")
-def discord_login():
-    _require_config()
-
-    state = _make_state()
-    scope = "identify guilds.members.read"
-    params = {
-        "client_id": DISCORD_CLIENT_ID,
-        "redirect_uri": DISCORD_REDIRECT_URI,
-        "response_type": "code",
-        "scope": scope,
-        "state": state,
-        "prompt": "none",
-    }
-
-    q = "&".join([f"{k}={httpx.QueryParams({k: v})[k]}" for k, v in params.items()])
-    url = f"https://discord.com/api/oauth2/authorize?{q}"
-
-    resp = RedirectResponse(url=url, status_code=302)
-    resp.set_cookie(STATE_COOKIE, state, max_age=600, **_cookie_opts(_is_prod()))
-    return resp
-
-
-@app.get("/auth/discord/callback")
-async def discord_callback(request: Request, code: str, state: str):
-    _require_config()
-
-    expected = request.cookies.get(STATE_COOKIE)
-    if not expected or state != expected:
-        raise HTTPException(status_code=400, detail="Invalid OAuth state. Try logging in again.")
-
-    token_data = await discord_exchange_code(code)
-    access_token = token_data.get("access_token")
-    if not access_token:
-        raise HTTPException(status_code=401, detail="Missing access_token from Discord.")
-
-    user = await discord_get_user(access_token)
-    user_id = str(user["id"])
-
-    roles = await discord_get_member_roles(access_token)
-    access = compute_access(user_id, roles)
-
-    if not access["allowed"]:
-        return RedirectResponse(url=f"{FRONTEND_URL}/denied", status_code=302)
-
-    payload = session_payload(user, access)
-    session_jwt = _jwt_encode(payload)
-
-    resp = RedirectResponse(url=f"{FRONTEND_URL}/", status_code=302)
-    resp.delete_cookie(STATE_COOKIE, path="/")
-    resp.set_cookie(SESSION_COOKIE, session_jwt, max_age=60 * 60 * 24 * 7, **_cookie_opts(_is_prod()))
-    return resp
-
-
-@app.post("/auth/logout")
-def logout():
-    resp = JSONResponse({"ok": True})
-    resp.delete_cookie(SESSION_COOKIE, path="/")
-    return resp
-
-
-@app.get("/me")
-def me(request: Request):
-    sess = get_session(request)
-    if not sess:
-        return JSONResponse({"authenticated": False})
-    return {
-        "authenticated": True,
-        "discord_id": sess.get("discord_id"),
-        "username": sess.get("username"),
-        "global_name": sess.get("global_name"),
-        "avatar": sess.get("avatar"),
-        "is_admin": sess.get("is_admin", False),
-        "has_recon": sess.get("has_recon", False),
-    }
-
-
-# ---- Example protected endpoints (wire to DB later) ----
-@app.get("/api/kingdoms")
-def list_kingdoms(request: Request):
-    require_access(request)
-    return {"kingdoms": []}
-
-
-@app.get("/api/spy/latest")
-def latest_spy(request: Request, kingdom: str):
-    require_access(request)
-    return {"kingdom": kingdom, "report": None}
-
-
-@app.get("/api/admin/reindex")
-def admin_reindex(request: Request):
-    require_access(request, admin_only=True)
-    return {"ok": True, "message": "Admin reindex requested."}
-
-# -------------------- Frontend (SPA) --------------------
-from pathlib import Path
-from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse, JSONResponse
-
-STATIC_DIR = Path(__file__).resolve().parent / "static"
-ASSETS_DIR = STATIC_DIR / "assets"
-INDEX_FILE = STATIC_DIR / "index.html"
-
-# Mount assets if present (do not silently skip the whole frontend)
-if ASSETS_DIR.exists():
-    app.mount("/assets", StaticFiles(directory=str(ASSETS_DIR)), name="assets")
-
-def _frontend_missing():
-    return JSONResponse(
-        {
-            "detail": "Frontend not found on server.",
-            "expected_index": str(INDEX_FILE),
-            "static_dir_exists": STATIC_DIR.exists(),
-            "assets_dir_exists": ASSETS_DIR.exists(),
-        },
-        status_code=500,
+    resources_chunk = _section(
+        text,
+        "Our spies also found the following information about the kingdom's resources:",
+        ["Our spies also found the following information about the kingdom's troops:"],
+    )
+    troops_chunk = _section(
+        text,
+        "Our spies also found the following information about the kingdom's troops:",
+        ["The following information was found regarding troop movements", "Select Ruleset:", "Standard Rules"],
     )
 
-@app.get("/", include_in_schema=False)
-def spa_root():
-    if INDEX_FILE.exists():
-        return FileResponse(str(INDEX_FILE))
-    return _frontend_missing()
+    resources_kv = _parse_kv_lines(resources_chunk)
+    troops_kv = _parse_kv_lines(troops_chunk)
 
-@app.get("/{full_path:path}", include_in_schema=False)
-def serve_spa(full_path: str):
+    # filter out population / approximate lines
+    troops: Dict[str, int] = {}
+    for k, v in troops_kv.items():
+        lk = k.lower()
+        if lk.startswith("population"):
+            continue
+        if "defensive power" in lk:
+            continue
+        troops[k] = v
+
+    resources: Dict[str, Any] = {}
+    # keep original keys but normalize a few common ones
+    for k, v in resources_kv.items():
+        resources[k] = v
+
+    return {
+        "target": target,
+        "alliance": alliance,
+        "castles": castles,
+        "defenderDP": dp,
+        "troops": troops,
+        "resources": resources,
+        "raw_text": text,
+    }
+
+
+# -------------------------
+# API: Kingdoms
+# -------------------------
+@app.get("/api/kingdoms")
+def list_kingdoms(search: str = "", limit: int = 500):
+    conn = _connect()
+    try:
+        _ensure_tables(conn)
+        s = search.strip()
+        like = f"%{s}%" if s else None
+        with conn.cursor() as cur:
+            if like:
+                cur.execute(
+                    """
+                    SELECT kingdom_name, alliance, last_seen
+                    FROM rh_kingdoms
+                    WHERE kingdom_name ILIKE %s OR COALESCE(alliance,'') ILIKE %s
+                    ORDER BY COALESCE(alliance,''), kingdom_name
+                    LIMIT %s
+                    """,
+                    (like, like, limit),
+                )
+            else:
+                cur.execute(
+                    """
+                    SELECT kingdom_name, alliance, last_seen
+                    FROM rh_kingdoms
+                    ORDER BY COALESCE(alliance,''), kingdom_name
+                    LIMIT %s
+                    """,
+                    (limit,),
+                )
+            kingdoms = cur.fetchall()
+
+            # attach report counts + latest timestamp
+            names = [k["kingdom_name"] for k in kingdoms]
+            counts: Dict[str, Any] = {}
+            if names:
+                cur.execute(
+                    """
+                    SELECT kingdom_name, COUNT(*)::int AS report_count, MAX(created_at) AS latest_report_at
+                    FROM rh_spy_reports
+                    WHERE kingdom_name = ANY(%s)
+                    GROUP BY kingdom_name
+                    """,
+                    (names,),
+                )
+                for r in cur.fetchall():
+                    counts[r["kingdom_name"]] = r
+
+        out = []
+        for k in kingdoms:
+            c = counts.get(k["kingdom_name"], {})
+            out.append(
+                {
+                    "name": k["kingdom_name"],
+                    "alliance": k.get("alliance"),
+                    "last_seen": k.get("last_seen"),
+                    "report_count": c.get("report_count", 0),
+                    "latest_report_at": c.get("latest_report_at"),
+                }
+            )
+        return {"ok": True, "kingdoms": out}
+    finally:
+        conn.close()
+
+
+@app.get("/api/kingdoms/{kingdom_name}/spy-reports")
+def list_spy_reports(kingdom_name: str, limit: int = 50):
+    conn = _connect()
+    try:
+        _ensure_tables(conn)
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT id, created_at, alliance, defender_dp, castles, troops, resources
+                FROM rh_spy_reports
+                WHERE kingdom_name = %s
+                ORDER BY created_at DESC
+                LIMIT %s
+                """,
+                (kingdom_name, limit),
+            )
+            rows = cur.fetchall()
+        return {"ok": True, "kingdom": kingdom_name, "reports": rows}
+    finally:
+        conn.close()
+
+
+@app.get("/api/spy-reports/{report_id}")
+def get_spy_report(report_id: int):
+    conn = _connect()
+    try:
+        _ensure_tables(conn)
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT id, created_at, kingdom_name, alliance, defender_dp, castles, troops, resources, raw_text
+                FROM rh_spy_reports
+                WHERE id = %s
+                """,
+                (report_id,),
+            )
+            row = cur.fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail="Report not found")
+        return {"ok": True, "report": row}
+    finally:
+        conn.close()
+
+
+@app.post("/api/reports/spy")
+def ingest_spy_report(payload: Dict[str, Any]):
+    """
+    Paste a KG Spy Report -> we parse -> store into rh_spy_reports + upsert rh_kingdoms.
+    This is additive and uses rh_* tables only.
+    """
+    raw = (payload.get("raw_text") or payload.get("text") or "").strip()
+    if not raw:
+        raise HTTPException(status_code=400, detail="raw_text is required")
+
+    parsed = parse_spy_report(raw)
+    if not parsed.get("target"):
+        raise HTTPException(status_code=400, detail="Could not parse Target: from the spy report")
+
+    conn = _connect()
+    try:
+        _ensure_tables(conn)
+        with conn.cursor() as cur:
+            # Upsert kingdom
+            cur.execute(
+                """
+                INSERT INTO rh_kingdoms (kingdom_name, alliance, last_seen)
+                VALUES (%s, %s, NOW())
+                ON CONFLICT (kingdom_name) DO UPDATE
+                  SET alliance = EXCLUDED.alliance,
+                      last_seen = NOW()
+                """,
+                (parsed["target"], parsed.get("alliance")),
+            )
+            # Insert report
+            cur.execute(
+                """
+                INSERT INTO rh_spy_reports (kingdom_name, alliance, defender_dp, castles, troops, resources, raw_text)
+                VALUES (%s, %s, %s, %s, %s, %s, %s)
+                RETURNING id, created_at
+                """,
+                (
+                    parsed["target"],
+                    parsed.get("alliance"),
+                    parsed.get("defenderDP"),
+                    parsed.get("castles"),
+                    Json(parsed.get("troops") or {}),
+                    Json(parsed.get("resources") or {}),
+                    parsed.get("raw_text"),
+                ),
+            )
+            row = cur.fetchone()
+        conn.commit()
+        return {"ok": True, "stored": {"id": row["id"], "created_at": row["created_at"]}, "parsed": parsed}
+    finally:
+        conn.close()
+
+
+# ---- SPA fallback: serve index.html for client-side routes ----
+@app.get("/{full_path:path}")
+def spa_fallback(full_path: str):
+    # Let API routes 404 normally
+    if full_path.startswith("api/"):
+        raise HTTPException(status_code=404, detail="Not Found")
+
+    # Serve real static files if they exist
     candidate = STATIC_DIR / full_path
-    if full_path and candidate.exists() and candidate.is_file():
+    if candidate.exists() and candidate.is_file():
         return FileResponse(str(candidate))
-    if INDEX_FILE.exists():
-        return FileResponse(str(INDEX_FILE))
-    return _frontend_missing()
+
+    index_path = STATIC_DIR / "index.html"
+    if index_path.exists():
+        return FileResponse(str(index_path))
+
+    raise HTTPException(status_code=404, detail="Not Found")

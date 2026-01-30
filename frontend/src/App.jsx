@@ -1,408 +1,393 @@
-import { BrowserRouter, Routes, Route, NavLink, Navigate } from "react-router-dom";
-import { useEffect, useState } from "react";
-import { Shield, Calculator, LayoutDashboard, ScrollText, FlaskConical, Crown, LogOut } from "lucide-react";
+import React, { useEffect, useMemo, useState } from "react";
+import { BrowserRouter, Routes, Route, Link, Navigate, useNavigate, useParams } from "react-router-dom";
 
-function cx(...classes) {
-    return classes.filter(Boolean).join(" ");
+const API_BASE = ""; // same-origin
+
+function useFetchJson(url, deps = []) {
+  const [data, setData] = useState(null);
+  const [err, setErr] = useState("");
+  const [loading, setLoading] = useState(false);
+
+  useEffect(() => {
+    let alive = true;
+    setLoading(true);
+    setErr("");
+    fetch(url)
+      .then(async (r) => {
+        const j = await r.json().catch(() => ({}));
+        if (!r.ok) throw new Error(j?.detail || `HTTP ${r.status}`);
+        return j;
+      })
+      .then((j) => alive && setData(j))
+      .catch((e) => alive && setErr(String(e.message || e)))
+      .finally(() => alive && setLoading(false));
+    return () => {
+      alive = false;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, deps);
+
+  return { data, err, loading };
 }
 
-function CalcRedirect() {
-    useEffect(() => {
-        // Hard redirect to the static v2 calculator (served by backend/static or frontend/public)
-        window.location.replace("/kg-calc.html");
-    }, []);
-    return null;
+const navLink = {
+  color: "#e7ecff",
+  textDecoration: "none",
+  padding: "8px 10px",
+  borderRadius: 10,
+  border: "1px solid rgba(255,255,255,.10)",
+  background: "rgba(255,255,255,.04)",
+  fontSize: 12,
+};
+
+function Layout({ children }) {
+  return (
+    <div style={{ minHeight: "100vh", background: "#0b1020", color: "#e7ecff" }}>
+      <div style={{ maxWidth: 1100, margin: "0 auto", padding: 16 }}>
+        <header style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12 }}>
+          <div>
+            <div style={{ fontWeight: 800, letterSpacing: 0.2 }}>Recon Hub</div>
+            <div style={{ fontSize: 12, color: "rgba(231,236,255,.65)" }}>KG tools + recon database views</div>
+          </div>
+
+          <nav style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
+            <Link style={navLink} to="/">Dashboard</Link>
+            <Link style={navLink} to="/kingdoms">Kingdoms</Link>
+            <Link style={navLink} to="/reports">Reports</Link>
+            <Link style={navLink} to="/research">Research</Link>
+            <a style={navLink} href="/kg-calc.html">Calc</a>
+          </nav>
+        </header>
+
+        <div style={{ height: 1, background: "rgba(255,255,255,.10)", margin: "14px 0" }} />
+        {children}
+      </div>
+    </div>
+  );
 }
 
-
-async function fetchMe() {
-    const r = await fetch("/me", { credentials: "include" });
-    return r.json();
-}
-
-async function logout() {
-    await fetch("/auth/logout", { method: "POST", credentials: "include" });
-}
-
-function AppShell({ me, setMe }) {
-    const authed = me?.authenticated;
-
-    return (
-        <div className="min-h-screen bg-slate-950 text-slate-100">
-            <header className="sticky top-0 z-10 border-b border-slate-800 bg-slate-950/80 backdrop-blur">
-                <div className="mx-auto flex max-w-6xl items-center gap-4 px-4 py-3">
-                    <div className="flex items-center gap-2 font-semibold tracking-wide">
-                        <Shield className="h-5 w-5" />
-                        Recon Hub
-                    </div>
-
-                    <nav className="ml-4 flex flex-wrap gap-1">
-                        <Tab to="/dashboard" icon={<LayoutDashboard className="h-4 w-4" />} label="Dashboard" />
-                        <Tab to="/kingdoms" icon={<ScrollText className="h-4 w-4" />} label="Kingdoms" />
-                        <Tab to="/reports" icon={<FlaskConical className="h-4 w-4" />} label="Reports" />
-                        <Tab to="/research" icon={<ScrollText className="h-4 w-4" />} label="Research" />
-
-                        {/* Calc tab -> static page */}
-                        <TabHref href="/kg-calc.html" icon={<Calculator className="h-4 w-4" />} label="Calc" />
-
-                        {me?.is_admin && <Tab to="/admin" icon={<Crown className="h-4 w-4" />} label="Admin" />}
-                    </nav>
-
-                    <div className="ml-auto flex items-center gap-2">
-                        {!authed ? (
-                            <a
-                                href="/auth/discord/login"
-                                className="rounded-lg bg-indigo-600 px-3 py-2 text-sm font-semibold hover:bg-indigo-500"
-                            >
-                                Login with Discord
-                            </a>
-                        ) : (
-                            <>
-                                <div className="hidden sm:flex items-center gap-2 rounded-lg border border-slate-800 bg-slate-900 px-3 py-2 text-sm">
-                                    <span className="font-medium">{me.global_name || me.username}</span>
-                                    {me.is_admin && <span className="text-xs text-amber-300">ADMIN</span>}
-                                </div>
-                                <button
-                                    onClick={async () => {
-                                        await logout();
-                                        setMe({ authenticated: false });
-                                    }}
-                                    className="inline-flex items-center gap-2 rounded-lg border border-slate-800 bg-slate-900 px-3 py-2 text-sm hover:bg-slate-800"
-                                >
-                                    <LogOut className="h-4 w-4" />
-                                    Logout
-                                </button>
-                            </>
-                        )}
-                    </div>
-                </div>
-            </header>
-
-            <main className="mx-auto max-w-6xl px-4 py-6">
-                <Routes>
-                    <Route path="/" element={<Navigate to="/dashboard" replace />} />
-                    <Route path="/dashboard" element={<Dashboard me={me} />} />
-                    <Route path="/kingdoms" element={<Kingdoms />} />
-                    <Route path="/reports" element={<Reports />} />
-                    <Route path="/research" element={<Research />} />
-
-                    {/* /calc now redirects to static v2; keep old in-app calc at /calc-old (optional) */}
-                    <Route path="/calc" element={<CalcRedirect />} />
-
-                    <Route path="/admin" element={me?.is_admin ? <Admin /> : <NoAccess />} />
-                    <Route path="*" element={<NotFound />} />
-                </Routes>
-            </main>
+function Card({ title, subtitle, children, right }) {
+  return (
+    <div style={{ border: "1px solid rgba(255,255,255,.10)", borderRadius: 14, overflow: "hidden", background: "rgba(255,255,255,.03)", boxShadow: "0 10px 30px rgba(0,0,0,.25)" }}>
+      <div style={{ padding: 12, borderBottom: "1px solid rgba(255,255,255,.10)", display: "flex", justifyContent: "space-between", gap: 10, alignItems: "center" }}>
+        <div>
+          <div style={{ fontWeight: 800, fontSize: 13 }}>{title}</div>
+          {subtitle ? <div style={{ fontSize: 12, color: "rgba(231,236,255,.65)" }}>{subtitle}</div> : null}
         </div>
-    );
-}
-                    <Route path="/calc-old" element={<Calc />} />
-function Tab({ to, icon, label }) {
-    return (
-        <NavLink
-            to={to}
-            className={({ isActive }) =>
-                cx(
-                    "inline-flex items-center gap-2 rounded-lg px-3 py-2 text-sm",
-                    isActive ? "bg-slate-800 text-white" : "text-slate-300 hover:bg-slate-900 hover:text-white"
-                )
-            }
-        >
-            {icon}
-            {label}
-        </NavLink>
-    );
+        {right}
+      </div>
+      <div style={{ padding: 12 }}>{children}</div>
+    </div>
+  );
 }
 
-function TabHref({ href, icon, label }) {
-    return (
-        <a
-            href={href}
-            className={cx(
-                "inline-flex items-center gap-2 rounded-lg px-3 py-2 text-sm",
-                "text-slate-300 hover:bg-slate-900 hover:text-white"
-            )}
-        >
-            {icon}
-            {label}
-        </a>
-    );
-}
-
-function Card({ title, children }) {
-    return (
-        <div className="rounded-2xl border border-slate-800 bg-slate-900 p-5 shadow">
-            <div className="mb-3 text-sm font-semibold text-slate-200">{title}</div>
-            {children}
-        </div>
-    );
-}
-
-function NumBox({ value, onChange }) {
-    return (
-        <input
-            inputMode="numeric"
-            value={value ?? ""}
-            onChange={(e) => {
-                const raw = e.target.value;
-                const cleaned = raw.replace(/[^\d,]/g, "");
-                onChange(cleaned);
-            }}
-            placeholder="0"
-            className="w-full rounded-xl border border-slate-800 bg-slate-950 px-3 py-2 text-sm text-slate-100 outline-none focus:border-slate-700"
-        />
-    );
-}
-
-function Toggle({ label, checked, onChange }) {
-    return (
-        <label className="flex items-center justify-between gap-3 rounded-xl border border-slate-800 bg-slate-950 px-3 py-2">
-            <span className="text-sm text-slate-200">{label}</span>
-            <button
-                type="button"
-                onClick={() => onChange(!checked)}
-                className={[
-                    "relative h-6 w-11 rounded-full border transition",
-                    checked ? "border-indigo-500 bg-indigo-600" : "border-slate-700 bg-slate-900",
-                ].join(" ")}
-            >
-                <span
-                    className={[
-                        "absolute top-0.5 h-5 w-5 rounded-full bg-white transition",
-                        checked ? "left-5" : "left-0.5",
-                    ].join(" ")}
-                />
-            </button>
-        </label>
-    );
-}
-
-function Dashboard({ me }) {
-    return (
-        <div className="grid gap-4 md:grid-cols-3">
-            <Card title="Status">
-                <div className="text-sm text-slate-300">
-                    {me?.authenticated ? "Logged in ✅" : "Not logged in — use Login with Discord"}
-                </div>
-            </Card>
-            <Card title="Recon Data">
-                <div className="text-sm text-slate-300">Next: wire DB + spy report ingestion.</div>
-            </Card>
-            <Card title="Admin">
-                <div className="text-sm text-slate-300">{me?.is_admin ? "Admin enabled ✅" : "Admin not enabled"}</div>
-            </Card>
-        </div>
-    );
+function Dashboard() {
+  const { data, err, loading } = useFetchJson(`${API_BASE}/api/status`, []);
+  return (
+    <Layout>
+      <Card title="Status" subtitle="Backend health check">
+        {loading ? <div>Loading…</div> : null}
+        {err ? <div style={{ color: "#ff6b6b" }}>{err}</div> : null}
+        {data ? <pre style={pre}>{JSON.stringify(data, null, 2)}</pre> : null}
+      </Card>
+    </Layout>
+  );
 }
 
 function Kingdoms() {
-    return <Card title="Kingdoms">Coming next: list/search kingdoms from DB.</Card>;
-}
-function Reports() {
-    return <Card title="Reports">Coming next: paste/upload spy reports and parse them.</Card>;
-}
-function Research() {
-    return <Card title="Research">Coming next: research history per kingdom.</Card>;
-}
+  const [search, setSearch] = useState("");
+  const query = useMemo(() => `${API_BASE}/api/kingdoms?search=${encodeURIComponent(search)}&limit=500`, [search]);
+  const { data, err, loading } = useFetchJson(query, [query]);
+  const nav = useNavigate();
 
-function Calc() {
-    const UNITS = [
-        { key: "peasants", label: "Peasants" },
-        { key: "foot", label: "Foot Soldiers" },
-        { key: "pike", label: "Pikeman" },
-        { key: "elite", label: "Elite" },
-        { key: "archers", label: "Archers" },
-        { key: "crossbow", label: "Crossbow" },
-        { key: "light_cav", label: "Light Cavalry", mounted: true },
-        { key: "heavy_cav", label: "Heavy Cavalry", mounted: true },
-        { key: "knights", label: "Knights", mounted: true },
-        { key: "castles", label: "Castles" },
-    ];
-
-    const empty = () => Object.fromEntries(UNITS.map((u) => [u.key, ""]));
-
-    const [atk, setAtk] = useState(empty());
-    const [def, setDef] = useState(empty());
-
-    const [armor, setArmor] = useState(false);
-    const [warDip, setWarDip] = useState(false);
-    const [wrath, setWrath] = useState(false);
-    const [steeds, setSteeds] = useState(false);
-
-    const [spyText, setSpyText] = useState("");
-    const [parseMsg, setParseMsg] = useState("");
-
-    const resetAll = () => {
-        setAtk(empty());
-        setDef(empty());
-        setArmor(false);
-        setWarDip(false);
-        setWrath(false);
-        setSteeds(false);
-        setSpyText("");
-        setParseMsg("");
-    };
-
-    function parseSpyReportToCounts(text) {
-        const alias = [
-            ["peasants", ["peasants", "peasant"]],
-            ["foot", ["foot soldiers", "footmen", "foot soldier"]],
-            ["pike", ["pikeman", "pikes", "pike men"]],
-            ["elite", ["elite", "elites"]],
-            ["archers", ["archers", "archer"]],
-            ["crossbow", ["crossbow", "crossbows", "crossbowmen", "crossbow men"]],
-            ["light_cav", ["light cavalry", "light cav", "lcav"]],
-            ["heavy_cav", ["heavy cavalry", "heavy cav", "hcav"]],
-            ["knights", ["knights", "knight"]],
-            ["castles", ["castles", "castle"]],
-        ];
-
-        const out = {};
-        for (const [key] of alias) out[key] = "";
-
-        const lines = text.split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
-
-        const numFromLine = (line) => {
-            const m = line.match(/(\d[\d,]*)\s*$/);
-            if (!m) return null;
-            return m[1].replace(/,/g, "");
-        };
-
-        for (const line of lines) {
-            const lower = line.toLowerCase();
-
-            for (const [key, names] of alias) {
-                for (const name of names) {
-                    if (lower.startsWith(name + ":") || lower.startsWith(name + " ")) {
-                        const n = numFromLine(line);
-                        if (n !== null) out[key] = n;
-                    }
-                }
-            }
-        }
-
-        return out;
+  const grouped = useMemo(() => {
+    const list = data?.kingdoms || [];
+    const map = new Map();
+    for (const k of list) {
+      const a = (k.alliance || "—").trim() || "—";
+      if (!map.has(a)) map.set(a, []);
+      map.get(a).push(k);
     }
+    const alliances = Array.from(map.keys()).sort((a, b) => a.localeCompare(b));
+    return alliances.map((a) => [a, map.get(a).sort((x, y) => String(x.name).localeCompare(String(y.name)))]);
+  }, [data]);
 
-    const parseAndFill = () => {
-        const counts = parseSpyReportToCounts(spyText);
-        const filled = Object.values(counts).some((v) => String(v).trim() !== "");
-        if (!filled) {
-            setParseMsg("Couldn’t find troop lines. Paste the section that lists troops (e.g., “Archers: 12345”).");
-            return;
-        }
-        setDef((prev) => ({ ...prev, ...counts }));
-        setParseMsg("Filled defending kingdom counts from spy report ✅");
-    };
+  return (
+    <Layout>
+      <div style={{ display: "grid", gap: 14 }}>
+        <Card
+          title="Kingdoms"
+          subtitle="Pulled from Postgres Recon Hub tables (rh_kingdoms + rh_spy_reports). If empty, use Reports to ingest spy reports."
+          right={
+            <input
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              placeholder="Search kingdom or alliance…"
+              style={input}
+            />
+          }
+        >
+          {loading ? <div>Loading…</div> : null}
+          {err ? <div style={{ color: "#ff6b6b" }}>{err}</div> : null}
+          {data?.note ? <div style={{ color: "rgba(231,236,255,.65)", fontSize: 12 }}>{data.note}</div> : null}
 
-    return (
-        <div className="space-y-4">
-            <Card title="Calculator">
-                <div className="grid gap-4 lg:grid-cols-[1fr,340px] lg:items-start">
-                    <div className="overflow-hidden rounded-2xl border border-slate-800 bg-slate-950">
-                        <div className="grid grid-cols-[1fr,160px,160px] gap-3 border-b border-slate-800 px-4 py-3 text-sm font-semibold text-slate-200">
-                            <div className="flex items-center gap-3">
-                                <button
-                                    onClick={resetAll}
-                                    className="rounded-lg border border-slate-800 bg-slate-900 px-3 py-2 text-xs font-semibold text-slate-100 hover:bg-slate-800"
-                                >
-                                    Reset Info
-                                </button>
-                            </div>
-                            <div className="text-center">Attacking Force</div>
-                            <div className="text-center">Defending Kingdom</div>
-                        </div>
+          {grouped.length === 0 && !loading ? (
+            <div style={{ color: "rgba(231,236,255,.65)", fontSize: 12 }}>
+              No kingdoms yet. Paste a spy report in <b>Reports</b> to start building the list.
+            </div>
+          ) : null}
 
-                        <div className="divide-y divide-slate-900">
-                            {UNITS.map((u) => (
-                                <div key={u.key} className="grid grid-cols-[1fr,160px,160px] items-center gap-3 px-4 py-2">
-                                    <div className="text-sm text-slate-200">{u.label}</div>
+          {grouped.map(([alliance, items]) => (
+            <div key={alliance} style={{ marginTop: 10 }}>
+              <div style={{ fontSize: 12, color: "rgba(231,236,255,.75)", marginBottom: 6, textTransform: "uppercase", letterSpacing: 0.3 }}>
+                Alliance: {alliance}
+              </div>
+              <div style={{ overflowX: "auto" }}>
+                <table style={table}>
+                  <thead>
+                    <tr>
+                      <th style={th}>Kingdom</th>
+                      <th style={th}>Reports</th>
+                      <th style={th}>Latest</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {items.map((k) => (
+                      <tr key={`${alliance}:${k.name}`}>
+                        <td style={td}>
+                          <button
+                            style={linkBtn}
+                            onClick={() => nav(`/kingdoms/${encodeURIComponent(k.name)}`)}
+                            title="Open reports"
+                          >
+                            {k.name}
+                          </button>
+                        </td>
+                        <td style={td}>{k.report_count ?? 0}</td>
+                        <td style={td}>{k.latest_report_at ? new Date(k.latest_report_at).toLocaleString() : "—"}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          ))}
+        </Card>
 
-                                    <NumBox value={atk[u.key]} onChange={(v) => setAtk((p) => ({ ...p, [u.key]: v }))} />
-                                    <NumBox value={def[u.key]} onChange={(v) => setDef((p) => ({ ...p, [u.key]: v }))} />
-                                </div>
-                            ))}
-                        </div>
+        <Card title="How this connects to your DB" subtitle="Safe by default (no touching existing bot tables)">
+          <ul style={{ margin: 0, paddingLeft: 18, color: "rgba(231,236,255,.8)", fontSize: 12, lineHeight: 1.6 }}>
+            <li>Recon Hub uses its own Postgres tables: <code>rh_kingdoms</code> and <code>rh_spy_reports</code>.</li>
+            <li>Nothing in your existing bot schema is modified.</li>
+            <li>To populate the list, paste spy reports on the Reports page (it stores + indexes them).</li>
+          </ul>
+        </Card>
+      </div>
+    </Layout>
+  );
+}
 
-                        <div className="border-t border-slate-800 px-4 py-3">
-                            <div className="grid gap-2 sm:grid-cols-2">
-                                <Toggle label="Armor?" checked={armor} onChange={setArmor} />
-                                <Toggle label="War Dip?" checked={warDip} onChange={setWarDip} />
-                                <Toggle label="Attacking Wrath (+5%)" checked={wrath} onChange={setWrath} />
-                                <Toggle label="Steed’s Fury (+5% mounted)" checked={steeds} onChange={setSteeds} />
-                            </div>
-                            <div className="mt-2 text-xs text-slate-400">Note: Home Defense removed.</div>
-                        </div>
-                    </div>
+function KingdomDetail() {
+  const { name } = useParams();
+  const decoded = decodeURIComponent(name || "");
+  const url = `${API_BASE}/api/kingdoms/${encodeURIComponent(decoded)}/spy-reports?limit=100`;
+  const { data, err, loading } = useFetchJson(url, [url]);
+  const nav = useNavigate();
 
-                    <div className="space-y-4">
-                        <div className="rounded-2xl border border-slate-800 bg-slate-900 p-5 shadow">
-                            <div className="mb-2 text-sm font-semibold text-slate-200">Paste Spy Report</div>
-                            <div className="text-xs text-slate-400 mb-3">
-                                Paste the troop section. We’ll auto-fill the defending kingdom.
-                            </div>
+  return (
+    <Layout>
+      <div style={{ display: "grid", gap: 14 }}>
+        <Card
+          title={`Spy Reports: ${decoded}`}
+          subtitle="Latest spy reports stored in rh_spy_reports"
+          right={<button style={btnGhost} onClick={() => nav("/kingdoms")}>Back</button>}
+        >
+          {loading ? <div>Loading…</div> : null}
+          {err ? <div style={{ color: "#ff6b6b" }}>{err}</div> : null}
 
-                            <textarea
-                                value={spyText}
-                                onChange={(e) => setSpyText(e.target.value)}
-                                rows={10}
-                                className="w-full rounded-xl border border-slate-800 bg-slate-950 px-3 py-2 text-sm text-slate-100 outline-none focus:border-slate-700"
-                                placeholder={`Example:
-Archers: 12345
-Crossbow: 456
-Knights: 789
-...`}
-                            />
+          <div style={{ overflowX: "auto" }}>
+            <table style={table}>
+              <thead>
+                <tr>
+                  <th style={th}>Date</th>
+                  <th style={th}>Alliance</th>
+                  <th style={th}>Defender DP</th>
+                  <th style={th}>Castles</th>
+                  <th style={th}>Troops keys</th>
+                  <th style={th}>Raw</th>
+                </tr>
+              </thead>
+              <tbody>
+                {(data?.reports || []).map((r) => (
+                  <tr key={r.id}>
+                    <td style={td}>{r.created_at ? new Date(r.created_at).toLocaleString() : "—"}</td>
+                    <td style={td}>{r.alliance || "—"}</td>
+                    <td style={td}>{r.defender_dp ? Number(r.defender_dp).toLocaleString() : "—"}</td>
+                    <td style={td}>{r.castles ?? "—"}</td>
+                    <td style={td}>{r.troops ? Object.keys(r.troops).length : 0}</td>
+                    <td style={td}>
+                      <a style={{ color: "#5aa0ff" }} href={`/api/spy-reports/${r.id}`} target="_blank" rel="noreferrer">
+                        view
+                      </a>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
 
-                            <div className="mt-3 flex items-center gap-2">
-                                <button
-                                    onClick={parseAndFill}
-                                    className="rounded-lg bg-indigo-600 px-3 py-2 text-sm font-semibold hover:bg-indigo-500"
-                                >
-                                    Parse & Fill
-                                </button>
-                                {parseMsg && <div className="text-xs text-slate-300">{parseMsg}</div>}
-                            </div>
-                        </div>
+          {(data?.reports || []).length === 0 && !loading ? (
+            <div style={{ color: "rgba(231,236,255,.65)", fontSize: 12 }}>
+              No spy reports stored yet for this kingdom. Paste one in the Reports page.
+            </div>
+          ) : null}
+        </Card>
+      </div>
+    </Layout>
+  );
+}
 
-                        <div className="rounded-2xl border border-slate-800 bg-slate-900 p-5 shadow">
-                            <div className="mb-2 text-sm font-semibold text-slate-200">Results</div>
-                            <div className="text-sm text-slate-300">Next step: calculate attack/defense points + show outcome tier.</div>
-                        </div>
-                    </div>
-                </div>
-            </Card>
+function Reports() {
+  const [raw, setRaw] = useState("");
+  const [msg, setMsg] = useState("");
+  const [busy, setBusy] = useState(false);
+
+  async function ingest() {
+    setBusy(true);
+    setMsg("");
+    try {
+      const r = await fetch(`${API_BASE}/api/reports/spy`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ raw_text: raw }),
+      });
+      const j = await r.json().catch(() => ({}));
+      if (!r.ok) throw new Error(j?.detail || `HTTP ${r.status}`);
+      setMsg(`Stored report #${j?.stored?.id} for ${j?.parsed?.target || "?"}`);
+      setRaw("");
+    } catch (e) {
+      setMsg(String(e.message || e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <Layout>
+      <div style={{ display: "grid", gap: 14 }}>
+        <Card title="Reports" subtitle="Paste a KG spy report to store + index it (Postgres rh_* tables)">
+          <textarea
+            value={raw}
+            onChange={(e) => setRaw(e.target.value)}
+            placeholder="Paste the full KG Spy Report text here…"
+            style={{ ...input, height: 220, fontFamily: "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, Liberation Mono, Courier New, monospace", fontSize: 12, lineHeight: 1.35 }}
+          />
+          <div style={{ display: "flex", gap: 10, marginTop: 10, alignItems: "center", flexWrap: "wrap" }}>
+            <button style={btn} onClick={ingest} disabled={busy || !raw.trim()}>
+              {busy ? "Saving…" : "Parse + Save"}
+            </button>
+            {msg ? <div style={{ fontSize: 12, color: msg.startsWith("Stored") ? "#58d68d" : "#ff6b6b" }}>{msg}</div> : null}
+          </div>
+          <div style={{ marginTop: 10, fontSize: 12, color: "rgba(231,236,255,.65)" }}>
+            Tip: After saving, go to <b>Kingdoms</b> to see it listed by alliance.
+          </div>
+        </Card>
+      </div>
+    </Layout>
+  );
+}
+
+function Research() {
+  return (
+    <Layout>
+      <Card title="Research" subtitle="Next tab after Kingdoms / Reports is solid">
+        <div style={{ color: "rgba(231,236,255,.65)", fontSize: 12 }}>
+          Placeholder for now.
         </div>
-    );
+      </Card>
+    </Layout>
+  );
 }
 
-function Admin() {
-    return <Card title="Admin Panel">Coming next: admin tools (reindex, imports, manage kingdoms).</Card>;
-}
-function NoAccess() {
-    return <Card title="No Access">You don’t have permission to view this page.</Card>;
-}
-function NotFound() {
-    return <Card title="Not Found">That page doesn’t exist.</Card>;
-}
+const pre = {
+  background: "rgba(0,0,0,.25)",
+  border: "1px solid rgba(255,255,255,.10)",
+  borderRadius: 12,
+  padding: 12,
+  overflow: "auto",
+  margin: 0,
+  fontSize: 12,
+  color: "rgba(231,236,255,.85)",
+};
+
+const input = {
+  width: "100%",
+  background: "rgba(0,0,0,.25)",
+  border: "1px solid rgba(255,255,255,.10)",
+  borderRadius: 10,
+  padding: "10px 12px",
+  color: "#e7ecff",
+  outline: "none",
+};
+
+const table = {
+  width: "100%",
+  borderCollapse: "collapse",
+  fontSize: 12,
+};
+
+const th = {
+  textAlign: "left",
+  padding: "10px 8px",
+  borderBottom: "1px solid rgba(255,255,255,.10)",
+  color: "rgba(231,236,255,.65)",
+  whiteSpace: "nowrap",
+};
+
+const td = {
+  padding: "10px 8px",
+  borderBottom: "1px solid rgba(255,255,255,.08)",
+  whiteSpace: "nowrap",
+};
+
+const btn = {
+  background: "rgba(90,160,255,.16)",
+  border: "1px solid rgba(90,160,255,.35)",
+  color: "#e7ecff",
+  padding: "8px 10px",
+  borderRadius: 10,
+  cursor: "pointer",
+  fontSize: 12,
+};
+
+const btnGhost = {
+  ...btn,
+  background: "rgba(255,255,255,.06)",
+  border: "1px solid rgba(255,255,255,.10)",
+  color: "rgba(231,236,255,.8)",
+};
+
+const linkBtn = {
+  background: "transparent",
+  border: "none",
+  padding: 0,
+  margin: 0,
+  color: "#5aa0ff",
+  cursor: "pointer",
+  fontSize: 12,
+};
 
 export default function App() {
-    const [me, setMe] = useState(null);
-
-    useEffect(() => {
-        (async () => {
-            try {
-                const data = await fetchMe();
-                setMe(data);
-            } catch {
-                setMe({ authenticated: false });
-            }
-        })();
-    }, []);
-
-    return (
-        <BrowserRouter>
-            <AppShell me={me} setMe={setMe} />
-        </BrowserRouter>
-    );
+  return (
+    <BrowserRouter>
+      <Routes>
+        <Route path="/" element={<Dashboard />} />
+        <Route path="/kingdoms" element={<Kingdoms />} />
+        <Route path="/kingdoms/:name" element={<KingdomDetail />} />
+        <Route path="/reports" element={<Reports />} />
+        <Route path="/research" element={<Research />} />
+        <Route path="/calc" element={<Navigate to="/kg-calc.html" replace />} />
+        <Route path="*" element={<Navigate to="/" replace />} />
+      </Routes>
+    </BrowserRouter>
+  );
 }
