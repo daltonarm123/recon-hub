@@ -1,841 +1,820 @@
 ﻿<!doctype html>
 <html lang="en">
 <head>
-    <meta charset="utf-8" />
-    <meta name="viewport" content="width=device-width,initial-scale=1" />
-    <title>KG Battle Calculator (UI v2)</title>
-    <style>
-        :root {
-            --bg: #0b1020;
-            --panel: #0f1730;
-            --panel2: #0c1328;
-            --text: #e7ecff;
-            --muted: #9aa6d6;
-            --border: rgba(255,255,255,.10);
-            --accent: #5aa0ff;
-            --danger: #ff6b6b;
-            --ok: #58d68d;
-            --radius: 14px;
-            --pad: 14px;
-            --rowH: 34px;
-            --font: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial;
-        }
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>KG Battle Calculator (UI v2)</title>
+  <style>
+    :root{
+      --bg:#0b1020;
+      --panel:#0f1730;
+      --panel2:#0c1328;
+      --text:#e7ecff;
+      --muted:#9aa6d6;
+      --border:rgba(255,255,255,.10);
+      --accent:#5aa0ff;
+      --danger:#ff6b6b;
+      --ok:#58d68d;
+      --radius:14px;
+      --pad:14px;
+      --rowH:34px;
+      --font:ui-sans-serif,system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial;
+    }
 
-        * {
-            box-sizing: border-box
-        }
+    *{ box-sizing:border-box; }
 
-        body {
-            margin: 0;
-            font-family: var(--font);
-            background: radial-gradient(1200px 600px at 20% 0%, #101b44 0%, var(--bg) 55%);
-            color: var(--text);
-        }
+    body{
+      margin:0;
+      font-family:var(--font);
+      background: radial-gradient(1200px 600px at 20% 0%, #101b44 0%, var(--bg) 55%);
+      color:var(--text);
+    }
 
-        .wrap {
-            max-width: 1200px;
-            margin: 20px auto;
-            padding: 0 14px 28px;
-        }
+    .wrap{
+      max-width:1200px;
+      margin:20px auto;
+      padding:0 14px 28px;
+    }
 
-        .topbar {
-            display: flex;
-            gap: 12px;
-            align-items: flex-start;
-            justify-content: space-between;
-            margin-bottom: 12px;
-        }
+    .topbar{
+      display:flex;
+      gap:12px;
+      align-items:flex-start;
+      justify-content:space-between;
+      margin-bottom:12px;
+    }
 
-        .title {
-            display: flex;
-            flex-direction: column;
-            gap: 2px;
-        }
+    .title{ display:flex; flex-direction:column; gap:2px; }
+    .title h1{ margin:0; font-size:18px; letter-spacing:.2px; }
+    .title .sub{ color:var(--muted); font-size:12px; }
 
-            .title h1 {
-                margin: 0;
-                font-size: 18px;
-                letter-spacing: .2px;
-            }
+    .pillrow{
+      display:flex;
+      flex-wrap:wrap;
+      gap:8px;
+      align-items:center;
+      justify-content:flex-end;
+    }
 
-            .title .sub {
-                color: var(--muted);
-                font-size: 12px;
-            }
+    .pill{
+      background:rgba(255,255,255,.06);
+      border:1px solid var(--border);
+      padding:6px 10px;
+      border-radius:999px;
+      font-size:12px;
+      color:var(--muted);
+      display:flex;
+      gap:8px;
+      align-items:center;
+    }
+    .pill input{ transform:translateY(1px); }
 
-        .pillrow {
-            display: flex;
-            flex-wrap: wrap;
-            gap: 8px;
-            align-items: center;
-            justify-content: flex-end;
-        }
+    .grid{
+      display:grid;
+      grid-template-columns:1fr 1fr;
+      gap:14px;
+    }
+    @media (max-width:980px){
+      .grid{ grid-template-columns:1fr; }
+    }
 
-        .pill {
-            background: rgba(255,255,255,.06);
-            border: 1px solid var(--border);
-            padding: 6px 10px;
-            border-radius: 999px;
-            font-size: 12px;
-            color: var(--muted);
-            display: flex;
-            gap: 8px;
-            align-items: center;
-        }
+    .card{
+      background:linear-gradient(180deg, rgba(255,255,255,.04), rgba(255,255,255,.02));
+      border:1px solid var(--border);
+      border-radius:var(--radius);
+      overflow:hidden;
+      box-shadow:0 10px 30px rgba(0,0,0,.25);
+    }
 
-            .pill input {
-                transform: translateY(1px);
-            }
+    .cardHeader{
+      padding:12px 14px;
+      background:rgba(255,255,255,.03);
+      border-bottom:1px solid var(--border);
+      display:flex;
+      align-items:center;
+      justify-content:space-between;
+      gap:10px;
+    }
 
-        .grid {
-            display: grid;
-            grid-template-columns: 1fr 1fr;
-            gap: 14px;
-        }
+    .cardHeader .h{ display:flex; flex-direction:column; gap:2px; }
+    .cardHeader .h .t{ font-weight:700; font-size:13px; }
+    .cardHeader .h .d{ font-size:12px; color:var(--muted); }
 
-        @media (max-width: 980px) {
-            .grid {
-                grid-template-columns: 1fr;
-            }
-        }
+    .cardBody{ padding:12px 14px; }
 
-        .card {
-            background: linear-gradient(180deg, rgba(255,255,255,.04), rgba(255,255,255,.02));
-            border: 1px solid var(--border);
-            border-radius: var(--radius);
-            overflow: hidden;
-            box-shadow: 0 10px 30px rgba(0,0,0,.25);
-        }
+    .rows{ display:flex; flex-direction:column; gap:8px; }
 
-        .cardHeader {
-            padding: 12px 14px;
-            background: rgba(255,255,255,.03);
-            border-bottom: 1px solid var(--border);
-            display: flex;
-            align-items: center;
-            justify-content: space-between;
-            gap: 10px;
-        }
+    .row{
+      display:grid;
+      grid-template-columns:1.3fr 1fr;
+      gap:10px;
+      align-items:center;
+      min-height:var(--rowH);
+    }
+    .row.compact{ min-height:var(--rowH); }
 
-            .cardHeader .h {
-                display: flex;
-                flex-direction: column;
-                gap: 2px;
-            }
+    .lbl{
+      font-size:12px;
+      color:var(--muted);
+      white-space:nowrap;
+      overflow:hidden;
+      text-overflow:ellipsis;
+    }
 
-                .cardHeader .h .t {
-                    font-weight: 700;
-                    font-size: 13px;
-                }
+    .inp,.ta{
+      width:100%;
+      background:rgba(0,0,0,.25);
+      border:1px solid var(--border);
+      border-radius:10px;
+      padding:8px 10px;
+      color:var(--text);
+      outline:none;
+    }
+    .inp{ height:var(--rowH); }
 
-                .cardHeader .h .d {
-                    font-size: 12px;
-                    color: var(--muted);
-                }
+    .ta{
+      min-height:120px;
+      resize:vertical;
+      font-family:ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+      font-size:12px;
+      line-height:1.35;
+    }
 
-        .cardBody {
-            padding: 12px 14px;
-        }
+    .btnrow{
+      display:flex;
+      gap:10px;
+      flex-wrap:wrap;
+      margin-top:10px;
+    }
 
-        .rows {
-            display: flex;
-            flex-direction: column;
-            gap: 8px;
-        }
+    .btn{
+      background:rgba(90,160,255,.16);
+      border:1px solid rgba(90,160,255,.35);
+      color:var(--text);
+      padding:8px 10px;
+      border-radius:10px;
+      cursor:pointer;
+      font-size:12px;
+    }
+    .btn:hover{ border-color:rgba(90,160,255,.6); }
+    .btn.ghost{
+      background:rgba(255,255,255,.06);
+      border:1px solid var(--border);
+      color:var(--muted);
+    }
 
-        .row {
-            display: grid;
-            grid-template-columns: 1.3fr 1fr;
-            gap: 10px;
-            align-items: center;
-            min-height: var(--rowH);
-        }
+    .status{
+      margin-top:10px;
+      font-size:12px;
+      color:var(--muted);
+      display:flex;
+      gap:10px;
+      flex-wrap:wrap;
+    }
 
-            .row.compact {
-                min-height: var(--rowH);
-            }
+    .kv{
+      padding:6px 10px;
+      border-radius:999px;
+      border:1px solid var(--border);
+      background:rgba(255,255,255,.04);
+    }
+    .kv b{ color:var(--text); font-weight:700; }
 
-        .lbl {
-            font-size: 12px;
-            color: var(--muted);
-            white-space: nowrap;
-            overflow: hidden;
-            text-overflow: ellipsis;
-        }
+    .divider{
+      height:1px;
+      background:var(--border);
+      margin:12px 0;
+    }
 
-        .inp, .ta {
-            width: 100%;
-            background: rgba(0,0,0,.25);
-            border: 1px solid var(--border);
-            border-radius: 10px;
-            padding: 8px 10px;
-            color: var(--text);
-            outline: none;
-        }
+    .sectionTitle{
+      margin:0 0 8px;
+      font-size:12px;
+      color:var(--muted);
+      letter-spacing:.2px;
+      text-transform:uppercase;
+    }
 
-        .inp {
-            height: var(--rowH);
-        }
+    .twocol{
+      display:grid;
+      grid-template-columns:1fr 1fr;
+      gap:10px;
+    }
+    @media (max-width:980px){
+      .twocol{ grid-template-columns:1fr; }
+    }
 
-        .ta {
-            min-height: 120px;
-            resize: vertical;
-            font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
-            font-size: 12px;
-            line-height: 1.35;
-        }
+    .troopList{
+      display:flex;
+      flex-direction:column;
+      gap:6px;
+      margin-top:6px;
+    }
 
-        .btnrow {
-            display: flex;
-            gap: 10px;
-            flex-wrap: wrap;
-            margin-top: 10px;
-        }
+    .troopItem{
+      display:grid;
+      grid-template-columns:1.3fr 1fr;
+      gap:10px;
+      align-items:center;
+    }
 
-        .btn {
-            background: rgba(90,160,255,.16);
-            border: 1px solid rgba(90,160,255,.35);
-            color: var(--text);
-            padding: 8px 10px;
-            border-radius: 10px;
-            cursor: pointer;
-            font-size: 12px;
-        }
+    .hint{
+      font-size:11px;
+      color:rgba(231,236,255,.65);
+    }
 
-            .btn:hover {
-                border-color: rgba(90,160,255,.6);
-            }
-
-            .btn.ghost {
-                background: rgba(255,255,255,.06);
-                border: 1px solid var(--border);
-                color: var(--muted);
-            }
-
-        .status {
-            margin-top: 10px;
-            font-size: 12px;
-            color: var(--muted);
-            display: flex;
-            gap: 10px;
-            flex-wrap: wrap;
-        }
-
-        .kv {
-            padding: 6px 10px;
-            border-radius: 999px;
-            border: 1px solid var(--border);
-            background: rgba(255,255,255,.04);
-        }
-
-            .kv b {
-                color: var(--text);
-                font-weight: 700;
-            }
-
-        .divider {
-            height: 1px;
-            background: var(--border);
-            margin: 12px 0;
-        }
-
-        .sectionTitle {
-            margin: 0 0 8px;
-            font-size: 12px;
-            color: var(--muted);
-            letter-spacing: .2px;
-            text-transform: uppercase;
-        }
-
-        .twocol {
-            display: grid;
-            grid-template-columns: 1fr 1fr;
-            gap: 10px;
-        }
-
-        .troopList {
-            display: flex;
-            flex-direction: column;
-            gap: 6px;
-            margin-top: 6px;
-        }
-
-        .troopItem {
-            display: grid;
-            grid-template-columns: 1.3fr 1fr;
-            gap: 10px;
-            align-items: center;
-        }
-
-        .hint {
-            font-size: 11px;
-            color: rgba(231,236,255,.65);
-        }
-    </style>
+    /* --- SAFETY: FORCE DESKTOP SIDE-BY-SIDE --- */
+    @media (min-width: 1100px) {
+      .wrap { max-width: 1400px; }
+      .grid {
+        grid-template-columns: 1fr 1fr !important;
+        align-items: start !important;
+      }
+    }
+  </style>
 </head>
 
 <body>
-    <div class="wrap">
-        <div class="topbar">
-            <div class="title">
-                <h1>KG Battle Calculator (UI v2)</h1>
-                <div class="sub">Two-column layout + “Paste Spy Report” auto-fill for Defending Kingdom</div>
-            </div>
-            <div class="pillrow">
-                <label class="pill"><input id="tgUseResearch" type="checkbox" checked> Use Research</label>
-                <label class="pill"><input id="tgUseBonuses" type="checkbox" checked> Use Bonuses</label>
-                <label class="pill"><input id="tgCompact" type="checkbox" checked> Compact Rows</label>
-                <label class="pill"><input id="tgLockDef" type="checkbox"> Lock Defending (no autofill overwrite)</label>
-            </div>
-        </div>
-
-        <div class="grid">
-            <!-- LEFT -->
-            <section class="card">
-                <div class="cardHeader">
-                    <div class="h">
-                        <div class="t">Attacking Force</div>
-                        <div class="d">Your units, boosts, and attack setup</div>
-                    </div>
-                    <button class="btn ghost" id="btnClearAtk">Clear</button>
-                </div>
-                <div class="cardBody">
-                    <div class="rows" id="atkRows">
-                        <div class="row compact">
-                            <div class="lbl">Attack Type</div>
-                            <select class="inp" id="atkType">
-                                <option value="attack">Attack</option>
-                            </select>
-                        </div>
-
-                        <div class="divider"></div>
-                        <div class="sectionTitle">Units</div>
-
-                        <div class="twocol">
-                            <div class="rows">
-                                <div class="row compact">
-                                    <div class="lbl">Infantry</div>
-                                    <input class="inp" id="atkInf" type="number" min="0" step="1" value="0" />
-                                </div>
-                                <div class="row compact">
-                                    <div class="lbl">Cavalry</div>
-                                    <input class="inp" id="atkCav" type="number" min="0" step="1" value="0" />
-                                </div>
-                                <div class="row compact">
-                                    <div class="lbl">Archers</div>
-                                    <input class="inp" id="atkArc" type="number" min="0" step="1" value="0" />
-                                </div>
-                            </div>
-                            <div class="rows">
-                                <div class="row compact">
-                                    <div class="lbl">Siege</div>
-                                    <input class="inp" id="atkSiege" type="number" min="0" step="1" value="0" />
-                                </div>
-                                <div class="row compact">
-                                    <div class="lbl">Spies Sent</div>
-                                    <input class="inp" id="atkSpies" type="number" min="0" step="1" value="0" />
-                                </div>
-                                <div class="row compact">
-                                    <div class="lbl">Castles (attacker)</div>
-                                    <input class="inp" id="atkCastles" type="number" min="0" step="1" value="0" />
-                                </div>
-                            </div>
-                        </div>
-
-                        <div class="divider"></div>
-                        <div class="sectionTitle">Modifiers</div>
-
-                        <div class="row compact">
-                            <div class="lbl">Attack Bonus %</div>
-                            <input class="inp" id="atkBonus" type="number" min="-99" step="0.1" value="0" />
-                        </div>
-                        <div class="row compact">
-                            <div class="lbl">Morale / Situational %</div>
-                            <input class="inp" id="atkMorale" type="number" min="-99" step="0.1" value="0" />
-                        </div>
-
-                        <div class="btnrow">
-                            <button class="btn" id="btnCalc">Calculate</button>
-                            <button class="btn ghost" id="btnCopyAtk">Copy Attack JSON</button>
-                        </div>
-
-                        <div class="status" id="atkStatus"></div>
-                    </div>
-                </div>
-            </section>
-
-            <!-- RIGHT -->
-            <section class="card">
-                <div class="cardHeader">
-                    <div class="h">
-                        <div class="t">Defending Kingdom</div>
-                        <div class="d">Paste Spy Report to auto-fill target + troops + resources</div>
-                    </div>
-                    <button class="btn ghost" id="btnClearDef">Clear</button>
-                </div>
-                <div class="cardBody">
-                    <div class="rows" id="defRows">
-                        <div class="row compact">
-                            <div class="lbl">Paste Spy Report</div>
-                            <button class="btn" id="btnParse">Parse & Auto-fill</button>
-                        </div>
-
-                        <textarea class="ta" id="spyPaste" placeholder="Paste the full Spy Report here..."></textarea>
-
-                        <div class="hint">
-                            Parses: Target, Alliance, Honour, Ranking, Networth, Spies Sent/Lost, Result Level, # Castles,
-                            Resources, and troops (ignores Population + Approx defensive power lines).
-                        </div>
-
-                        <div class="divider"></div>
-                        <div class="sectionTitle">Defender Summary</div>
-
-                        <div class="twocol">
-                            <div class="rows">
-                                <div class="row compact">
-                                    <div class="lbl">Target</div>
-                                    <input class="inp" id="defTarget" />
-                                </div>
-                                <div class="row compact">
-                                    <div class="lbl">Alliance</div>
-                                    <input class="inp" id="defAlliance" />
-                                </div>
-                                <div class="row compact">
-                                    <div class="lbl">Ranking</div>
-                                    <input class="inp" id="defRank" type="number" min="0" step="1" />
-                                </div>
-                            </div>
-                            <div class="rows">
-                                <div class="row compact">
-                                    <div class="lbl">Networth</div>
-                                    <input class="inp" id="defNetworth" type="number" min="0" step="1" />
-                                </div>
-                                <div class="row compact">
-                                    <div class="lbl">Honour</div>
-                                    <input class="inp" id="defHonour" type="number" step="0.01" />
-                                </div>
-                                <div class="row compact">
-                                    <div class="lbl">Castles</div>
-                                    <input class="inp" id="defCastles" type="number" min="0" step="1" />
-                                </div>
-                            </div>
-                        </div>
-
-                        <div class="divider"></div>
-                        <div class="sectionTitle">Defender Troops</div>
-
-                        <div class="troopList" id="troopList"></div>
-
-                        <div class="btnrow">
-                            <button class="btn ghost" id="btnAddTroop">+ Add Troop Row</button>
-                            <button class="btn ghost" id="btnCopyDef">Copy Defender JSON</button>
-                        </div>
-
-                        <div class="divider"></div>
-                        <div class="sectionTitle">Resources (optional)</div>
-
-                        <div class="twocol">
-                            <div class="rows">
-                                <div class="row compact"><div class="lbl">Gold</div><input class="inp" id="resGold" type="number" min="0" step="1" /></div>
-                                <div class="row compact"><div class="lbl">Food</div><input class="inp" id="resFood" type="number" min="0" step="1" /></div>
-                                <div class="row compact"><div class="lbl">Wood</div><input class="inp" id="resWood" type="number" min="0" step="1" /></div>
-                            </div>
-                            <div class="rows">
-                                <div class="row compact"><div class="lbl">Stone</div><input class="inp" id="resStone" type="number" min="0" step="1" /></div>
-                                <div class="row compact"><div class="lbl">Horses</div><input class="inp" id="resHorses" type="number" min="0" step="1" /></div>
-                                <div class="row compact"><div class="lbl">Gems (blue/green)</div><input class="inp" id="resGems" placeholder="e.g. 97 / 90" /></div>
-                            </div>
-                        </div>
-
-                        <div class="status" id="defStatus"></div>
-                    </div>
-                </div>
-            </section>
-        </div>
+  <div class="wrap">
+    <div class="topbar">
+      <div class="title">
+        <h1>KG Battle Calculator (UI v2)</h1>
+        <div class="sub">Two-column layout + “Paste Spy Report” auto-fill for Defending Kingdom</div>
+      </div>
+      <div class="pillrow">
+        <label class="pill"><input id="tgUseResearch" type="checkbox" checked> Use Research</label>
+        <label class="pill"><input id="tgUseBonuses" type="checkbox" checked> Use Bonuses</label>
+        <label class="pill"><input id="tgCompact" type="checkbox" checked> Compact Rows</label>
+        <label class="pill"><input id="tgLockDef" type="checkbox"> Lock Defending (no autofill overwrite)</label>
+      </div>
     </div>
 
-    <script>
-        console.log("KG CALC LOADED v2", new Date().toISOString());
+    <div class="grid">
+      <!-- LEFT -->
+      <section class="card">
+        <div class="cardHeader">
+          <div class="h">
+            <div class="t">Attacking Force</div>
+            <div class="d">Your units, boosts, and attack setup</div>
+          </div>
+          <button class="btn ghost" id="btnClearAtk">Clear</button>
+        </div>
+        <div class="cardBody">
+          <div class="rows" id="atkRows">
+            <div class="row compact">
+              <div class="lbl">Attack Type</div>
+              <select class="inp" id="atkType">
+                <option value="attack">Attack</option>
+              </select>
+            </div>
 
-        // ---------- DOM HELPERS ----------
-        const el = (id) => document.getElementById(id);
+            <div class="divider"></div>
+            <div class="sectionTitle">Units</div>
 
-        function setStatus(node, items) {
-            if (!node) return;
-            node.innerHTML = "";
-            for (const it of items) {
-                const d = document.createElement("div");
-                d.className = "kv";
-                d.innerHTML = `<b>${it.k}:</b> ${it.v}`;
-                node.appendChild(d);
-            }
+            <div class="twocol">
+              <div class="rows">
+                <div class="row compact">
+                  <div class="lbl">Footmen</div>
+                  <input class="inp" id="atkFoot" type="number" min="0" step="1" value="0" />
+                </div>
+                <div class="row compact">
+                  <div class="lbl">Pikemen</div>
+                  <input class="inp" id="atkPike" type="number" min="0" step="1" value="0" />
+                </div>
+                <div class="row compact">
+                  <div class="lbl">Archers</div>
+                  <input class="inp" id="atkArc" type="number" min="0" step="1" value="0" />
+                </div>
+
+                <div class="divider"></div>
+
+                <div class="row compact">
+                  <div class="lbl">Light Cavalry</div>
+                  <input class="inp" id="atkLCav" type="number" min="0" step="1" value="0" />
+                </div>
+                <div class="row compact">
+                  <div class="lbl">Heavy Cavalry</div>
+                  <input class="inp" id="atkHCav" type="number" min="0" step="1" value="0" />
+                </div>
+                <div class="row compact">
+                  <div class="lbl">Knights</div>
+                  <input class="inp" id="atkKnights" type="number" min="0" step="1" value="0" />
+                </div>
+              </div>
+
+              <div class="rows">
+                <div class="row compact">
+                  <div class="lbl">Spies Sent</div>
+                  <input class="inp" id="atkSpies" type="number" min="0" step="1" value="0" />
+                </div>
+                <div class="row compact">
+                  <div class="lbl">Castles (attacker)</div>
+                  <input class="inp" id="atkCastles" type="number" min="0" step="1" value="0" />
+                </div>
+
+                <div class="divider"></div>
+
+                <div class="hint">
+                  Footmen/Pikemen split for correct AP. Mounted units split because LC/HC/Knights have different AP values.
+                </div>
+              </div>
+            </div>
+
+            <div class="divider"></div>
+            <div class="sectionTitle">Modifiers</div>
+
+            <div class="row compact">
+              <div class="lbl">Attack Bonus %</div>
+              <input class="inp" id="atkBonus" type="number" min="-99" step="0.1" value="0" />
+            </div>
+            <div class="row compact">
+              <div class="lbl">Morale / Situational %</div>
+              <input class="inp" id="atkMorale" type="number" min="-99" step="0.1" value="0" />
+            </div>
+
+            <div class="btnrow">
+              <button class="btn" id="btnCalc">Calculate</button>
+              <button class="btn ghost" id="btnCopyAtk">Copy Attack JSON</button>
+            </div>
+
+            <div class="status" id="atkStatus"></div>
+          </div>
+        </div>
+      </section>
+
+      <!-- RIGHT -->
+      <section class="card">
+        <div class="cardHeader">
+          <div class="h">
+            <div class="t">Defending Kingdom</div>
+            <div class="d">Paste Spy Report to auto-fill target + troops + resources</div>
+          </div>
+          <button class="btn ghost" id="btnClearDef">Clear</button>
+        </div>
+        <div class="cardBody">
+          <div class="rows" id="defRows">
+            <div class="row compact">
+              <div class="lbl">Paste Spy Report</div>
+              <button class="btn" id="btnParse">Parse & Auto-fill</button>
+            </div>
+
+            <textarea class="ta" id="spyPaste" placeholder="Paste the full Spy Report here..."></textarea>
+
+            <div class="hint">
+              Parses: Target, Alliance, Honour, Ranking, Networth, Spies Sent/Lost, Result Level, # Castles,
+              Resources, and troops (ignores Population + Approx defensive power lines).
+            </div>
+
+            <div class="divider"></div>
+            <div class="sectionTitle">Defender Summary</div>
+
+            <div class="twocol">
+              <div class="rows">
+                <div class="row compact">
+                  <div class="lbl">Target</div>
+                  <input class="inp" id="defTarget" />
+                </div>
+                <div class="row compact">
+                  <div class="lbl">Alliance</div>
+                  <input class="inp" id="defAlliance" />
+                </div>
+                <div class="row compact">
+                  <div class="lbl">Ranking</div>
+                  <input class="inp" id="defRank" type="number" min="0" step="1" />
+                </div>
+              </div>
+              <div class="rows">
+                <div class="row compact">
+                  <div class="lbl">Networth</div>
+                  <input class="inp" id="defNetworth" type="number" min="0" step="1" />
+                </div>
+                <div class="row compact">
+                  <div class="lbl">Honour</div>
+                  <input class="inp" id="defHonour" type="number" step="0.01" />
+                </div>
+                <div class="row compact">
+                  <div class="lbl">Castles</div>
+                  <input class="inp" id="defCastles" type="number" min="0" step="1" />
+                </div>
+              </div>
+            </div>
+
+            <div class="divider"></div>
+            <div class="sectionTitle">Defender Troops</div>
+
+            <div class="troopList" id="troopList"></div>
+
+            <div class="btnrow">
+              <button class="btn ghost" id="btnAddTroop">+ Add Troop Row</button>
+              <button class="btn ghost" id="btnCopyDef">Copy Defender JSON</button>
+            </div>
+
+            <div class="divider"></div>
+            <div class="sectionTitle">Resources (optional)</div>
+
+            <div class="twocol">
+              <div class="rows">
+                <div class="row compact"><div class="lbl">Gold</div><input class="inp" id="resGold" type="number" min="0" step="1" /></div>
+                <div class="row compact"><div class="lbl">Food</div><input class="inp" id="resFood" type="number" min="0" step="1" /></div>
+                <div class="row compact"><div class="lbl">Wood</div><input class="inp" id="resWood" type="number" min="0" step="1" /></div>
+              </div>
+              <div class="rows">
+                <div class="row compact"><div class="lbl">Stone</div><input class="inp" id="resStone" type="number" min="0" step="1" /></div>
+                <div class="row compact"><div class="lbl">Horses</div><input class="inp" id="resHorses" type="number" min="0" step="1" /></div>
+                <div class="row compact"><div class="lbl">Gems (blue/green)</div><input class="inp" id="resGems" placeholder="e.g. 97 / 90" /></div>
+              </div>
+            </div>
+
+            <div class="status" id="defStatus"></div>
+          </div>
+        </div>
+      </section>
+    </div>
+  </div>
+
+  <script>
+    console.log("KG CALC LOADED v2", new Date().toISOString());
+
+    // ---------- DOM HELPERS ----------
+    const el = (id) => document.getElementById(id);
+
+    function setStatus(node, items) {
+      if (!node) return;
+      node.innerHTML = "";
+      for (const it of items) {
+        const d = document.createElement("div");
+        d.className = "kv";
+        d.innerHTML = `<b>${it.k}:</b> ${it.v}`;
+        node.appendChild(d);
+      }
+    }
+
+    function clearTroopRows() { el("troopList").innerHTML = ""; }
+
+    function addTroopRow(name = "", count = 0) {
+      const wrap = el("troopList");
+      const row = document.createElement("div");
+      row.className = "troopItem";
+
+      const nameInp = document.createElement("input");
+      nameInp.className = "inp";
+      nameInp.placeholder = "Troop name (e.g., Heavy Cavalry)";
+      nameInp.value = name;
+
+      const countInp = document.createElement("input");
+      countInp.className = "inp";
+      countInp.type = "number";
+      countInp.min = "0";
+      countInp.step = "1";
+      countInp.value = (count ?? 0);
+
+      row.appendChild(nameInp);
+      row.appendChild(countInp);
+      wrap.appendChild(row);
+    }
+
+    function readTroopsFromRows() {
+      const troops = {};
+      const rows = Array.from(el("troopList").querySelectorAll(".troopItem"));
+      for (const r of rows) {
+        const [nameInp, countInp] = r.querySelectorAll("input");
+        const name = (nameInp.value || "").trim();
+        const count = Number(String(countInp.value || "0").replace(/[, ]+/g, ""));
+        if (!name) continue;
+        if (!Number.isFinite(count)) continue;
+        troops[name] = count;
+      }
+      return troops;
+    }
+
+    // ---------- PARSER ----------
+    function parseNumberLoose(s) {
+      if (s == null) return null;
+      const cleaned = String(s).replace(/[, ]+/g, "").trim();
+      if (!cleaned) return null;
+      const n = Number(cleaned);
+      return Number.isFinite(n) ? n : null;
+    }
+
+    function grabLineValue(text, label) {
+      const re = new RegExp("^\\s*" + label.replace(/[.*+?^${}()|[\\]\\\\]/g, "\\$&") + "\\s*:\\s*(.+?)\\s*$", "im");
+      const m = text.match(re);
+      return m ? m[1].trim() : null;
+    }
+
+    function sliceSection(text, headerRegex, stopRegexes) {
+      const m = text.match(headerRegex);
+      if (!m) return "";
+      const startIdx = (m.index ?? 0) + m[0].length;
+      const after = text.slice(startIdx);
+
+      let endIdx = after.length;
+      for (const re of stopRegexes) {
+        const sm = after.match(re);
+        if (sm && typeof sm.index === "number") {
+          endIdx = Math.min(endIdx, sm.index);
+        }
+      }
+      return after.slice(0, endIdx).trim();
+    }
+
+    function parseKeyValueLines(chunk) {
+      const out = {};
+      const lines = chunk.split(/\r?\n/);
+      for (const line of lines) {
+        if (/^\s*\*/.test(line)) continue;
+        const m = line.match(/^\s*([^:]{1,80}?)\s*:\s*([0-9][0-9, ]*)\s*$/);
+        if (!m) continue;
+        const key = m[1].trim();
+        const val = parseNumberLoose(m[2]);
+        if (val == null) continue;
+        out[key] = val;
+      }
+      return out;
+    }
+
+    function extractResources(text) {
+      const resourcesChunk = sliceSection(
+        text,
+        /^\s*Our spies also found the following information about the kingdom's resources:\s*$/im,
+        [
+          /^\s*Our spies also found the following information about the kingdom's troops:\s*$/im,
+          /^\s*The following information was found regarding troop movements/i,
+          /^\s*Select Ruleset:/im,
+          /^\s*Standard Rules/im
+        ]
+      );
+
+      const kv = parseKeyValueLines(resourcesChunk);
+      const res = {};
+      if (kv["Gold"] != null) res.gold = kv["Gold"];
+      if (kv["Food"] != null) res.food = kv["Food"];
+      if (kv["Wood"] != null) res.wood = kv["Wood"];
+      if (kv["Stone"] != null) res.stone = kv["Stone"];
+      if (kv["Horses"] != null) res.horses = kv["Horses"];
+      if (kv["Blue Gems"] != null) res.blueGems = kv["Blue Gems"];
+      if (kv["Green Gems"] != null) res.greenGems = kv["Green Gems"];
+
+      const landRaw = grabLineValue(resourcesChunk, "Land");
+      if (landRaw) res.landRaw = landRaw;
+
+      return res;
+    }
+
+    function extractTroops(text) {
+      const troopsChunk = sliceSection(
+        text,
+        /^\s*Our spies also found the following information about the kingdom's troops:\s*$/im,
+        [
+          /^\s*The following information was found regarding troop movements/i,
+          /^\s*Select Ruleset:/im,
+          /^\s*Standard Rules/im
+        ]
+      );
+
+      const kv = parseKeyValueLines(troopsChunk);
+
+      const troops = {};
+      for (const [k, v] of Object.entries(kv)) {
+        const lk = k.toLowerCase();
+        if (lk.startsWith("population")) continue;
+        if (lk.includes("defensive power")) continue;
+        troops[k] = v;
+      }
+      return troops;
+    }
+
+    function parseKgSpyReport(text) {
+      return {
+        target: grabLineValue(text, "Target"),
+        alliance: grabLineValue(text, "Alliance"),
+        honour: parseNumberLoose(grabLineValue(text, "Honour")),
+        ranking: parseNumberLoose(grabLineValue(text, "Ranking")),
+        networth: parseNumberLoose(grabLineValue(text, "Networth")),
+        spiesSent: parseNumberLoose(grabLineValue(text, "Spies Sent")),
+        spiesLost: parseNumberLoose(grabLineValue(text, "Spies Lost")),
+        resultLevel: grabLineValue(text, "Result Level"),
+        castles: parseNumberLoose(grabLineValue(text, "Number of Castles")),
+        resources: extractResources(text),
+        troops: extractTroops(text)
+      };
+    }
+
+    // ---------- BATTLE MATH ----------
+    // NOTE: These AP weights should be aligned with KG AP values you confirm.
+    const WEIGHTS = {
+      footmen: 2,
+      pikemen: 2,
+      archers: 1,
+      lightCav: 5,
+      heavyCav: 7,
+      knights: 9
+    };
+
+    // ratio = attackerPower / defenderDP
+    const OUTCOME_THRESHOLDS = [
+      { name: "FAIL / LOSS", min: 0.0, max: 0.95 },
+      { name: "STALEMATE", min: 0.95, max: 1.10 },
+      { name: "MINOR VICTORY", min: 1.10, max: 1.30 },
+      { name: "VICTORY", min: 1.30, max: 1.60 },
+      { name: "MAJOR VICTORY", min: 1.60, max: 2.20 },
+      { name: "OVERWHELMING VICTORY", min: 2.20, max: Infinity },
+    ];
+
+    function extractDefenderDPFromSpyText(text) {
+      const m = String(text || "").match(/Approximate defensive power\*?\s*:\s*([0-9,]+)/i);
+      if (!m) return null;
+      return Number(m[1].replace(/,/g, ""));
+    }
+
+    function computeAttackPower() {
+      const foot = parseNumberLoose(el("atkFoot")?.value) ?? 0;
+      const pike = parseNumberLoose(el("atkPike")?.value) ?? 0;
+      const arc  = parseNumberLoose(el("atkArc")?.value) ?? 0;
+
+      const lc = parseNumberLoose(el("atkLCav")?.value) ?? 0;
+      const hc = parseNumberLoose(el("atkHCav")?.value) ?? 0;
+      const kn = parseNumberLoose(el("atkKnights")?.value) ?? 0;
+
+      let power =
+        foot * WEIGHTS.footmen +
+        pike * WEIGHTS.pikemen +
+        arc  * WEIGHTS.archers +
+        lc   * WEIGHTS.lightCav +
+        hc   * WEIGHTS.heavyCav +
+        kn   * WEIGHTS.knights;
+
+      const bonusPct  = (parseNumberLoose(el("atkBonus")?.value) ?? 0);
+      const moralePct = (parseNumberLoose(el("atkMorale")?.value) ?? 0);
+
+      power *= (1 + (bonusPct / 100));
+      power *= (1 + (moralePct / 100));
+
+      return Math.max(0, power);
+    }
+
+    function pickOutcome(ratio) {
+      for (const t of OUTCOME_THRESHOLDS) {
+        if (ratio >= t.min && ratio < t.max) return t.name;
+      }
+      return "UNKNOWN";
+    }
+
+    // ---------- WIRING ----------
+    function applyCompact() {
+      const compact = el("tgCompact").checked;
+      document.querySelectorAll(".row").forEach(r => {
+        if (compact) r.classList.add("compact");
+        else r.classList.remove("compact");
+      });
+    }
+
+    el("tgCompact").addEventListener("change", applyCompact);
+    applyCompact();
+
+    // seed troop rows
+    addTroopRow("", 0);
+    addTroopRow("", 0);
+
+    el("btnAddTroop").addEventListener("click", () => addTroopRow("", 0));
+
+    el("btnClearDef").addEventListener("click", () => {
+      ["defTarget","defAlliance","defRank","defNetworth","defHonour","defCastles",
+       "resGold","resFood","resWood","resStone","resHorses","resGems"].forEach(id => el(id).value = "");
+      clearTroopRows();
+      addTroopRow("", 0);
+      addTroopRow("", 0);
+      setStatus(el("defStatus"), [{ k: "Defender", v: "cleared" }]);
+    });
+
+    el("btnClearAtk").addEventListener("click", () => {
+      ["atkFoot","atkPike","atkArc","atkLCav","atkHCav","atkKnights","atkSpies","atkCastles","atkBonus","atkMorale"]
+        .forEach(id => el(id).value = 0);
+      setStatus(el("atkStatus"), [{ k: "Attack", v: "cleared" }]);
+    });
+
+    el("btnParse").addEventListener("click", () => {
+      const txt = el("spyPaste").value || "";
+      if (!txt.trim()) {
+        setStatus(el("defStatus"), [{ k: "Parse", v: "no text pasted" }]);
+        return;
+      }
+
+      const parsed = parseKgSpyReport(txt);
+      console.log("PARSED:", parsed);
+
+      const lock = el("tgLockDef").checked;
+      if (!lock) {
+        if (parsed.target != null) el("defTarget").value = parsed.target;
+        if (parsed.alliance != null) el("defAlliance").value = parsed.alliance;
+        if (parsed.ranking != null) el("defRank").value = parsed.ranking;
+        if (parsed.networth != null) el("defNetworth").value = parsed.networth;
+        if (parsed.honour != null) el("defHonour").value = parsed.honour;
+        if (parsed.castles != null) el("defCastles").value = parsed.castles;
+
+        if (parsed.resources.gold != null) el("resGold").value = parsed.resources.gold;
+        if (parsed.resources.food != null) el("resFood").value = parsed.resources.food;
+        if (parsed.resources.wood != null) el("resWood").value = parsed.resources.wood;
+        if (parsed.resources.stone != null) el("resStone").value = parsed.resources.stone;
+        if (parsed.resources.horses != null) el("resHorses").value = parsed.resources.horses;
+
+        const blue = parsed.resources.blueGems;
+        const green = parsed.resources.greenGems;
+        if (blue != null || green != null) {
+          el("resGems").value = `${blue ?? ""} / ${green ?? ""}`.trim();
         }
 
-        function clearTroopRows() { el("troopList").innerHTML = ""; }
-
-        function addTroopRow(name = "", count = 0) {
-            const wrap = el("troopList");
-            const row = document.createElement("div");
-            row.className = "troopItem";
-
-            const nameInp = document.createElement("input");
-            nameInp.className = "inp";
-            nameInp.placeholder = "Troop name (e.g., Heavy Cavalry)";
-            nameInp.value = name;
-
-            const countInp = document.createElement("input");
-            countInp.className = "inp";
-            countInp.type = "number";
-            countInp.min = "0";
-            countInp.step = "1";
-            countInp.value = (count ?? 0);
-
-            row.appendChild(nameInp);
-            row.appendChild(countInp);
-            wrap.appendChild(row);
+        clearTroopRows();
+        const troopEntries = Object.entries(parsed.troops || {});
+        if (troopEntries.length) {
+          for (const [name, count] of troopEntries) addTroopRow(name, count);
+        } else {
+          addTroopRow("", 0);
+          addTroopRow("", 0);
         }
+      }
 
-        function readTroopsFromRows() {
-            const troops = {};
-            const rows = Array.from(el("troopList").querySelectorAll(".troopItem"));
-            for (const r of rows) {
-                const [nameInp, countInp] = r.querySelectorAll("input");
-                const name = (nameInp.value || "").trim();
-                const count = Number(String(countInp.value || "0").replace(/[, ]+/g, ""));
-                if (!name) continue;
-                if (!Number.isFinite(count)) continue;
-                troops[name] = count;
-            }
-            return troops;
+      const dp = extractDefenderDPFromSpyText(txt);
+
+      setStatus(el("defStatus"), [
+        { k: "Target", v: parsed.target ?? "—" },
+        { k: "Castles", v: parsed.castles ?? "—" },
+        { k: "Defender DP", v: dp != null ? dp.toLocaleString() : "—" },
+        { k: "Troop lines", v: Object.keys(parsed.troops || {}).length || "0" },
+        { k: "Autofill", v: lock ? "LOCKED" : "applied" }
+      ]);
+    });
+
+    el("btnCopyDef").addEventListener("click", async () => {
+      const data = {
+        target: el("defTarget").value.trim(),
+        alliance: el("defAlliance").value.trim(),
+        ranking: parseNumberLoose(el("defRank").value),
+        networth: parseNumberLoose(el("defNetworth").value),
+        honour: parseNumberLoose(el("defHonour").value),
+        castles: parseNumberLoose(el("defCastles").value),
+        troops: readTroopsFromRows(),
+        resources: {
+          gold: parseNumberLoose(el("resGold").value),
+          food: parseNumberLoose(el("resFood").value),
+          wood: parseNumberLoose(el("resWood").value),
+          stone: parseNumberLoose(el("resStone").value),
+          horses: parseNumberLoose(el("resHorses").value),
+          gems: el("resGems").value.trim()
         }
+      };
+      await navigator.clipboard.writeText(JSON.stringify(data, null, 2));
+      setStatus(el("defStatus"), [{ k: "Copied", v: "defender JSON to clipboard" }]);
+    });
 
-        // ---------- PARSER ----------
-        function parseNumberLoose(s) {
-            if (s == null) return null;
-            const cleaned = String(s).replace(/[, ]+/g, '').trim();
-            if (!cleaned) return null;
-            const n = Number(cleaned);
-            return Number.isFinite(n) ? n : null;
+    el("btnCopyAtk").addEventListener("click", async () => {
+      const data = {
+        type: el("atkType").value,
+        units: {
+          footmen: parseNumberLoose(el("atkFoot").value) ?? 0,
+          pikemen: parseNumberLoose(el("atkPike").value) ?? 0,
+          archers: parseNumberLoose(el("atkArc").value) ?? 0,
+          lightCavalry: parseNumberLoose(el("atkLCav").value) ?? 0,
+          heavyCavalry: parseNumberLoose(el("atkHCav").value) ?? 0,
+          knights: parseNumberLoose(el("atkKnights").value) ?? 0,
+          spiesSent: parseNumberLoose(el("atkSpies").value) ?? 0,
+          castles: parseNumberLoose(el("atkCastles").value) ?? 0
+        },
+        mods: {
+          atkBonusPct: parseNumberLoose(el("atkBonus").value) ?? 0,
+          moralePct: parseNumberLoose(el("atkMorale").value) ?? 0
+        },
+        toggles: {
+          useResearch: el("tgUseResearch").checked,
+          useBonuses: el("tgUseBonuses").checked
         }
+      };
+      await navigator.clipboard.writeText(JSON.stringify(data, null, 2));
+      setStatus(el("atkStatus"), [{ k: "Copied", v: "attack JSON to clipboard" }]);
+    });
 
-        function grabLineValue(text, label) {
-            const re = new RegExp("^\\s*" + label.replace(/[.*+?^${}()|[\\]\\\\]/g, "\\$&") + "\\s*:\\s*(.+?)\\s*$", "im");
-            const m = text.match(re);
-            return m ? m[1].trim() : null;
-        }
+    el("btnCalc").addEventListener("click", () => {
+      const spyText = el("spyPaste").value || "";
+      const defDP = extractDefenderDPFromSpyText(spyText);
 
-        function sliceSection(text, headerRegex, stopRegexes) {
-            const m = text.match(headerRegex);
-            if (!m) return "";
-            const startIdx = (m.index ?? 0) + m[0].length;
-            const after = text.slice(startIdx);
+      if (!defDP || !Number.isFinite(defDP) || defDP <= 0) {
+        setStatus(el("atkStatus"), [
+          { k: "Calc", v: "failed" },
+          { k: "Reason", v: "Paste a full Spy Report (must include Approximate defensive power*)" }
+        ]);
+        return;
+      }
 
-            let endIdx = after.length;
-            for (const re of stopRegexes) {
-                const sm = after.match(re);
-                if (sm && typeof sm.index === "number") {
-                    endIdx = Math.min(endIdx, sm.index);
-                }
-            }
-            return after.slice(0, endIdx).trim();
-        }
+      const atkPower = computeAttackPower();
+      const ratio = atkPower / defDP;
+      const outcome = pickOutcome(ratio);
 
-        function parseKeyValueLines(chunk) {
-            const out = {};
-            const lines = chunk.split(/\r?\n/);
-            for (const line of lines) {
-                if (/^\s*\*/.test(line)) continue;
-                const m = line.match(/^\s*([^:]{1,80}?)\s*:\s*([0-9][0-9, ]*)\s*$/);
-                if (!m) continue;
-                const key = m[1].trim();
-                const val = parseNumberLoose(m[2]);
-                if (val == null) continue;
-                out[key] = val;
-            }
-            return out;
-        }
-
-        function extractResources(text) {
-            const resourcesChunk = sliceSection(
-                text,
-                /^\s*Our spies also found the following information about the kingdom's resources:\s*$/im,
-                [
-                    /^\s*Our spies also found the following information about the kingdom's troops:\s*$/im,
-                    /^\s*The following information was found regarding troop movements/i,
-                    /^\s*Select Ruleset:/im,
-                    /^\s*Standard Rules/im
-                ]
-            );
-
-            const kv = parseKeyValueLines(resourcesChunk);
-            const res = {};
-            if (kv["Gold"] != null) res.gold = kv["Gold"];
-            if (kv["Food"] != null) res.food = kv["Food"];
-            if (kv["Wood"] != null) res.wood = kv["Wood"];
-            if (kv["Stone"] != null) res.stone = kv["Stone"];
-            if (kv["Horses"] != null) res.horses = kv["Horses"];
-            if (kv["Blue Gems"] != null) res.blueGems = kv["Blue Gems"];
-            if (kv["Green Gems"] != null) res.greenGems = kv["Green Gems"];
-
-            const landRaw = grabLineValue(resourcesChunk, "Land");
-            if (landRaw) res.landRaw = landRaw;
-
-            return res;
-        }
-
-        function extractTroops(text) {
-            const troopsChunk = sliceSection(
-                text,
-                /^\s*Our spies also found the following information about the kingdom's troops:\s*$/im,
-                [
-                    /^\s*The following information was found regarding troop movements/i,
-                    /^\s*Select Ruleset:/im,
-                    /^\s*Standard Rules/im
-                ]
-            );
-
-            const kv = parseKeyValueLines(troopsChunk);
-
-            const troops = {};
-            for (const [k, v] of Object.entries(kv)) {
-                const lk = k.toLowerCase();
-                if (lk.startsWith("population")) continue;
-                if (lk.includes("defensive power")) continue;
-                troops[k] = v;
-            }
-            return troops;
-        }
-
-        function parseKgSpyReport(text) {
-            return {
-                target: grabLineValue(text, "Target"),
-                alliance: grabLineValue(text, "Alliance"),
-                honour: parseNumberLoose(grabLineValue(text, "Honour")),
-                ranking: parseNumberLoose(grabLineValue(text, "Ranking")),
-                networth: parseNumberLoose(grabLineValue(text, "Networth")),
-                spiesSent: parseNumberLoose(grabLineValue(text, "Spies Sent")),
-                spiesLost: parseNumberLoose(grabLineValue(text, "Spies Lost")),
-                resultLevel: grabLineValue(text, "Result Level"),
-                castles: parseNumberLoose(grabLineValue(text, "Number of Castles")),
-                resources: extractResources(text),
-                troops: extractTroops(text)
-            };
-        }
-
-        // ---------- BATTLE MATH (ADDED) ----------
-        // If you later split units into Footmen/Pike/Arch/HC/LC/Knights, just change this mapping.
-        // Right now your UI has aggregate Infantry/Cavalry/Archers/Siege.
-        // We'll treat:
-        // - Infantry weight = 1
-        // - Archers weight = 1
-        // - Cavalry weight = 7 (heavy-cav style, because KG AP math uses HC=7)
-        // - Siege is ignored for hit outcome (kept for later town-breach math)
-        const WEIGHTS = {
-            infantry: 1,
-            archers: 1,
-            cavalry: 7,
-        };
-
-        // These thresholds are calibrated to your examples (close as possible from what you pasted).
-        // ratio = attackerPower / defenderDP
-        const OUTCOME_THRESHOLDS = [
-            { name: "FAIL / LOSS", min: 0.0, max: 0.95 },
-            { name: "STALEMATE", min: 0.95, max: 1.10 },
-            { name: "MINOR VICTORY", min: 1.10, max: 1.30 },
-            { name: "VICTORY", min: 1.30, max: 1.60 },
-            { name: "MAJOR VICTORY", min: 1.60, max: 2.20 },
-            { name: "OVERWHELMING VICTORY", min: 2.20, max: Infinity },
-        ];
-
-        function extractDefenderDPFromSpyText(text) {
-            // Supports both "Approximate defensive power*: 49948" and other spacing
-            const m = String(text || "").match(/Approximate defensive power\*?\s*:\s*([0-9,]+)/i);
-            if (!m) return null;
-            return Number(m[1].replace(/,/g, ""));
-        }
-
-        function computeAttackPower() {
-            const inf = parseNumberLoose(el("atkInf").value) ?? 0;
-            const cav = parseNumberLoose(el("atkCav").value) ?? 0;
-            const arc = parseNumberLoose(el("atkArc").value) ?? 0;
-
-            let power =
-                inf * WEIGHTS.infantry +
-                arc * WEIGHTS.archers +
-                cav * WEIGHTS.cavalry;
-
-            // bonuses
-            const bonusPct = (parseNumberLoose(el("atkBonus").value) ?? 0);
-            const moralePct = (parseNumberLoose(el("atkMorale").value) ?? 0);
-
-            power *= (1 + (bonusPct / 100));
-            power *= (1 + (moralePct / 100));
-
-            return Math.max(0, power);
-        }
-
-        function pickOutcome(ratio) {
-            for (const t of OUTCOME_THRESHOLDS) {
-                if (ratio >= t.min && ratio < t.max) return t.name;
-            }
-            return "UNKNOWN";
-        }
-
-        // ---------- WIRING ----------
-        function applyCompact() {
-            const compact = el("tgCompact").checked;
-            document.querySelectorAll(".row").forEach(r => {
-                if (compact) r.classList.add("compact");
-                else r.classList.remove("compact");
-            });
-        }
-
-        el("tgCompact").addEventListener("change", applyCompact);
-        applyCompact();
-
-        // seed troop rows
-        addTroopRow("", 0);
-        addTroopRow("", 0);
-
-        el("btnAddTroop").addEventListener("click", () => addTroopRow("", 0));
-
-        el("btnClearDef").addEventListener("click", () => {
-            ["defTarget", "defAlliance", "defRank", "defNetworth", "defHonour", "defCastles",
-                "resGold", "resFood", "resWood", "resStone", "resHorses", "resGems"].forEach(id => el(id).value = "");
-            clearTroopRows();
-            addTroopRow("", 0);
-            addTroopRow("", 0);
-            setStatus(el("defStatus"), [{ k: "Defender", v: "cleared" }]);
-        });
-
-        el("btnClearAtk").addEventListener("click", () => {
-            ["atkInf", "atkCav", "atkArc", "atkSiege", "atkSpies", "atkCastles", "atkBonus", "atkMorale"].forEach(id => el(id).value = 0);
-            setStatus(el("atkStatus"), [{ k: "Attack", v: "cleared" }]);
-        });
-
-        el("btnParse").addEventListener("click", () => {
-            const txt = el("spyPaste").value || "";
-            if (!txt.trim()) {
-                setStatus(el("defStatus"), [{ k: "Parse", v: "no text pasted" }]);
-                return;
-            }
-
-            const parsed = parseKgSpyReport(txt);
-            console.log("PARSED:", parsed);
-
-            const lock = el("tgLockDef").checked;
-            if (!lock) {
-                if (parsed.target != null) el("defTarget").value = parsed.target;
-                if (parsed.alliance != null) el("defAlliance").value = parsed.alliance;
-                if (parsed.ranking != null) el("defRank").value = parsed.ranking;
-                if (parsed.networth != null) el("defNetworth").value = parsed.networth;
-                if (parsed.honour != null) el("defHonour").value = parsed.honour;
-                if (parsed.castles != null) el("defCastles").value = parsed.castles;
-
-                if (parsed.resources.gold != null) el("resGold").value = parsed.resources.gold;
-                if (parsed.resources.food != null) el("resFood").value = parsed.resources.food;
-                if (parsed.resources.wood != null) el("resWood").value = parsed.resources.wood;
-                if (parsed.resources.stone != null) el("resStone").value = parsed.resources.stone;
-                if (parsed.resources.horses != null) el("resHorses").value = parsed.resources.horses;
-
-                const blue = parsed.resources.blueGems;
-                const green = parsed.resources.greenGems;
-                if (blue != null || green != null) {
-                    el("resGems").value = `${blue ?? ""} / ${green ?? ""}`.trim();
-                }
-
-                clearTroopRows();
-                const troopEntries = Object.entries(parsed.troops || {});
-                if (troopEntries.length) {
-                    for (const [name, count] of troopEntries) addTroopRow(name, count);
-                } else {
-                    addTroopRow("", 0);
-                    addTroopRow("", 0);
-                }
-            }
-
-            // ADDED: also parse defender DP and show it in status
-            const dp = extractDefenderDPFromSpyText(txt);
-
-            setStatus(el("defStatus"), [
-                { k: "Target", v: parsed.target ?? "—" },
-                { k: "Castles", v: parsed.castles ?? "—" },
-                { k: "Defender DP", v: dp != null ? dp.toLocaleString() : "—" },
-                { k: "Troop lines", v: Object.keys(parsed.troops || {}).length || "0" },
-                { k: "Autofill", v: lock ? "LOCKED" : "applied" }
-            ]);
-        });
-
-        el("btnCopyDef").addEventListener("click", async () => {
-            const data = {
-                target: el("defTarget").value.trim(),
-                alliance: el("defAlliance").value.trim(),
-                ranking: parseNumberLoose(el("defRank").value),
-                networth: parseNumberLoose(el("defNetworth").value),
-                honour: parseNumberLoose(el("defHonour").value),
-                castles: parseNumberLoose(el("defCastles").value),
-                troops: readTroopsFromRows(),
-                resources: {
-                    gold: parseNumberLoose(el("resGold").value),
-                    food: parseNumberLoose(el("resFood").value),
-                    wood: parseNumberLoose(el("resWood").value),
-                    stone: parseNumberLoose(el("resStone").value),
-                    horses: parseNumberLoose(el("resHorses").value),
-                    gems: el("resGems").value.trim()
-                }
-            };
-            await navigator.clipboard.writeText(JSON.stringify(data, null, 2));
-            setStatus(el("defStatus"), [{ k: "Copied", v: "defender JSON to clipboard" }]);
-        });
-
-        el("btnCopyAtk").addEventListener("click", async () => {
-            const data = {
-                type: el("atkType").value,
-                units: {
-                    infantry: parseNumberLoose(el("atkInf").value) ?? 0,
-                    cavalry: parseNumberLoose(el("atkCav").value) ?? 0,
-                    archers: parseNumberLoose(el("atkArc").value) ?? 0,
-                    siege: parseNumberLoose(el("atkSiege").value) ?? 0,
-                    spiesSent: parseNumberLoose(el("atkSpies").value) ?? 0,
-                    castles: parseNumberLoose(el("atkCastles").value) ?? 0,
-                },
-                mods: {
-                    atkBonusPct: parseNumberLoose(el("atkBonus").value) ?? 0,
-                    moralePct: parseNumberLoose(el("atkMorale").value) ?? 0
-                },
-                toggles: {
-                    useResearch: el("tgUseResearch").checked,
-                    useBonuses: el("tgUseBonuses").checked
-                }
-            };
-            await navigator.clipboard.writeText(JSON.stringify(data, null, 2));
-            setStatus(el("atkStatus"), [{ k: "Copied", v: "attack JSON to clipboard" }]);
-        });
-
-        // UPDATED: real calculation (no more stub)
-        el("btnCalc").addEventListener("click", () => {
-            const spyText = el("spyPaste").value || "";
-            const defDP = extractDefenderDPFromSpyText(spyText);
-
-            if (!defDP || !Number.isFinite(defDP) || defDP <= 0) {
-                setStatus(el("atkStatus"), [
-                    { k: "Calc", v: "failed" },
-                    { k: "Reason", v: "Paste a full Spy Report (must include Approximate defensive power*)" }
-                ]);
-                return;
-            }
-
-            const atkPower = computeAttackPower();
-            const ratio = atkPower / defDP;
-            const outcome = pickOutcome(ratio);
-
-            setStatus(el("atkStatus"), [
-                { k: "Attack Power", v: Math.round(atkPower).toLocaleString() },
-                { k: "Defender DP", v: defDP.toLocaleString() },
-                { k: "Ratio (A/D)", v: ratio.toFixed(2) },
-                { k: "Predicted Result", v: outcome }
-            ]);
-        });
-    </script>
+      setStatus(el("atkStatus"), [
+        { k: "Attack Power", v: Math.round(atkPower).toLocaleString() },
+        { k: "Defender DP", v: defDP.toLocaleString() },
+        { k: "Ratio (A/D)", v: ratio.toFixed(2) },
+        { k: "Predicted Result", v: outcome }
+      ]);
+    });
+  </script>
 </body>
 </html>
