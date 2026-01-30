@@ -270,6 +270,39 @@
                 align-items: start !important;
             }
         }
+    
+
+        .resultsBox {
+            background: rgba(0,0,0,.18);
+            border: 1px solid var(--border);
+            border-radius: 12px;
+            padding: 12px;
+        }
+
+        .resGrid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 10px;
+        }
+
+        @media (max-width: 980px) {
+            .resGrid { grid-template-columns: 1fr; }
+        }
+
+        .resItem {
+            padding: 10px;
+            border-radius: 12px;
+            border: 1px solid var(--border);
+            background: rgba(255,255,255,.04);
+        }
+
+        .resVal {
+            margin-top: 4px;
+            font-weight: 800;
+            font-size: 16px;
+            letter-spacing: .2px;
+        }
+
     </style>
 </head>
 
@@ -351,12 +384,90 @@
                             <input class="inp" id="atkMorale" type="number" min="-99" step="0.1" value="0" />
                         </div>
 
+                        <div class="row compact">
+                            <div class="lbl">Research Attack %</div>
+                            <input class="inp" id="atkResearch" type="number" min="-99" step="0.1" value="0" />
+                        </div>
+
+                        <div class="divider"></div>
+                        <div class="sectionTitle">Bonuses</div>
+
+                        <div class="pillrow" style="justify-content:flex-start">
+                            <label class="pill"><input id="tgWrath" type="checkbox"> Attacking Wrath (+5%)</label>
+                            <label class="pill"><input id="tgSteed" type="checkbox"> Steed’s Fury (+5% cavalry)</label>
+                        </div>
+                        <div class="hint" style="margin-top:6px">Bonuses only apply if “Use Bonuses” is enabled.</div>
+
                         <div class="btnrow">
                             <button class="btn" id="btnCalc">Calculate</button>
                             <button class="btn ghost" id="btnCopyAtk">Copy Attack JSON</button>
                         </div>
 
                         <div class="status" id="atkStatus"></div>
+
+                        <div class="divider"></div>
+                        <div class="sectionTitle">Results</div>
+
+                        <div class="resultsBox" id="resultsBox">
+                            <div class="resGrid">
+                                <div class="resItem"><div class="lbl">Attack Power</div><div class="resVal" id="resAtkPower">—</div></div>
+                                <div class="resItem"><div class="lbl">Defender DP</div><div class="resVal" id="resDefDP">—</div></div>
+                                <div class="resItem"><div class="lbl">Ratio (A/D)</div><div class="resVal" id="resRatio">—</div></div>
+                                <div class="resItem"><div class="lbl">Predicted Tier</div><div class="resVal" id="resTier">—</div></div>
+                            </div>
+
+                            <div class="hint" style="margin-top:8px">
+                                <b>Note:</b> This is an estimator. Real outcomes can vary due to hidden bonuses/research, rounding, server rulesets, and incomplete spy data.
+                                Use <b>Save Result</b> after fights so we can calibrate thresholds and weights from real samples.
+                            </div>
+
+                            <div class="divider"></div>
+                            <div class="sectionTitle">After your hit</div>
+
+                            <div class="row compact">
+                                <div class="lbl">Actual Result</div>
+                                <select class="inp" id="actualTier">
+                                    <option value="">(select)</option>
+                                    <option>FAIL / LOSS</option>
+                                    <option>STALEMATE</option>
+                                    <option>MINOR VICTORY</option>
+                                    <option>VICTORY</option>
+                                    <option>MAJOR VICTORY</option>
+                                    <option>OVERWHELMING VICTORY</option>
+                                </select>
+                            </div>
+
+                            <div class="row compact">
+                                <div class="lbl">Notes (optional)</div>
+                                <input class="inp" id="resultNotes" placeholder="e.g., used wrath + steed, defender had wards, etc." />
+                            </div>
+
+                            <div class="btnrow">
+                                <button class="btn" id="btnSaveResult">Save Result</button>
+                                <button class="btn ghost" id="btnCopyResult">Copy Result JSON</button>
+                            </div>
+
+                            <div class="status" id="resStatus"></div>
+
+                            <details style="margin-top:10px">
+                                <summary class="hint" style="cursor:pointer">Advanced: tune weights (stored in your browser)</summary>
+                                <div style="margin-top:10px" class="twocol">
+                                    <div class="rows">
+                                        <div class="row compact"><div class="lbl">Infantry weight</div><input class="inp" id="wInf" type="number" step="0.1" value="1" /></div>
+                                        <div class="row compact"><div class="lbl">Archers weight</div><input class="inp" id="wArc" type="number" step="0.1" value="1" /></div>
+                                        <div class="row compact"><div class="lbl">Cavalry weight</div><input class="inp" id="wCav" type="number" step="0.1" value="7" /></div>
+                                    </div>
+                                    <div class="rows">
+                                        <div class="hint">If you change these, it only affects your browser. The goal is to collect real outcomes (Save Result) and eventually auto-calibrate.</div>
+                                        <div class="btnrow">
+                                            <button class="btn ghost" id="btnResetWeights">Reset weights</button>
+                                            <button class="btn" id="btnSaveWeights">Save weights</button>
+                                        </div>
+                                    </div>
+                                </div>
+                            </details>
+                        </div>
+
                     </div>
                 </div>
             </section>
@@ -453,6 +564,9 @@
 
     <script>
         console.log("KG CALC LOADED v2", new Date().toISOString());
+
+        let LAST_RESULT = null; // last calculated payload (for copy/save)
+
 
         // ---------- DOM HELPERS ----------
         const el = (id) => document.getElementById(id);
@@ -620,7 +734,29 @@
         }
 
         // ---------- BATTLE MATH ----------
-        const WEIGHTS = { infantry: 1, archers: 1, cavalry: 7 };
+        const WEIGHTS_DEFAULT = { infantry: 1, archers: 1, cavalry: 7 };
+
+        function loadWeights() {
+            try {
+                const raw = localStorage.getItem("kgcalc_weights");
+                if (!raw) return { ...WEIGHTS_DEFAULT };
+                const obj = JSON.parse(raw);
+                return {
+                    infantry: Number(obj.infantry ?? WEIGHTS_DEFAULT.infantry),
+                    archers: Number(obj.archers ?? WEIGHTS_DEFAULT.archers),
+                    cavalry: Number(obj.cavalry ?? WEIGHTS_DEFAULT.cavalry),
+                };
+            } catch {
+                return { ...WEIGHTS_DEFAULT };
+            }
+        }
+
+        function saveWeights(w) {
+            localStorage.setItem("kgcalc_weights", JSON.stringify(w));
+        }
+
+        let WEIGHTS = loadWeights();
+
 
         const OUTCOME_THRESHOLDS = [
             { name: "FAIL / LOSS", min: 0.0, max: 0.95 },
@@ -642,16 +778,38 @@
             const cav = parseNumberLoose(el("atkCav").value) ?? 0;
             const arc = parseNumberLoose(el("atkArc").value) ?? 0;
 
-            let power =
-                inf * WEIGHTS.infantry +
-                arc * WEIGHTS.archers +
-                cav * WEIGHTS.cavalry;
+            const useBonuses = el("tgUseBonuses")?.checked ?? true;
+            const useResearch = el("tgUseResearch")?.checked ?? true;
 
-            const bonusPct = (parseNumberLoose(el("atkBonus").value) ?? 0);
-            const moralePct = (parseNumberLoose(el("atkMorale").value) ?? 0);
+            // Weighted unit power (tuneable via Advanced weights)
+            let infP = inf * WEIGHTS.infantry;
+            let arcP = arc * WEIGHTS.archers;
+            let cavP = cav * WEIGHTS.cavalry;
 
-            power *= (1 + (bonusPct / 100));
-            power *= (1 + (moralePct / 100));
+            // Simple bonus toggles (only when Use Bonuses is enabled)
+            if (useBonuses) {
+                const steed = el("tgSteed")?.checked;
+                if (steed) cavP *= 1.05; // +5% to mounted/cavalry contribution
+            }
+
+            let power = infP + arcP + cavP;
+
+            // Global bonuses (only when Use Bonuses is enabled)
+            if (useBonuses) {
+                const wrath = el("tgWrath")?.checked;
+                if (wrath) power *= 1.05; // +5% overall
+
+                const bonusPct = (parseNumberLoose(el("atkBonus").value) ?? 0);
+                const moralePct = (parseNumberLoose(el("atkMorale").value) ?? 0);
+                power *= (1 + (bonusPct / 100));
+                power *= (1 + (moralePct / 100));
+            }
+
+            // Research modifier (only when Use Research is enabled)
+            if (useResearch) {
+                const researchPct = (parseNumberLoose(el("atkResearch").value) ?? 0);
+                power *= (1 + (researchPct / 100));
+            }
 
             return Math.max(0, power);
         }
@@ -800,6 +958,14 @@
                     { k: "Calc", v: "failed" },
                     { k: "Reason", v: "Paste a full Spy Report (must include Approximate defensive power*)" }
                 ]);
+
+                // Clear results panel
+                el("resAtkPower").textContent = "—";
+                el("resDefDP").textContent = "—";
+                el("resRatio").textContent = "—";
+                el("resTier").textContent = "—";
+                LAST_RESULT = null;
+                setStatus(el("resStatus"), [{ k: "Result", v: "no defender DP found" }]);
                 return;
             }
 
@@ -807,13 +973,194 @@
             const ratio = atkPower / defDP;
             const outcome = pickOutcome(ratio);
 
+            // status pills (quick glance)
             setStatus(el("atkStatus"), [
                 { k: "Attack Power", v: Math.round(atkPower).toLocaleString() },
                 { k: "Defender DP", v: defDP.toLocaleString() },
                 { k: "Ratio (A/D)", v: ratio.toFixed(2) },
                 { k: "Predicted Result", v: outcome }
             ]);
+
+            // full results panel
+            el("resAtkPower").textContent = Math.round(atkPower).toLocaleString();
+            el("resDefDP").textContent = defDP.toLocaleString();
+            el("resRatio").textContent = ratio.toFixed(2);
+            el("resTier").textContent = outcome;
+
+            LAST_RESULT = {
+                version: "kg-calc-v2",
+                calculatedAt: new Date().toISOString(),
+                attacker: {
+                    type: el("atkType").value,
+                    units: {
+                        infantry: parseNumberLoose(el("atkInf").value) ?? 0,
+                        cavalry: parseNumberLoose(el("atkCav").value) ?? 0,
+                        archers: parseNumberLoose(el("atkArc").value) ?? 0,
+                        spiesSent: parseNumberLoose(el("atkSpies").value) ?? 0,
+                        castles: parseNumberLoose(el("atkCastles").value) ?? 0,
+                    },
+                    mods: {
+                        atkBonusPct: parseNumberLoose(el("atkBonus").value) ?? 0,
+                        moralePct: parseNumberLoose(el("atkMorale").value) ?? 0,
+                        researchPct: parseNumberLoose(el("atkResearch").value) ?? 0,
+                        wrath: !!el("tgWrath")?.checked,
+                        steed: !!el("tgSteed")?.checked,
+                    },
+                    toggles: {
+                        useResearch: !!el("tgUseResearch")?.checked,
+                        useBonuses: !!el("tgUseBonuses")?.checked
+                    },
+                    weights: { ...WEIGHTS }
+                },
+                defender: {
+                    target: el("defTarget").value.trim(),
+                    alliance: el("defAlliance").value.trim(),
+                    castles: parseNumberLoose(el("defCastles").value),
+                    defensivePower: defDP,
+                    troops: readTroopsFromRows(),
+                    resources: {
+                        gold: parseNumberLoose(el("resGold").value),
+                        food: parseNumberLoose(el("resFood").value),
+                        wood: parseNumberLoose(el("resWood").value),
+                        stone: parseNumberLoose(el("resStone").value),
+                        horses: parseNumberLoose(el("resHorses").value),
+                        gems: el("resGems").value.trim()
+                    }
+                },
+                prediction: {
+                    attackPower: atkPower,
+                    defenderDP: defDP,
+                    ratio,
+                    tier: outcome
+                }
+            };
+
+            setStatus(el("resStatus"), [{ k: "Result", v: "ready (copy/save below)" }]);
         });
-    </script>
+    
+
+        // ---------- RESULTS: COPY + SAVE ----------
+        el("btnCopyResult")?.addEventListener("click", async () => {
+            if (!LAST_RESULT) {
+                setStatus(el("resStatus"), [{ k: "Copy", v: "nothing to copy (run Calculate first)" }]);
+                return;
+            }
+            await navigator.clipboard.writeText(JSON.stringify(LAST_RESULT, null, 2));
+            setStatus(el("resStatus"), [{ k: "Copied", v: "result JSON to clipboard" }]);
+        });
+
+        async function saveResultToServer(payload, actualTier, notes) {
+            const body = { payload, actual_tier: actualTier || null, notes: notes || null };
+            const r = await fetch("/api/calc/log", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                credentials: "include",
+                body: JSON.stringify(body)
+            });
+            if (!r.ok) {
+                const txt = await r.text().catch(() => "");
+                throw new Error("Server save failed (" + r.status + "): " + txt);
+            }
+            return r.json();
+        }
+
+        function saveResultToLocal(payload, actualTier, notes) {
+            const key = "kgcalc_saved_results";
+            const arr = JSON.parse(localStorage.getItem(key) || "[]");
+            arr.unshift({
+                savedAt: new Date().toISOString(),
+                actualTier: actualTier || null,
+                notes: notes || null,
+                payload
+            });
+            localStorage.setItem(key, JSON.stringify(arr.slice(0, 200)));
+            return { ok: true, local: true, count: arr.length };
+        }
+
+        el("btnSaveResult")?.addEventListener("click", async () => {
+            if (!LAST_RESULT) {
+                setStatus(el("resStatus"), [{ k: "Save", v: "nothing to save (run Calculate first)" }]);
+                return;
+            }
+            const actualTier = el("actualTier")?.value || "";
+            const notes = el("resultNotes")?.value || "";
+
+            setStatus(el("resStatus"), [{ k: "Save", v: "saving..." }]);
+            try {
+                const out = await saveResultToServer(LAST_RESULT, actualTier, notes);
+                setStatus(el("resStatus"), [
+                    { k: "Saved", v: "to server" },
+                    { k: "ID", v: String(out.id ?? "—") },
+                    { k: "Actual", v: actualTier || "—" }
+                ]);
+            } catch (e) {
+                // Fallback to local storage so you don't lose data
+                const out = saveResultToLocal(LAST_RESULT, actualTier, notes);
+                setStatus(el("resStatus"), [
+                    { k: "Saved", v: "locally (server unavailable)" },
+                    { k: "Actual", v: actualTier || "—" },
+                    { k: "Local count", v: String(out.count ?? "—") }
+                ]);
+            }
+        });
+
+        // ---------- ADVANCED WEIGHTS ----------
+        function syncWeightInputs() {
+            if (!el("wInf")) return;
+            el("wInf").value = String(WEIGHTS.infantry);
+            el("wArc").value = String(WEIGHTS.archers);
+            el("wCav").value = String(WEIGHTS.cavalry);
+        }
+
+        function readWeightInputs() {
+            const w = {
+                infantry: Number(el("wInf")?.value ?? WEIGHTS_DEFAULT.infantry),
+                archers: Number(el("wArc")?.value ?? WEIGHTS_DEFAULT.archers),
+                cavalry: Number(el("wCav")?.value ?? WEIGHTS_DEFAULT.cavalry),
+            };
+            // sanitize
+            for (const k of Object.keys(w)) {
+                if (!Number.isFinite(w[k]) || w[k] <= 0) w[k] = WEIGHTS_DEFAULT[k];
+            }
+            return w;
+        }
+
+        // Initialize weight inputs on load
+        syncWeightInputs();
+
+        el("btnSaveWeights")?.addEventListener("click", () => {
+            const w = readWeightInputs();
+            WEIGHTS = w;
+            saveWeights(w);
+            setStatus(el("resStatus"), [{ k: "Weights", v: "saved (affects Attack Power)" }]);
+        });
+
+        el("btnResetWeights")?.addEventListener("click", () => {
+            WEIGHTS = { ...WEIGHTS_DEFAULT };
+            saveWeights(WEIGHTS);
+            syncWeightInputs();
+            setStatus(el("resStatus"), [{ k: "Weights", v: "reset to defaults" }]);
+        });
+
+        // Keep bonus controls visually tied to Use Bonuses toggle
+        function applyBonusToggleUI() {
+            const useBonuses = el("tgUseBonuses")?.checked ?? true;
+            ["atkBonus", "atkMorale", "tgWrath", "tgSteed"].forEach(id => {
+                const node = el(id);
+                if (!node) return;
+                node.disabled = !useBonuses;
+            });
+        }
+        el("tgUseBonuses")?.addEventListener("change", applyBonusToggleUI);
+        applyBonusToggleUI();
+
+        function applyResearchToggleUI() {
+            const useResearch = el("tgUseResearch")?.checked ?? true;
+            const node = el("atkResearch");
+            if (node) node.disabled = !useResearch;
+        }
+        el("tgUseResearch")?.addEventListener("change", applyResearchToggleUI);
+        applyResearchToggleUI();
+</script>
 </body>
 </html>

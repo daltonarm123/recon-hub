@@ -1,6 +1,7 @@
 import os
 import time
 import secrets
+import json
 from typing import Optional, Set, Dict, Any, List
 from pathlib import Path
 from fastapi.staticfiles import StaticFiles
@@ -196,6 +197,76 @@ def health():
     return {"ok": True}
 
 
+@app.get("/calc", include_in_schema=False)
+def calc_redirect():
+    # Keep a single calculator experience: /calc -> static v2 page
+    return RedirectResponse(url="/kg-calc.html", status_code=302)
+
+
+# -------------------- Calc Result Logging (isolated SQLite; does NOT touch bot DB) --------------------
+CALC_LOG_DB = (BASE_DIR / "calc_log.db")
+
+def _calc_db() -> sqlite3.Connection:
+    import sqlite3
+    conn = sqlite3.connect(str(CALC_LOG_DB))
+    conn.row_factory = sqlite3.Row
+    conn.execute(
+        """CREATE TABLE IF NOT EXISTS calc_results (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            created_at TEXT NOT NULL,
+            user_id TEXT,
+            user_name TEXT,
+            payload_json TEXT NOT NULL,
+            actual_tier TEXT,
+            notes TEXT
+        )"""
+    )
+    return conn
+
+@app.post("/api/calc/log")
+async def calc_log(request: Request):
+    sess = require_access(request)
+    body = await request.json()
+    # payload_json is the full calc prediction payload; store as JSON string
+    payload_json = json.dumps(body.get("payload", body), ensure_ascii=False)
+    actual_tier = (body.get("actual_tier") or "").strip() or None
+    notes = (body.get("notes") or "").strip() or None
+    created_at = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+
+    conn = _calc_db()
+    try:
+        cur = conn.execute(
+            "INSERT INTO calc_results (created_at, user_id, user_name, payload_json, actual_tier, notes) VALUES (?, ?, ?, ?, ?, ?)",
+            (created_at, str(sess.get("id") or ""), str(sess.get("name") or ""), payload_json, actual_tier, notes)
+        )
+        conn.commit()
+        return {"ok": True, "id": cur.lastrowid}
+    finally:
+        conn.close()
+
+@app.get("/api/calc/log")
+def calc_log_list(request: Request, limit: int = 25):
+    require_access(request)
+    limit = max(1, min(int(limit or 25), 200))
+    conn = _calc_db()
+    try:
+        rows = conn.execute(
+            "SELECT id, created_at, user_id, user_name, payload_json, actual_tier, notes FROM calc_results ORDER BY id DESC LIMIT ?",
+            (limit,)
+        ).fetchall()
+        out = []
+        for r in rows:
+            item = dict(r)
+            try:
+                item["payload"] = json.loads(item.pop("payload_json"))
+            except Exception:
+                item["payload"] = item.pop("payload_json")
+            out.append(item)
+        return {"ok": True, "items": out}
+    finally:
+        conn.close()
+
+
 @app.get("/healthz")
 def healthz():
     return {"ok": True}
@@ -295,13 +366,6 @@ def latest_spy(request: Request, kingdom: str):
 def admin_reindex(request: Request):
     require_access(request, admin_only=True)
     return {"ok": True, "message": "Admin reindex requested."}
-
-
-# -------------------- Calc redirect (safety) --------------------
-# Even if the SPA router changes, hitting /calc should always land on the v2 static file.
-@app.get("/calc", include_in_schema=False)
-def calc_redirect():
-    return RedirectResponse(url="/kg-calc.html", status_code=302)
 
 # -------------------- Frontend (SPA) --------------------
 from pathlib import Path
