@@ -7,9 +7,9 @@ from typing import Any, Dict, List, Optional
 import psycopg
 from psycopg.rows import dict_row
 
-from fastapi import FastAPI, HTTPException, Response
+from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
+from fastapi.responses import FileResponse, JSONResponse, RedirectResponse, PlainTextResponse
 from fastapi.staticfiles import StaticFiles
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -56,10 +56,10 @@ def serve_calc():
 def status():
     return {"ok": True, "service": "recon-hub", "ts": datetime.utcnow().isoformat() + "Z"}
 
+
 @app.get("/healthz")
 def healthz():
     return {"ok": True}
-
 
 
 # -------------------------
@@ -298,6 +298,32 @@ def list_spy_reports(kingdom_name: str, limit: int = 50):
         conn.close()
 
 
+# -------------------------
+# API: Spy reports
+# -------------------------
+# IMPORTANT: put /raw BEFORE /{report_id} so it always matches correctly.
+@app.get("/api/spy-reports/{report_id}/raw", response_class=PlainTextResponse)
+def get_spy_report_raw(report_id: int):
+    conn = _connect()
+    try:
+        _ensure_tables(conn)
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT raw_text
+                FROM rh_spy_reports
+                WHERE id = %s
+                """,
+                (report_id,),
+            )
+            row = cur.fetchone()
+        if not row or not row.get("raw_text"):
+            raise HTTPException(status_code=404, detail="Raw report not found")
+        return row["raw_text"]
+    finally:
+        conn.close()
+
+
 @app.get("/api/spy-reports/{report_id}")
 def get_spy_report(report_id: int):
     conn = _connect()
@@ -372,6 +398,7 @@ def ingest_spy_report(payload: Dict[str, Any]):
 # ---- SPA fallback ----
 @app.get("/{full_path:path}")
 def spa_fallback(full_path: str):
+    # If someone hits /api/... that doesn't exist, return a 404 JSON instead of serving index.html
     if full_path.startswith("api/"):
         raise HTTPException(status_code=404, detail="Not Found")
 
