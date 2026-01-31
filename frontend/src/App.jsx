@@ -23,8 +23,7 @@ function useFetchJson(url, deps = []) {
     let alive = true;
     setLoading(true);
     setErr("");
-
-    fetch(url, { cache: "no-store" })
+    fetch(url)
       .then(async (r) => {
         const j = await r.json().catch(() => ({}));
         if (!r.ok) throw new Error(j?.detail || `HTTP ${r.status}`);
@@ -63,6 +62,7 @@ function Layout({ children }) {
             alignItems: "center",
             justifyContent: "space-between",
             gap: 12,
+            flexWrap: "wrap",
           }}
         >
           <div>
@@ -126,6 +126,7 @@ function Card({ title, subtitle, children, right }) {
           justifyContent: "space-between",
           gap: 10,
           alignItems: "center",
+          flexWrap: "wrap",
         }}
       >
         <div>
@@ -160,10 +161,7 @@ function Dashboard() {
 function Kingdoms() {
   const [search, setSearch] = useState("");
   const query = useMemo(
-    () =>
-      `${API_BASE}/api/kingdoms?search=${encodeURIComponent(
-        search
-      )}&limit=500`,
+    () => `${API_BASE}/api/kingdoms?search=${encodeURIComponent(search)}&limit=500`,
     [search]
   );
   const { data, err, loading } = useFetchJson(query, [query]);
@@ -189,7 +187,7 @@ function Kingdoms() {
       <div style={{ display: "grid", gap: 14 }}>
         <Card
           title="Kingdoms"
-          subtitle="Pulled from Postgres Recon Hub tables (rh_kingdoms + rh_spy_reports). If empty, use Reports to ingest spy reports."
+          subtitle="Pulled from Postgres Recon Hub tables (rh_kingdoms + rh_spy_reports)."
           right={
             <input
               value={search}
@@ -201,11 +199,15 @@ function Kingdoms() {
         >
           {loading ? <div>Loading…</div> : null}
           {err ? <div style={{ color: "#ff6b6b" }}>{err}</div> : null}
+          {data?.note ? (
+            <div style={{ color: "rgba(231,236,255,.65)", fontSize: 12 }}>
+              {data.note}
+            </div>
+          ) : null}
 
           {grouped.length === 0 && !loading ? (
             <div style={{ color: "rgba(231,236,255,.65)", fontSize: 12 }}>
-              No kingdoms yet. Paste a spy report in <b>Reports</b> to start
-              building the list.
+              No kingdoms yet. Paste a spy report in <b>Reports</b> to start building the list.
             </div>
           ) : null}
 
@@ -238,9 +240,7 @@ function Kingdoms() {
                         <td style={td}>
                           <button
                             style={linkBtn}
-                            onClick={() =>
-                              nav(`/kingdoms/${encodeURIComponent(k.name)}`)
-                            }
+                            onClick={() => nav(`/kingdoms/${encodeURIComponent(k.name)}`)}
                             title="Open reports"
                           >
                             {k.name}
@@ -248,9 +248,7 @@ function Kingdoms() {
                         </td>
                         <td style={td}>{k.report_count ?? 0}</td>
                         <td style={td}>
-                          {k.latest_report_at
-                            ? new Date(k.latest_report_at).toLocaleString()
-                            : "—"}
+                          {k.latest_report_at ? new Date(k.latest_report_at).toLocaleString() : "—"}
                         </td>
                       </tr>
                     ))}
@@ -259,28 +257,6 @@ function Kingdoms() {
               </div>
             </div>
           ))}
-        </Card>
-
-        <Card title="How this connects to your DB" subtitle="Safe by default (no touching existing bot tables)">
-          <ul
-            style={{
-              margin: 0,
-              paddingLeft: 18,
-              color: "rgba(231,236,255,.8)",
-              fontSize: 12,
-              lineHeight: 1.6,
-            }}
-          >
-            <li>
-              Recon Hub uses its own Postgres tables: <code>rh_kingdoms</code>{" "}
-              and <code>rh_spy_reports</code>.
-            </li>
-            <li>Nothing in your existing bot schema is modified.</li>
-            <li>
-              To populate the list, paste spy reports on the Reports page (it
-              stores + indexes them).
-            </li>
-          </ul>
         </Card>
       </div>
     </Layout>
@@ -292,9 +268,7 @@ function Kingdoms() {
 function KingdomDetail() {
   const { name } = useParams();
   const decoded = decodeURIComponent(name || "");
-  const url = `${API_BASE}/api/kingdoms/${encodeURIComponent(
-    decoded
-  )}/spy-reports?limit=100`;
+  const url = `${API_BASE}/api/kingdoms/${encodeURIComponent(decoded)}/spy-reports?limit=100`;
   const { data, err, loading } = useFetchJson(url, [url]);
   const nav = useNavigate();
 
@@ -328,22 +302,13 @@ function KingdomDetail() {
               <tbody>
                 {(data?.reports || []).map((r) => (
                   <tr key={r.id}>
-                    <td style={td}>
-                      {r.created_at ? new Date(r.created_at).toLocaleString() : "—"}
-                    </td>
+                    <td style={td}>{r.created_at ? new Date(r.created_at).toLocaleString() : "—"}</td>
                     <td style={td}>{r.alliance || "—"}</td>
-                    <td style={td}>
-                      {r.defender_dp ? Number(r.defender_dp).toLocaleString() : "—"}
-                    </td>
+                    <td style={td}>{r.defender_dp ? Number(r.defender_dp).toLocaleString() : "—"}</td>
                     <td style={td}>{r.castles ?? "—"}</td>
                     <td style={td}>{r.troops ? Object.keys(r.troops).length : 0}</td>
                     <td style={td}>
-                      <a
-                        style={{ color: "#5aa0ff" }}
-                        href={`/api/spy-reports/${r.id}`}
-                        target="_blank"
-                        rel="noreferrer"
-                      >
+                      <a style={{ color: "#5aa0ff" }} href={`/api/spy-reports/${r.id}`} target="_blank" rel="noreferrer">
                         view
                       </a>
                     </td>
@@ -406,7 +371,6 @@ function Reports() {
                 "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, Liberation Mono, Courier New, monospace",
               fontSize: 12,
               lineHeight: 1.35,
-              outline: "none",
             }}
           />
           <div style={{ display: "flex", gap: 10, marginTop: 10, alignItems: "center", flexWrap: "wrap" }}>
@@ -414,11 +378,10 @@ function Reports() {
               {busy ? "Saving…" : "Parse + Save"}
             </button>
             {msg ? (
-              <div style={{ fontSize: 12, color: msg.startsWith("Stored") ? "#58d68d" : "#ff6b6b" }}>
-                {msg}
-              </div>
+              <div style={{ fontSize: 12, color: msg.startsWith("Stored") ? "#58d68d" : "#ff6b6b" }}>{msg}</div>
             ) : null}
           </div>
+
           <div style={{ marginTop: 10, fontSize: 12, color: "rgba(231,236,255,.65)" }}>
             Tip: After saving, go to <b>Kingdoms</b> to see it listed by alliance.
           </div>
@@ -434,9 +397,7 @@ function Research() {
   return (
     <Layout>
       <Card title="Research" subtitle="Placeholder for now">
-        <div style={{ color: "rgba(231,236,255,.65)", fontSize: 12 }}>
-          Coming soon.
-        </div>
+        <div style={{ color: "rgba(231,236,255,.65)", fontSize: 12 }}>Coming soon.</div>
       </Card>
     </Layout>
   );
@@ -449,6 +410,25 @@ function Admin() {
     <Layout>
       <AdminHealth />
     </Layout>
+  );
+}
+
+/* ---------------- Router ---------------- */
+
+export default function App() {
+  return (
+    <BrowserRouter>
+      <Routes>
+        <Route path="/" element={<Dashboard />} />
+        <Route path="/kingdoms" element={<Kingdoms />} />
+        <Route path="/kingdoms/:name" element={<KingdomDetail />} />
+        <Route path="/reports" element={<Reports />} />
+        <Route path="/research" element={<Research />} />
+        <Route path="/admin/health" element={<Admin />} />
+        <Route path="/calc" element={<Navigate to="/kg-calc.html" replace />} />
+        <Route path="*" element={<Navigate to="/" replace />} />
+      </Routes>
+    </BrowserRouter>
   );
 }
 
@@ -510,22 +490,3 @@ const linkBtn = {
   cursor: "pointer",
   fontSize: 12,
 };
-
-/* ---------------- Router ---------------- */
-
-export default function App() {
-  return (
-    <BrowserRouter>
-      <Routes>
-        <Route path="/" element={<Dashboard />} />
-        <Route path="/kingdoms" element={<Kingdoms />} />
-        <Route path="/kingdoms/:name" element={<KingdomDetail />} />
-        <Route path="/reports" element={<Reports />} />
-        <Route path="/research" element={<Research />} />
-        <Route path="/admin/health" element={<Admin />} />
-        <Route path="/calc" element={<Navigate to="/kg-calc.html" replace />} />
-        <Route path="*" element={<Navigate to="/" replace />} />
-      </Routes>
-    </BrowserRouter>
-  );
-}
