@@ -7,7 +7,7 @@ from typing import Any, Dict, List, Optional
 import psycopg
 from psycopg.rows import dict_row
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
@@ -55,6 +55,11 @@ def serve_calc():
 @app.get("/api/status")
 def status():
     return {"ok": True, "service": "recon-hub", "ts": datetime.utcnow().isoformat() + "Z"}
+
+@app.get("/healthz")
+def healthz():
+    return {"ok": True}
+
 
 
 # -------------------------
