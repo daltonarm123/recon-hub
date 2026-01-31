@@ -248,7 +248,9 @@ function Kingdoms() {
                                                 </td>
                                                 <td style={td}>{k.report_count ?? 0}</td>
                                                 <td style={td}>
-                                                    {k.latest_report_at ? new Date(k.latest_report_at).toLocaleString() : "—"}
+                                                    {k.latest_report_at
+                                                        ? new Date(k.latest_report_at).toLocaleString()
+                                                        : "—"}
                                                 </td>
                                             </tr>
                                         ))}
@@ -302,14 +304,31 @@ function KingdomDetail() {
                             <tbody>
                                 {(data?.reports || []).map((r) => (
                                     <tr key={r.id}>
-                                        <td style={td}>{r.created_at ? new Date(r.created_at).toLocaleString() : "—"}</td>
-                                        <td style={td}>{r.alliance || "—"}</td>
-                                        <td style={td}>{r.defender_dp ? Number(r.defender_dp).toLocaleString() : "—"}</td>
-                                        <td style={td}>{r.castles ?? "—"}</td>
-                                        <td style={td}>{r.troops ? Object.keys(r.troops).length : 0}</td>
                                         <td style={td}>
-                                            <a style={{ color: "#5aa0ff" }} href={`/api/spy-reports/${r.id}`} target="_blank" rel="noreferrer">
-                                                view
+                                            {r.created_at
+                                                ? new Date(r.created_at).toLocaleString()
+                                                : "—"}
+                                        </td>
+                                        <td style={td}>{r.alliance || "—"}</td>
+                                        <td style={td}>
+                                            {r.defender_dp
+                                                ? Number(r.defender_dp).toLocaleString()
+                                                : "—"}
+                                        </td>
+                                        <td style={td}>{r.castles ?? "—"}</td>
+                                        <td style={td}>
+                                            {r.troops ? Object.keys(r.troops).length : 0}
+                                        </td>
+
+                                        {/* ✅ CHANGED: point to /raw so browser shows plain text report */}
+                                        <td style={td}>
+                                            <a
+                                                style={{ color: "#5aa0ff" }}
+                                                href={`/api/spy-reports/${r.id}/raw`}
+                                                target="_blank"
+                                                rel="noreferrer"
+                                            >
+                                                raw
                                             </a>
                                         </td>
                                     </tr>
@@ -373,12 +392,27 @@ function Reports() {
                             lineHeight: 1.35,
                         }}
                     />
-                    <div style={{ display: "flex", gap: 10, marginTop: 10, alignItems: "center", flexWrap: "wrap" }}>
+                    <div
+                        style={{
+                            display: "flex",
+                            gap: 10,
+                            marginTop: 10,
+                            alignItems: "center",
+                            flexWrap: "wrap",
+                        }}
+                    >
                         <button style={btn} onClick={ingest} disabled={busy || !raw.trim()}>
                             {busy ? "Saving…" : "Parse + Save"}
                         </button>
                         {msg ? (
-                            <div style={{ fontSize: 12, color: msg.startsWith("Stored") ? "#58d68d" : "#ff6b6b" }}>{msg}</div>
+                            <div
+                                style={{
+                                    fontSize: 12,
+                                    color: msg.startsWith("Stored") ? "#58d68d" : "#ff6b6b",
+                                }}
+                            >
+                                {msg}
+                            </div>
                         ) : null}
                     </div>
 
