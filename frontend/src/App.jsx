@@ -1,5 +1,8 @@
 import React, { useEffect, useMemo, useState } from "react";
 import { BrowserRouter, Routes, Route, Link, Navigate, useNavigate, useParams } from "react-router-dom";
+import BackendBadge from "./BackendBadge";
+import AdminHealth from "./AdminHealth";
+
 
 const API_BASE = ""; // same-origin
 
@@ -81,18 +84,18 @@ function Card({ title, subtitle, children, right }) {
   );
 }
 
+import BackendBadge from "./BackendBadge";
+
 function Dashboard() {
-  const { data, err, loading } = useFetchJson(`${API_BASE}/api/status`, []);
   return (
     <Layout>
-      <Card title="Status" subtitle="Backend health check">
-        {loading ? <div>Loading…</div> : null}
-        {err ? <div style={{ color: "#ff6b6b" }}>{err}</div> : null}
-        {data ? <pre style={pre}>{JSON.stringify(data, null, 2)}</pre> : null}
+      <Card title="Status" subtitle="Service availability">
+        <BackendBadge />
       </Card>
     </Layout>
   );
 }
+
 
 function Kingdoms() {
   const [search, setSearch] = useState("");
