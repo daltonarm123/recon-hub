@@ -1,12 +1,11 @@
 import os
 import re
-import json
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-import psycopg2
-from psycopg2.extras import RealDictCursor, Json
+import psycopg
+from psycopg.rows import dict_row
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -42,7 +41,6 @@ def root():
 
 @app.get("/calc")
 def calc_redirect():
-    # Option A: always use the static v2 calculator
     return RedirectResponse(url="/kg-calc.html", status_code=302)
 
 
@@ -69,11 +67,12 @@ def _get_dsn() -> str:
     return dsn
 
 
-def _connect():
-    return psycopg2.connect(_get_dsn(), cursor_factory=RealDictCursor)
+def _connect() -> psycopg.Connection:
+    # dict_row makes fetchone/fetchall return dict-like rows
+    return psycopg.connect(_get_dsn(), row_factory=dict_row)
 
 
-def _ensure_tables(conn) -> None:
+def _ensure_tables(conn: psycopg.Connection) -> None:
     """
     Creates Recon Hub tables (prefixed rh_) that do NOT conflict with your existing bot tables.
     """
@@ -103,13 +102,16 @@ def _ensure_tables(conn) -> None:
             """
         )
         cur.execute(
-            "CREATE INDEX IF NOT EXISTS rh_spy_reports_kingdom_created_idx ON rh_spy_reports (kingdom_name, created_at DESC);"
+            """
+            CREATE INDEX IF NOT EXISTS rh_spy_reports_kingdom_created_idx
+            ON rh_spy_reports (kingdom_name, created_at DESC);
+            """
         )
     conn.commit()
 
 
 # -------------------------
-# Spy report parsing (basic, consistent with your JS parser)
+# Spy report parsing
 # -------------------------
 def _grab_line(text: str, label: str) -> Optional[str]:
     m = re.search(rf"^\s*{re.escape(label)}\s*:\s*(.+?)\s*$", text, flags=re.I | re.M)
@@ -160,6 +162,7 @@ def parse_spy_report(text: str) -> Dict[str, Any]:
     target = _grab_line(text, "Target")
     alliance = _grab_line(text, "Alliance")
     castles = _num(_grab_line(text, "Number of Castles"))
+
     dp = None
     m = re.search(r"Approximate defensive power\*?\s*:\s*([0-9,]+)", text, flags=re.I)
     if m:
@@ -179,7 +182,6 @@ def parse_spy_report(text: str) -> Dict[str, Any]:
     resources_kv = _parse_kv_lines(resources_chunk)
     troops_kv = _parse_kv_lines(troops_chunk)
 
-    # filter out population / approximate lines
     troops: Dict[str, int] = {}
     for k, v in troops_kv.items():
         lk = k.lower()
@@ -189,10 +191,7 @@ def parse_spy_report(text: str) -> Dict[str, Any]:
             continue
         troops[k] = v
 
-    resources: Dict[str, Any] = {}
-    # keep original keys but normalize a few common ones
-    for k, v in resources_kv.items():
-        resources[k] = v
+    resources: Dict[str, Any] = dict(resources_kv)
 
     return {
         "target": target,
@@ -215,6 +214,7 @@ def list_kingdoms(search: str = "", limit: int = 500):
         _ensure_tables(conn)
         s = search.strip()
         like = f"%{s}%" if s else None
+
         with conn.cursor() as cur:
             if like:
                 cur.execute(
@@ -239,7 +239,6 @@ def list_kingdoms(search: str = "", limit: int = 500):
                 )
             kingdoms = cur.fetchall()
 
-            # attach report counts + latest timestamp
             names = [k["kingdom_name"] for k in kingdoms]
             counts: Dict[str, Any] = {}
             if names:
@@ -318,10 +317,6 @@ def get_spy_report(report_id: int):
 
 @app.post("/api/reports/spy")
 def ingest_spy_report(payload: Dict[str, Any]):
-    """
-    Paste a KG Spy Report -> we parse -> store into rh_spy_reports + upsert rh_kingdoms.
-    This is additive and uses rh_* tables only.
-    """
     raw = (payload.get("raw_text") or payload.get("text") or "").strip()
     if not raw:
         raise HTTPException(status_code=400, detail="raw_text is required")
@@ -334,7 +329,6 @@ def ingest_spy_report(payload: Dict[str, Any]):
     try:
         _ensure_tables(conn)
         with conn.cursor() as cur:
-            # Upsert kingdom
             cur.execute(
                 """
                 INSERT INTO rh_kingdoms (kingdom_name, alliance, last_seen)
@@ -345,11 +339,11 @@ def ingest_spy_report(payload: Dict[str, Any]):
                 """,
                 (parsed["target"], parsed.get("alliance")),
             )
-            # Insert report
+
             cur.execute(
                 """
                 INSERT INTO rh_spy_reports (kingdom_name, alliance, defender_dp, castles, troops, resources, raw_text)
-                VALUES (%s, %s, %s, %s, %s, %s, %s)
+                VALUES (%s, %s, %s, %s, %s::jsonb, %s::jsonb, %s)
                 RETURNING id, created_at
                 """,
                 (
@@ -357,26 +351,25 @@ def ingest_spy_report(payload: Dict[str, Any]):
                     parsed.get("alliance"),
                     parsed.get("defenderDP"),
                     parsed.get("castles"),
-                    Json(parsed.get("troops") or {}),
-                    Json(parsed.get("resources") or {}),
+                    psycopg.types.json.Jsonb(parsed.get("troops") or {}),
+                    psycopg.types.json.Jsonb(parsed.get("resources") or {}),
                     parsed.get("raw_text"),
                 ),
             )
             row = cur.fetchone()
+
         conn.commit()
         return {"ok": True, "stored": {"id": row["id"], "created_at": row["created_at"]}, "parsed": parsed}
     finally:
         conn.close()
 
 
-# ---- SPA fallback: serve index.html for client-side routes ----
+# ---- SPA fallback ----
 @app.get("/{full_path:path}")
 def spa_fallback(full_path: str):
-    # Let API routes 404 normally
     if full_path.startswith("api/"):
         raise HTTPException(status_code=404, detail="Not Found")
 
-    # Serve real static files if they exist
     candidate = STATIC_DIR / full_path
     if candidate.exists() and candidate.is_file():
         return FileResponse(str(candidate))
