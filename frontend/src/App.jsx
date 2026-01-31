@@ -42,6 +42,34 @@ function useFetchJson(url, deps = []) {
     return { data, err, loading };
 }
 
+function useFetchText(url, deps = []) {
+    const [data, setData] = useState("");
+    const [err, setErr] = useState("");
+    const [loading, setLoading] = useState(false);
+
+    useEffect(() => {
+        let alive = true;
+        setLoading(true);
+        setErr("");
+        fetch(url, { headers: { Accept: "text/plain" } })
+            .then(async (r) => {
+                const t = await r.text();
+                if (!r.ok) throw new Error(t || `HTTP ${r.status}`);
+                return t;
+            })
+            .then((t) => alive && setData(t))
+            .catch((e) => alive && setErr(String(e.message || e)))
+            .finally(() => alive && setLoading(false));
+
+        return () => {
+            alive = false;
+        };
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, deps);
+
+    return { data, err, loading };
+}
+
 const navLink = {
     color: "#e7ecff",
     textDecoration: "none",
@@ -298,35 +326,36 @@ function KingdomDetail() {
                                     <th style={th}>Defender DP</th>
                                     <th style={th}>Castles</th>
                                     <th style={th}>Troops keys</th>
-                                    <th style={th}>Raw</th>
+                                    <th style={th}>View</th>
                                 </tr>
                             </thead>
                             <tbody>
                                 {(data?.reports || []).map((r) => (
                                     <tr key={r.id}>
                                         <td style={td}>
-                                            {r.created_at
-                                                ? new Date(r.created_at).toLocaleString()
-                                                : "—"}
+                                            {r.created_at ? new Date(r.created_at).toLocaleString() : "—"}
                                         </td>
                                         <td style={td}>{r.alliance || "—"}</td>
                                         <td style={td}>
-                                            {r.defender_dp
-                                                ? Number(r.defender_dp).toLocaleString()
-                                                : "—"}
+                                            {r.defender_dp ? Number(r.defender_dp).toLocaleString() : "—"}
                                         </td>
                                         <td style={td}>{r.castles ?? "—"}</td>
+                                        <td style={td}>{r.troops ? Object.keys(r.troops).length : 0}</td>
                                         <td style={td}>
-                                            {r.troops ? Object.keys(r.troops).length : 0}
-                                        </td>
-
-                                        {/* ✅ CHANGED: point to /raw so browser shows plain text report */}
-                                        <td style={td}>
+                                            <button
+                                                style={linkBtn}
+                                                onClick={() => nav(`/spy-reports/${r.id}`)}
+                                                title="View spy report"
+                                            >
+                                                view
+                                            </button>
+                                            <span style={{ opacity: 0.5 }}>{" · "}</span>
                                             <a
                                                 style={{ color: "#5aa0ff" }}
                                                 href={`/api/spy-reports/${r.id}/raw`}
                                                 target="_blank"
                                                 rel="noreferrer"
+                                                title="Open raw in new tab"
                                             >
                                                 raw
                                             </a>
@@ -342,6 +371,101 @@ function KingdomDetail() {
                             No spy reports stored yet for this kingdom. Paste one in the Reports page.
                         </div>
                     ) : null}
+                </Card>
+            </div>
+        </Layout>
+    );
+}
+
+/* ---------------- Spy Report View (RAW) ---------------- */
+
+function SpyReportView() {
+    const { id } = useParams();
+    const nav = useNavigate();
+
+    const metaUrl = `${API_BASE}/api/spy-reports/${id}`;
+    const rawUrl = `${API_BASE}/api/spy-reports/${id}/raw`;
+
+    const meta = useFetchJson(metaUrl, [metaUrl]);
+    const raw = useFetchText(rawUrl, [rawUrl]);
+
+    const title = meta.data?.report?.kingdom_name
+        ? `Spy Report #${id} — ${meta.data.report.kingdom_name}`
+        : `Spy Report #${id}`;
+
+    const subtitle = meta.data?.report?.created_at
+        ? `Stored: ${new Date(meta.data.report.created_at).toLocaleString()}`
+        : "Raw spy report rendering";
+
+    return (
+        <Layout>
+            <div style={{ display: "grid", gap: 14 }}>
+                <Card
+                    title={title}
+                    subtitle={subtitle}
+                    right={
+                        <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
+                            <a
+                                style={{ ...btnGhost, textDecoration: "none", display: "inline-block" }}
+                                href={`/api/spy-reports/${id}/raw`}
+                                target="_blank"
+                                rel="noreferrer"
+                            >
+                                Open raw
+                            </a>
+                            <button style={btnGhost} onClick={() => nav(-1)}>
+                                Back
+                            </button>
+                        </div>
+                    }
+                >
+                    {meta.loading || raw.loading ? <div>Loading…</div> : null}
+                    {meta.err ? <div style={{ color: "#ff6b6b" }}>{meta.err}</div> : null}
+                    {raw.err ? <div style={{ color: "#ff6b6b" }}>{raw.err}</div> : null}
+
+                    {meta.data?.report ? (
+                        <div
+                            style={{
+                                display: "flex",
+                                gap: 12,
+                                flexWrap: "wrap",
+                                fontSize: 12,
+                                color: "rgba(231,236,255,.75)",
+                                marginBottom: 10,
+                            }}
+                        >
+                            <div>
+                                <b>Alliance:</b> {meta.data.report.alliance || "—"}
+                            </div>
+                            <div>
+                                <b>Castles:</b> {meta.data.report.castles ?? "—"}
+                            </div>
+                            <div>
+                                <b>Defender DP:</b>{" "}
+                                {meta.data.report.defender_dp
+                                    ? Number(meta.data.report.defender_dp).toLocaleString()
+                                    : "—"}
+                            </div>
+                        </div>
+                    ) : null}
+
+                    <pre
+                        style={{
+                            whiteSpace: "pre-wrap",
+                            wordBreak: "break-word",
+                            background: "rgba(0,0,0,.25)",
+                            border: "1px solid rgba(255,255,255,.10)",
+                            borderRadius: 12,
+                            padding: 12,
+                            margin: 0,
+                            fontSize: 12,
+                            lineHeight: 1.35,
+                            fontFamily:
+                                "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, Liberation Mono, Courier New, monospace",
+                        }}
+                    >
+                        {raw.data || ""}
+                    </pre>
                 </Card>
             </div>
         </Layout>
@@ -456,6 +580,7 @@ export default function App() {
                 <Route path="/" element={<Dashboard />} />
                 <Route path="/kingdoms" element={<Kingdoms />} />
                 <Route path="/kingdoms/:name" element={<KingdomDetail />} />
+                <Route path="/spy-reports/:id" element={<SpyReportView />} />
                 <Route path="/reports" element={<Reports />} />
                 <Route path="/research" element={<Research />} />
                 <Route path="/admin/health" element={<Admin />} />
