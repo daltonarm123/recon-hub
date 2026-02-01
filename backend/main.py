@@ -1,6 +1,6 @@
 import os
 import re
-import hashlib
+import gzip
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -81,46 +81,8 @@ def _connect() -> psycopg.Connection:
     return psycopg.connect(_get_dsn(), row_factory=dict_row)
 
 
-def _ensure_bot_table(conn: psycopg.Connection) -> None:
-    """
-    Your bot already created public.spy_reports, but we keep this safe check
-    so the API doesn't crash if someone points at an empty DB.
-    """
-    with conn.cursor() as cur:
-        cur.execute(
-            """
-            CREATE TABLE IF NOT EXISTS public.spy_reports (
-                id serial4 NOT NULL,
-                kingdom text NULL,
-                alliance text NULL,
-                created_at timestamp NULL,
-                raw text NULL,
-                report_hash text NULL,
-                defense_power int4 NULL,
-                castles int4 NULL,
-                raw_gz bytea NULL,
-                CONSTRAINT spy_reports_pkey PRIMARY KEY (id),
-                CONSTRAINT spy_reports_report_hash_key UNIQUE (report_hash)
-            );
-            """
-        )
-        cur.execute(
-            """
-            CREATE INDEX IF NOT EXISTS spy_reports_kingdom_created_at_idx
-            ON public.spy_reports (kingdom, created_at DESC, id DESC);
-            """
-        )
-        cur.execute(
-            """
-            CREATE UNIQUE INDEX IF NOT EXISTS spy_reports_report_hash_uq
-            ON public.spy_reports (report_hash);
-            """
-        )
-    conn.commit()
-
-
 # -------------------------
-# Spy report parsing
+# Spy report parsing (raw -> structured)
 # -------------------------
 def _grab_line(text: str, label: str) -> Optional[str]:
     m = re.search(rf"^\s*{re.escape(label)}\s*:\s*(.+?)\s*$", text, flags=re.I | re.M)
@@ -139,7 +101,7 @@ def _num(s: Optional[str]) -> Optional[int]:
         return None
 
 
-def _float(s: Optional[str]) -> Optional[float]:
+def _num_float(s: Optional[str]) -> Optional[float]:
     if s is None:
         return None
     s2 = s.strip()
@@ -179,13 +141,11 @@ def _parse_kv_lines(chunk: str) -> Dict[str, int]:
     return out
 
 
-def parse_spy_report(raw_text: str) -> Dict[str, Any]:
-    text = (raw_text or "").strip()
-
+def parse_spy_report(text: str) -> Dict[str, Any]:
+    # top header fields
     target = _grab_line(text, "Target")
     alliance = _grab_line(text, "Alliance")
-
-    honour = _float(_grab_line(text, "Honour"))
+    honour = _num_float(_grab_line(text, "Honour"))
     ranking = _num(_grab_line(text, "Ranking"))
     networth = _num(_grab_line(text, "Networth"))
     spies_sent = _num(_grab_line(text, "Spies Sent"))
@@ -193,12 +153,17 @@ def parse_spy_report(raw_text: str) -> Dict[str, Any]:
     result_level = _grab_line(text, "Result Level")
     castles = _num(_grab_line(text, "Number of Castles"))
 
-    dp = None
-    m = re.search(r"Approximate defensive power\*?\s*:\s*([0-9,\.eE\+]+)", text, flags=re.I)
+    # defender dp line
+    defender_dp = None
+    m = re.search(r"Approximate defensive power\*?\s*:\s*([0-9,\.e\+]+)", text, flags=re.I)
     if m:
-        # dp line can be like 1.05728e+006
-        dp = _num(m.group(1))
+        # allow scientific notation
+        try:
+            defender_dp = int(float(m.group(1).replace(",", "")))
+        except Exception:
+            defender_dp = None
 
+    # sections (resources, troops) - ignore “market/tech/troop movements”
     resources_chunk = _section(
         text,
         "Our spies also found the following information about the kingdom's resources:",
@@ -207,15 +172,22 @@ def parse_spy_report(raw_text: str) -> Dict[str, Any]:
     troops_chunk = _section(
         text,
         "Our spies also found the following information about the kingdom's troops:",
-        ["The following information was found regarding troop movements", "The following recent market transactions", "The following technology information"],
+        [
+            "The following information was found regarding troop movements",
+            "The following recent market transactions were also discovered:",
+            "The following technology information was also discovered:",
+            "Our spies also found the following information about the small town",
+            "Our spies also found the following information about the medium town",
+            "Our spies also found the following information about the large town",
+        ],
     )
 
-    resources_kv = _parse_kv_lines(resources_chunk)
-    troops_kv = _parse_kv_lines(troops_chunk)
+    resources = _parse_kv_lines(resources_chunk)
+    troops_raw = _parse_kv_lines(troops_chunk)
 
-    # Remove non-troop lines that sometimes appear
+    # filter out “Population” + anything weird
     troops: Dict[str, int] = {}
-    for k, v in troops_kv.items():
+    for k, v in troops_raw.items():
         lk = k.lower()
         if lk.startswith("population"):
             continue
@@ -233,44 +205,54 @@ def parse_spy_report(raw_text: str) -> Dict[str, Any]:
         "spies_lost": spies_lost,
         "result_level": result_level,
         "castles": castles,
-        "defender_dp": dp,
+        "defender_dp": defender_dp,
+        "resources": resources,
         "troops": troops,
-        "resources": resources_kv,
-        "raw_text": text,
     }
 
 
-def _hash_report(raw_text: str) -> str:
-    # Normalize so tiny spacing diffs don't create dupes
-    norm = re.sub(r"\r\n?", "\n", (raw_text or "").strip())
-    norm = re.sub(r"[ \t]+", " ", norm)
-    return hashlib.sha256(norm.encode("utf-8")).hexdigest()
+def _load_raw_text(row: Dict[str, Any]) -> str:
+    """
+    Some rows may have raw text, some may have only raw_gz.
+    Prefer raw; fallback to decompressing raw_gz if present.
+    """
+    raw = row.get("raw")
+    if raw and isinstance(raw, str) and raw.strip():
+        return raw
+
+    raw_gz = row.get("raw_gz")
+    if raw_gz:
+        try:
+            return gzip.decompress(raw_gz).decode("utf-8", errors="replace")
+        except Exception:
+            pass
+
+    return ""
 
 
 # -------------------------
-# API: Kingdoms (from bot table)
+# API: Kingdom list (from bot table: public.spy_reports)
 # -------------------------
 @app.get("/api/kingdoms")
 def list_kingdoms(search: str = "", limit: int = 500):
+    s = search.strip()
+
     conn = _connect()
     try:
-        _ensure_bot_table(conn)
-        s = search.strip()
-        like = f"%{s}%" if s else None
-
         with conn.cursor() as cur:
-            if like:
+            if s:
+                like = f"%{s}%"
                 cur.execute(
                     """
                     SELECT
-                        kingdom AS kingdom_name,
-                        MAX(alliance) AS alliance,
+                        kingdom,
+                        COALESCE(alliance, '') AS alliance,
                         COUNT(*)::int AS report_count,
                         MAX(created_at) AS latest_report_at
                     FROM public.spy_reports
-                    WHERE COALESCE(kingdom,'') ILIKE %s OR COALESCE(alliance,'') ILIKE %s
-                    GROUP BY kingdom
-                    ORDER BY latest_report_at DESC NULLS LAST, kingdom ASC
+                    WHERE kingdom ILIKE %s OR COALESCE(alliance,'') ILIKE %s
+                    GROUP BY kingdom, COALESCE(alliance,'')
+                    ORDER BY latest_report_at DESC
                     LIMIT %s
                     """,
                     (like, like, limit),
@@ -279,13 +261,13 @@ def list_kingdoms(search: str = "", limit: int = 500):
                 cur.execute(
                     """
                     SELECT
-                        kingdom AS kingdom_name,
-                        MAX(alliance) AS alliance,
+                        kingdom,
+                        COALESCE(alliance, '') AS alliance,
                         COUNT(*)::int AS report_count,
                         MAX(created_at) AS latest_report_at
                     FROM public.spy_reports
-                    GROUP BY kingdom
-                    ORDER BY latest_report_at DESC NULLS LAST, kingdom ASC
+                    GROUP BY kingdom, COALESCE(alliance,'')
+                    ORDER BY latest_report_at DESC
                     LIMIT %s
                     """,
                     (limit,),
@@ -294,84 +276,87 @@ def list_kingdoms(search: str = "", limit: int = 500):
 
         out = []
         for r in rows:
-            if not r.get("kingdom_name"):
-                continue
             out.append(
                 {
-                    "name": r["kingdom_name"],
-                    "alliance": r.get("alliance"),
-                    "report_count": r.get("report_count", 0),
-                    "latest_report_at": r.get("latest_report_at"),
+                    "name": r["kingdom"],
+                    "alliance": r["alliance"] or None,
+                    "report_count": r["report_count"],
+                    "latest_report_at": r["latest_report_at"],
                 }
             )
+
         return {"ok": True, "kingdoms": out}
     finally:
         conn.close()
 
 
-@app.get("/api/kingdoms/{kingdom_name}/spy-reports")
-def list_spy_reports(kingdom_name: str, limit: int = 50):
+# -------------------------
+# API: Spy reports for kingdom (from public.spy_reports)
+# -------------------------
+@app.get("/api/kingdoms/{kingdom}/spy-reports")
+def list_spy_reports(kingdom: str, limit: int = 50):
     conn = _connect()
     try:
-        _ensure_bot_table(conn)
         with conn.cursor() as cur:
             cur.execute(
                 """
-                SELECT id, created_at, kingdom, alliance, defense_power, castles, raw
+                SELECT id, created_at, kingdom, alliance, defense_power, castles, raw, raw_gz
                 FROM public.spy_reports
                 WHERE kingdom = %s
-                ORDER BY created_at DESC NULLS LAST, id DESC
+                ORDER BY created_at DESC, id DESC
                 LIMIT %s
                 """,
-                (kingdom_name, limit),
+                (kingdom, limit),
             )
             rows = cur.fetchall()
 
-        # Return parsed summary per row (UI-friendly)
+        # return structured summary per row
         reports = []
         for r in rows:
-            parsed = parse_spy_report(r.get("raw") or "")
+            raw_text = _load_raw_text(r)
+            parsed = parse_spy_report(raw_text) if raw_text else {}
             reports.append(
                 {
                     "id": r["id"],
-                    "created_at": r.get("created_at"),
-                    "kingdom": r.get("kingdom"),
-                    "alliance": r.get("alliance") or parsed.get("alliance"),
-                    "defender_dp": r.get("defense_power") or parsed.get("defender_dp"),
-                    "castles": r.get("castles") or parsed.get("castles"),
-                    "spies_sent": parsed.get("spies_sent"),
-                    "spies_lost": parsed.get("spies_lost"),
-                    "result_level": parsed.get("result_level"),
-                    "honour": parsed.get("honour"),
-                    "ranking": parsed.get("ranking"),
-                    "networth": parsed.get("networth"),
-                    "troops": parsed.get("troops") or {},
-                    "resources": parsed.get("resources") or {},
+                    "created_at": r["created_at"],
+                    "kingdom": r["kingdom"],
+                    "alliance": r.get("alliance"),
+                    "defense_power": r.get("defense_power"),
+                    "castles": r.get("castles"),
+                    # parsed fields (safe even if raw has extra sections)
+                    "parsed": parsed,
+                    # light metadata for UI
+                    "troop_keys": sorted(list((parsed.get("troops") or {}).keys()))[:50],
+                    "resource_keys": sorted(list((parsed.get("resources") or {}).keys()))[:50],
                 }
             )
 
-        return {"ok": True, "kingdom": kingdom_name, "reports": reports}
+        return {"ok": True, "kingdom": kingdom, "reports": reports}
     finally:
         conn.close()
 
 
 # -------------------------
-# API: Spy reports
+# API: Raw report (from public.spy_reports)
 # -------------------------
 @app.get("/api/spy-reports/{report_id}/raw", response_class=PlainTextResponse)
 def get_spy_report_raw(report_id: int):
     conn = _connect()
     try:
-        _ensure_bot_table(conn)
         with conn.cursor() as cur:
             cur.execute(
-                "SELECT raw FROM public.spy_reports WHERE id = %s",
+                "SELECT raw, raw_gz FROM public.spy_reports WHERE id = %s",
                 (report_id,),
             )
             row = cur.fetchone()
-        if not row or not row.get("raw"):
+        if not row:
             raise HTTPException(status_code=404, detail="Raw report not found")
-        return row["raw"]
+
+        raw_text = _load_raw_text(row)
+        if not raw_text:
+            raise HTTPException(status_code=404, detail="Raw report not found")
+
+        return raw_text
     finally:
         conn.close()
 
@@ -380,84 +365,33 @@ def get_spy_report_raw(report_id: int):
 def get_spy_report(report_id: int):
     conn = _connect()
     try:
-        _ensure_bot_table(conn)
         with conn.cursor() as cur:
             cur.execute(
-                "SELECT id, created_at, kingdom, alliance, defense_power, castles, raw FROM public.spy_reports WHERE id = %s",
+                """
+                SELECT id, created_at, kingdom, alliance, defense_power, castles, raw, raw_gz
+                FROM public.spy_reports
+                WHERE id = %s
+                """,
                 (report_id,),
             )
             row = cur.fetchone()
         if not row:
             raise HTTPException(status_code=404, detail="Report not found")
 
-        parsed = parse_spy_report(row.get("raw") or "")
+        raw_text = _load_raw_text(row)
+        parsed = parse_spy_report(raw_text) if raw_text else {}
         return {
             "ok": True,
             "report": {
                 "id": row["id"],
-                "created_at": row.get("created_at"),
-                "kingdom": row.get("kingdom") or parsed.get("target"),
-                "alliance": row.get("alliance") or parsed.get("alliance"),
-                "defender_dp": row.get("defense_power") or parsed.get("defender_dp"),
-                "castles": row.get("castles") or parsed.get("castles"),
-                "spies_sent": parsed.get("spies_sent"),
-                "spies_lost": parsed.get("spies_lost"),
-                "result_level": parsed.get("result_level"),
-                "honour": parsed.get("honour"),
-                "ranking": parsed.get("ranking"),
-                "networth": parsed.get("networth"),
-                "troops": parsed.get("troops") or {},
-                "resources": parsed.get("resources") or {},
-                "raw_text": parsed.get("raw_text") or "",
+                "created_at": row["created_at"],
+                "kingdom": row["kingdom"],
+                "alliance": row.get("alliance"),
+                "defense_power": row.get("defense_power"),
+                "castles": row.get("castles"),
+                "parsed": parsed,
+                "raw_text": raw_text,
             },
-        }
-    finally:
-        conn.close()
-
-
-# Manual paste endpoint (optional, but handy)
-@app.post("/api/reports/spy")
-def ingest_spy_report(payload: Dict[str, Any]):
-    raw = (payload.get("raw_text") or payload.get("text") or "").strip()
-    if not raw:
-        raise HTTPException(status_code=400, detail="raw_text is required")
-
-    parsed = parse_spy_report(raw)
-    if not parsed.get("target"):
-        raise HTTPException(status_code=400, detail="Could not parse Target: from the spy report")
-
-    report_hash = _hash_report(raw)
-
-    conn = _connect()
-    try:
-        _ensure_bot_table(conn)
-        with conn.cursor() as cur:
-            # Insert (dedupe by report_hash)
-            cur.execute(
-                """
-                INSERT INTO public.spy_reports (kingdom, alliance, created_at, raw, report_hash, defense_power, castles)
-                VALUES (%s, %s, NOW(), %s, %s, %s, %s)
-                ON CONFLICT (report_hash) DO NOTHING
-                RETURNING id, created_at
-                """,
-                (
-                    parsed.get("target"),
-                    parsed.get("alliance"),
-                    parsed.get("raw_text"),
-                    report_hash,
-                    parsed.get("defender_dp"),
-                    parsed.get("castles"),
-                ),
-            )
-            row = cur.fetchone()
-
-        conn.commit()
-
-        # If it was a duplicate, row will be None
-        return {
-            "ok": True,
-            "stored": ({"id": row["id"], "created_at": row["created_at"]} if row else {"duplicate": True}),
-            "parsed": parsed,
         }
     finally:
         conn.close()
