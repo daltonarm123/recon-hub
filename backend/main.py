@@ -1,3 +1,31 @@
+
+# ---- Spy Report Extended Fields (auto-migrate) ----
+cursor.execute("""
+ALTER TABLE rh_spy_reports
+ADD COLUMN IF NOT EXISTS spies_sent INTEGER,
+ADD COLUMN IF NOT EXISTS spies_lost INTEGER,
+ADD COLUMN IF NOT EXISTS result_level TEXT,
+ADD COLUMN IF NOT EXISTS honour REAL,
+ADD COLUMN IF NOT EXISTS ranking INTEGER,
+ADD COLUMN IF NOT EXISTS networth INTEGER
+""")
+conn.commit()
+
+import re
+
+def extract_int(pattern, text):
+    m = re.search(pattern, text, re.IGNORECASE)
+    return int(m.group(1).replace(",", "")) if m else None
+
+def extract_float(pattern, text):
+    m = re.search(pattern, text, re.IGNORECASE)
+    return float(m.group(1)) if m else None
+
+def extract_text(pattern, text):
+    m = re.search(pattern, text, re.IGNORECASE)
+    return m.group(1).strip() if m else None
+# -----------------------------------------------
+
 import os
 import re
 from datetime import datetime
