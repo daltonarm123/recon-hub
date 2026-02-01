@@ -1,31 +1,3 @@
-
-# ---- Spy Report Extended Fields (auto-migrate) ----
-cursor.execute("""
-ALTER TABLE rh_spy_reports
-ADD COLUMN IF NOT EXISTS spies_sent INTEGER,
-ADD COLUMN IF NOT EXISTS spies_lost INTEGER,
-ADD COLUMN IF NOT EXISTS result_level TEXT,
-ADD COLUMN IF NOT EXISTS honour REAL,
-ADD COLUMN IF NOT EXISTS ranking INTEGER,
-ADD COLUMN IF NOT EXISTS networth INTEGER
-""")
-conn.commit()
-
-import re
-
-def extract_int(pattern, text):
-    m = re.search(pattern, text, re.IGNORECASE)
-    return int(m.group(1).replace(",", "")) if m else None
-
-def extract_float(pattern, text):
-    m = re.search(pattern, text, re.IGNORECASE)
-    return float(m.group(1)) if m else None
-
-def extract_text(pattern, text):
-    m = re.search(pattern, text, re.IGNORECASE)
-    return m.group(1).strip() if m else None
-# -----------------------------------------------
-
 import os
 import re
 from datetime import datetime
@@ -34,16 +6,24 @@ from typing import Any, Dict, List, Optional
 
 import psycopg
 from psycopg.rows import dict_row
+from psycopg.types.json import Jsonb
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, JSONResponse, RedirectResponse, PlainTextResponse
+from fastapi.responses import (
+    FileResponse,
+    JSONResponse,
+    RedirectResponse,
+    PlainTextResponse,
+)
 from fastapi.staticfiles import StaticFiles
 
 BASE_DIR = Path(__file__).resolve().parent
 STATIC_DIR = BASE_DIR / "static"
 
-# ---- FastAPI ----
+# -------------------------
+# FastAPI
+# -------------------------
 app = FastAPI()
 
 app.add_middleware(
@@ -54,7 +34,9 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# ---- Static (SPA + assets) ----
+# -------------------------
+# Static (SPA + assets)
+# -------------------------
 if (STATIC_DIR / "assets").exists():
     app.mount("/assets", StaticFiles(directory=str(STATIC_DIR / "assets")), name="assets")
 
@@ -96,20 +78,20 @@ def healthz():
 def _get_dsn() -> str:
     dsn = os.getenv("DATABASE_URL") or os.getenv("POSTGRES_URL") or ""
     if not dsn:
-        raise HTTPException(status_code=500, detail="DATABASE_URL is not set on the server")
+        raise HTTPException(status_code=500, detail="DATABASE_URL is not set")
     return dsn
 
 
 def _connect() -> psycopg.Connection:
-    # dict_row makes fetchone/fetchall return dict-like rows
     return psycopg.connect(_get_dsn(), row_factory=dict_row)
 
 
 def _ensure_tables(conn: psycopg.Connection) -> None:
     """
-    Creates Recon Hub tables (prefixed rh_) that do NOT conflict with your existing bot tables.
+    Create base tables + auto-migrate extended spy fields.
     """
     with conn.cursor() as cur:
+        # ---- Base tables ----
         cur.execute(
             """
             CREATE TABLE IF NOT EXISTS rh_kingdoms (
@@ -119,6 +101,7 @@ def _ensure_tables(conn: psycopg.Connection) -> None:
             );
             """
         )
+
         cur.execute(
             """
             CREATE TABLE IF NOT EXISTS rh_spy_reports (
@@ -134,29 +117,57 @@ def _ensure_tables(conn: psycopg.Connection) -> None:
             );
             """
         )
+
+        # ---- Extended fields (SAFE auto-migrate) ----
+        cur.execute(
+            """
+            ALTER TABLE rh_spy_reports
+            ADD COLUMN IF NOT EXISTS spies_sent INTEGER,
+            ADD COLUMN IF NOT EXISTS spies_lost INTEGER,
+            ADD COLUMN IF NOT EXISTS result_level TEXT,
+            ADD COLUMN IF NOT EXISTS honour REAL,
+            ADD COLUMN IF NOT EXISTS ranking INTEGER,
+            ADD COLUMN IF NOT EXISTS networth BIGINT;
+            """
+        )
+
         cur.execute(
             """
             CREATE INDEX IF NOT EXISTS rh_spy_reports_kingdom_created_idx
             ON rh_spy_reports (kingdom_name, created_at DESC);
             """
         )
+
     conn.commit()
 
 
 # -------------------------
-# Spy report parsing
+# Spy report parsing helpers
 # -------------------------
+def extract_int(pattern: str, text: str) -> Optional[int]:
+    m = re.search(pattern, text, re.I)
+    return int(m.group(1).replace(",", "")) if m else None
+
+
+def extract_float(pattern: str, text: str) -> Optional[float]:
+    m = re.search(pattern, text, re.I)
+    return float(m.group(1)) if m else None
+
+
+def extract_text(pattern: str, text: str) -> Optional[str]:
+    m = re.search(pattern, text, re.I)
+    return m.group(1).strip() if m else None
+
+
 def _grab_line(text: str, label: str) -> Optional[str]:
     m = re.search(rf"^\s*{re.escape(label)}\s*:\s*(.+?)\s*$", text, flags=re.I | re.M)
     return m.group(1).strip() if m else None
 
 
 def _num(s: Optional[str]) -> Optional[int]:
-    if s is None:
+    if not s:
         return None
-    s2 = re.sub(r"[,\s]+", "", s.strip())
-    if not s2:
-        return None
+    s2 = re.sub(r"[,\s]+", "", s)
     try:
         return int(float(s2))
     except Exception:
@@ -183,56 +194,38 @@ def _parse_kv_lines(chunk: str) -> Dict[str, int]:
         m = re.match(r"^\s*([^:]{1,80}?)\s*:\s*([0-9][0-9,\s]*)\s*$", line)
         if not m:
             continue
-        k = m.group(1).strip()
         v = _num(m.group(2))
-        if v is None:
-            continue
-        out[k] = v
+        if v is not None:
+            out[m.group(1).strip()] = v
     return out
 
 
 def parse_spy_report(text: str) -> Dict[str, Any]:
-    target = _grab_line(text, "Target")
-    alliance = _grab_line(text, "Alliance")
-    castles = _num(_grab_line(text, "Number of Castles"))
-
-    dp = None
-    m = re.search(r"Approximate defensive power\*?\s*:\s*([0-9,]+)", text, flags=re.I)
-    if m:
-        dp = _num(m.group(1))
-
-    resources_chunk = _section(
-        text,
-        "Our spies also found the following information about the kingdom's resources:",
-        ["Our spies also found the following information about the kingdom's troops:"],
-    )
-    troops_chunk = _section(
-        text,
-        "Our spies also found the following information about the kingdom's troops:",
-        ["The following information was found regarding troop movements", "Select Ruleset:", "Standard Rules"],
-    )
-
-    resources_kv = _parse_kv_lines(resources_chunk)
-    troops_kv = _parse_kv_lines(troops_chunk)
-
-    troops: Dict[str, int] = {}
-    for k, v in troops_kv.items():
-        lk = k.lower()
-        if lk.startswith("population"):
-            continue
-        if "defensive power" in lk:
-            continue
-        troops[k] = v
-
-    resources: Dict[str, Any] = dict(resources_kv)
-
     return {
-        "target": target,
-        "alliance": alliance,
-        "castles": castles,
-        "defenderDP": dp,
-        "troops": troops,
-        "resources": resources,
+        "target": _grab_line(text, "Target"),
+        "alliance": _grab_line(text, "Alliance"),
+        "castles": _num(_grab_line(text, "Number of Castles")),
+        "defender_dp": extract_int(r"Approximate defensive power.*?:\s*([0-9,]+)", text),
+        "spies_sent": extract_int(r"Spies Sent\s*:\s*([0-9,]+)", text),
+        "spies_lost": extract_int(r"Spies Lost\s*:\s*([0-9,]+)", text),
+        "result_level": extract_text(r"Result Level\s*:\s*(.+)", text),
+        "honour": extract_float(r"Honour\s*:\s*([0-9.]+)", text),
+        "ranking": extract_int(r"Ranking\s*:\s*([0-9,]+)", text),
+        "networth": extract_int(r"Networth\s*:\s*([0-9,]+)", text),
+        "troops": _parse_kv_lines(
+            _section(
+                text,
+                "Our spies also found the following information about the kingdom's troops:",
+                ["The following information was found regarding troop movements"],
+            )
+        ),
+        "resources": _parse_kv_lines(
+            _section(
+                text,
+                "Our spies also found the following information about the kingdom's resources:",
+                ["Our spies also found the following information about the kingdom's troops:"],
+            )
+        ),
         "raw_text": text,
     }
 
@@ -245,11 +238,8 @@ def list_kingdoms(search: str = "", limit: int = 500):
     conn = _connect()
     try:
         _ensure_tables(conn)
-        s = search.strip()
-        like = f"%{s}%" if s else None
-
         with conn.cursor() as cur:
-            if like:
+            if search:
                 cur.execute(
                     """
                     SELECT kingdom_name, alliance, last_seen
@@ -258,7 +248,7 @@ def list_kingdoms(search: str = "", limit: int = 500):
                     ORDER BY COALESCE(alliance,''), kingdom_name
                     LIMIT %s
                     """,
-                    (like, like, limit),
+                    (f"%{search}%", f"%{search}%", limit),
                 )
             else:
                 cur.execute(
@@ -272,56 +262,28 @@ def list_kingdoms(search: str = "", limit: int = 500):
                 )
             kingdoms = cur.fetchall()
 
-            names = [k["kingdom_name"] for k in kingdoms]
-            counts: Dict[str, Any] = {}
-            if names:
-                cur.execute(
-                    """
-                    SELECT kingdom_name, COUNT(*)::int AS report_count, MAX(created_at) AS latest_report_at
-                    FROM rh_spy_reports
-                    WHERE kingdom_name = ANY(%s)
-                    GROUP BY kingdom_name
-                    """,
-                    (names,),
-                )
-                for r in cur.fetchall():
-                    counts[r["kingdom_name"]] = r
-
-        out = []
-        for k in kingdoms:
-            c = counts.get(k["kingdom_name"], {})
-            out.append(
-                {
-                    "name": k["kingdom_name"],
-                    "alliance": k.get("alliance"),
-                    "last_seen": k.get("last_seen"),
-                    "report_count": c.get("report_count", 0),
-                    "latest_report_at": c.get("latest_report_at"),
-                }
-            )
-        return {"ok": True, "kingdoms": out}
-    finally:
-        conn.close()
-
-
-@app.get("/api/kingdoms/{kingdom_name}/spy-reports")
-def list_spy_reports(kingdom_name: str, limit: int = 50):
-    conn = _connect()
-    try:
-        _ensure_tables(conn)
-        with conn.cursor() as cur:
             cur.execute(
                 """
-                SELECT id, created_at, alliance, defender_dp, castles, troops, resources
+                SELECT kingdom_name, COUNT(*)::int AS report_count, MAX(created_at) AS latest_report_at
                 FROM rh_spy_reports
-                WHERE kingdom_name = %s
-                ORDER BY created_at DESC
-                LIMIT %s
-                """,
-                (kingdom_name, limit),
+                GROUP BY kingdom_name
+                """
             )
-            rows = cur.fetchall()
-        return {"ok": True, "kingdom": kingdom_name, "reports": rows}
+            counts = {r["kingdom_name"]: r for r in cur.fetchall()}
+
+        return {
+            "ok": True,
+            "kingdoms": [
+                {
+                    "name": k["kingdom_name"],
+                    "alliance": k["alliance"],
+                    "last_seen": k["last_seen"],
+                    "report_count": counts.get(k["kingdom_name"], {}).get("report_count", 0),
+                    "latest_report_at": counts.get(k["kingdom_name"], {}).get("latest_report_at"),
+                }
+                for k in kingdoms
+            ],
+        }
     finally:
         conn.close()
 
@@ -329,24 +291,16 @@ def list_spy_reports(kingdom_name: str, limit: int = 50):
 # -------------------------
 # API: Spy reports
 # -------------------------
-# IMPORTANT: put /raw BEFORE /{report_id} so it always matches correctly.
 @app.get("/api/spy-reports/{report_id}/raw", response_class=PlainTextResponse)
 def get_spy_report_raw(report_id: int):
     conn = _connect()
     try:
         _ensure_tables(conn)
         with conn.cursor() as cur:
-            cur.execute(
-                """
-                SELECT raw_text
-                FROM rh_spy_reports
-                WHERE id = %s
-                """,
-                (report_id,),
-            )
+            cur.execute("SELECT raw_text FROM rh_spy_reports WHERE id=%s", (report_id,))
             row = cur.fetchone()
-        if not row or not row.get("raw_text"):
-            raise HTTPException(status_code=404, detail="Raw report not found")
+        if not row:
+            raise HTTPException(status_code=404, detail="Not found")
         return row["raw_text"]
     finally:
         conn.close()
@@ -358,17 +312,10 @@ def get_spy_report(report_id: int):
     try:
         _ensure_tables(conn)
         with conn.cursor() as cur:
-            cur.execute(
-                """
-                SELECT id, created_at, kingdom_name, alliance, defender_dp, castles, troops, resources, raw_text
-                FROM rh_spy_reports
-                WHERE id = %s
-                """,
-                (report_id,),
-            )
+            cur.execute("SELECT * FROM rh_spy_reports WHERE id=%s", (report_id,))
             row = cur.fetchone()
         if not row:
-            raise HTTPException(status_code=404, detail="Report not found")
+            raise HTTPException(status_code=404, detail="Not found")
         return {"ok": True, "report": row}
     finally:
         conn.close()
@@ -376,13 +323,13 @@ def get_spy_report(report_id: int):
 
 @app.post("/api/reports/spy")
 def ingest_spy_report(payload: Dict[str, Any]):
-    raw = (payload.get("raw_text") or payload.get("text") or "").strip()
+    raw = (payload.get("raw_text") or "").strip()
     if not raw:
-        raise HTTPException(status_code=400, detail="raw_text is required")
+        raise HTTPException(status_code=400, detail="raw_text required")
 
     parsed = parse_spy_report(raw)
     if not parsed.get("target"):
-        raise HTTPException(status_code=400, detail="Could not parse Target: from the spy report")
+        raise HTTPException(status_code=400, detail="Could not parse Target")
 
     conn = _connect()
     try:
@@ -392,47 +339,55 @@ def ingest_spy_report(payload: Dict[str, Any]):
                 """
                 INSERT INTO rh_kingdoms (kingdom_name, alliance, last_seen)
                 VALUES (%s, %s, NOW())
-                ON CONFLICT (kingdom_name) DO UPDATE
-                  SET alliance = EXCLUDED.alliance,
-                      last_seen = NOW()
+                ON CONFLICT (kingdom_name)
+                DO UPDATE SET alliance=EXCLUDED.alliance, last_seen=NOW()
                 """,
                 (parsed["target"], parsed.get("alliance")),
             )
 
             cur.execute(
                 """
-                INSERT INTO rh_spy_reports (kingdom_name, alliance, defender_dp, castles, troops, resources, raw_text)
-                VALUES (%s, %s, %s, %s, %s::jsonb, %s::jsonb, %s)
+                INSERT INTO rh_spy_reports
+                (kingdom_name, alliance, defender_dp, castles, spies_sent, spies_lost,
+                 result_level, honour, ranking, networth, troops, resources, raw_text)
+                VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
                 RETURNING id, created_at
                 """,
                 (
                     parsed["target"],
                     parsed.get("alliance"),
-                    parsed.get("defenderDP"),
+                    parsed.get("defender_dp"),
                     parsed.get("castles"),
-                    psycopg.types.json.Jsonb(parsed.get("troops") or {}),
-                    psycopg.types.json.Jsonb(parsed.get("resources") or {}),
+                    parsed.get("spies_sent"),
+                    parsed.get("spies_lost"),
+                    parsed.get("result_level"),
+                    parsed.get("honour"),
+                    parsed.get("ranking"),
+                    parsed.get("networth"),
+                    Jsonb(parsed.get("troops") or {}),
+                    Jsonb(parsed.get("resources") or {}),
                     parsed.get("raw_text"),
                 ),
             )
             row = cur.fetchone()
 
         conn.commit()
-        return {"ok": True, "stored": {"id": row["id"], "created_at": row["created_at"]}, "parsed": parsed}
+        return {"ok": True, "stored": row, "parsed": parsed}
     finally:
         conn.close()
 
 
-# ---- SPA fallback ----
+# -------------------------
+# SPA fallback
+# -------------------------
 @app.get("/{full_path:path}")
 def spa_fallback(full_path: str):
-    # If someone hits /api/... that doesn't exist, return a 404 JSON instead of serving index.html
     if full_path.startswith("api/"):
         raise HTTPException(status_code=404, detail="Not Found")
 
-    candidate = STATIC_DIR / full_path
-    if candidate.exists() and candidate.is_file():
-        return FileResponse(str(candidate))
+    p = STATIC_DIR / full_path
+    if p.exists() and p.is_file():
+        return FileResponse(str(p))
 
     index_path = STATIC_DIR / "index.html"
     if index_path.exists():
