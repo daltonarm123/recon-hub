@@ -13,10 +13,11 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, RedirectResponse, PlainTextResponse
 from fastapi.staticfiles import StaticFiles
 
-# ---- NW over time (NEW) ----
-# these files must exist in backend/: nw_api.py, nw_poll.py
+# --- NW imports ---
+# nw_api.py MUST define: router = APIRouter()
 from nw_api import router as nw_router
 from nw_poll import start_nw_poller
+
 
 BASE_DIR = Path(__file__).resolve().parent
 STATIC_DIR = BASE_DIR / "static"
@@ -34,18 +35,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# -------------------------
-# Startup: kick off NW poller (NEW)
-# -------------------------
-@app.on_event("startup")
-def _startup():
-    # starts a background thread/process that polls KG and stores into nw_history
-    # safe if tables are empty; it will begin filling as it runs on Render
-    start_nw_poller()
-
-# -------------------------
-# Include NW API router (NEW)
-# -------------------------
+# Mount NW API routes
 app.include_router(nw_router, prefix="/api/nw", tags=["nw"])
 
 
@@ -162,7 +152,6 @@ def _parse_kv_lines(chunk: str) -> Dict[str, int]:
 
 
 def parse_spy_report(text: str) -> Dict[str, Any]:
-    # top header fields
     target = _grab_line(text, "Target")
     alliance = _grab_line(text, "Alliance")
     honour = _num_float(_grab_line(text, "Honour"))
@@ -173,17 +162,14 @@ def parse_spy_report(text: str) -> Dict[str, Any]:
     result_level = _grab_line(text, "Result Level")
     castles = _num(_grab_line(text, "Number of Castles"))
 
-    # defender dp line
     defender_dp = None
     m = re.search(r"Approximate defensive power\*?\s*:\s*([0-9,\.e\+]+)", text, flags=re.I)
     if m:
-        # allow scientific notation
         try:
             defender_dp = int(float(m.group(1).replace(",", "")))
         except Exception:
             defender_dp = None
 
-    # sections (resources, troops) - ignore “market/tech/troop movements”
     resources_chunk = _section(
         text,
         "Our spies also found the following information about the kingdom's resources:",
@@ -205,7 +191,6 @@ def parse_spy_report(text: str) -> Dict[str, Any]:
     resources = _parse_kv_lines(resources_chunk)
     troops_raw = _parse_kv_lines(troops_chunk)
 
-    # filter out “Population” + anything weird
     troops: Dict[str, int] = {}
     for k, v in troops_raw.items():
         lk = k.lower()
@@ -232,10 +217,6 @@ def parse_spy_report(text: str) -> Dict[str, Any]:
 
 
 def _load_raw_text(row: Dict[str, Any]) -> str:
-    """
-    Some rows may have raw text, some may have only raw_gz.
-    Prefer raw; fallback to decompressing raw_gz if present.
-    """
     raw = row.get("raw")
     if raw and isinstance(raw, str) and raw.strip():
         return raw
@@ -251,7 +232,7 @@ def _load_raw_text(row: Dict[str, Any]) -> str:
 
 
 # -------------------------
-# API: Kingdom list (from bot table: public.spy_reports)
+# API: Kingdom list (from public.spy_reports)
 # -------------------------
 @app.get("/api/kingdoms")
 def list_kingdoms(search: str = "", limit: int = 500):
@@ -311,7 +292,7 @@ def list_kingdoms(search: str = "", limit: int = 500):
 
 
 # -------------------------
-# API: Spy reports for kingdom (from public.spy_reports)
+# API: Spy reports for kingdom
 # -------------------------
 @app.get("/api/kingdoms/{kingdom}/spy-reports")
 def list_spy_reports(kingdom: str, limit: int = 50):
@@ -330,7 +311,6 @@ def list_spy_reports(kingdom: str, limit: int = 50):
             )
             rows = cur.fetchall()
 
-        # return structured summary per row
         reports = []
         for r in rows:
             raw_text = _load_raw_text(r)
@@ -343,9 +323,7 @@ def list_spy_reports(kingdom: str, limit: int = 50):
                     "alliance": r.get("alliance"),
                     "defense_power": r.get("defense_power"),
                     "castles": r.get("castles"),
-                    # parsed fields (safe even if raw has extra sections)
                     "parsed": parsed,
-                    # light metadata for UI
                     "troop_keys": sorted(list((parsed.get("troops") or {}).keys()))[:50],
                     "resource_keys": sorted(list((parsed.get("resources") or {}).keys()))[:50],
                 }
@@ -357,18 +335,16 @@ def list_spy_reports(kingdom: str, limit: int = 50):
 
 
 # -------------------------
-# API: Raw report (from public.spy_reports)
+# API: Raw report
 # -------------------------
 @app.get("/api/spy-reports/{report_id}/raw", response_class=PlainTextResponse)
 def get_spy_report_raw(report_id: int):
     conn = _connect()
     try:
         with conn.cursor() as cur:
-            cur.execute(
-                "SELECT raw, raw_gz FROM public.spy_reports WHERE id = %s",
-                (report_id,),
-            )
+            cur.execute("SELECT raw, raw_gz FROM public.spy_reports WHERE id = %s", (report_id,))
             row = cur.fetchone()
+
         if not row:
             raise HTTPException(status_code=404, detail="Raw report not found")
 
@@ -395,6 +371,7 @@ def get_spy_report(report_id: int):
                 (report_id,),
             )
             row = cur.fetchone()
+
         if not row:
             raise HTTPException(status_code=404, detail="Report not found")
 
@@ -415,6 +392,47 @@ def get_spy_report(report_id: int):
         }
     finally:
         conn.close()
+
+
+# -------------------------
+# Startup: NW poller (safe)
+# -------------------------
+@app.on_event("startup")
+def _startup():
+    """
+    Only start NW poller if env vars exist.
+    This prevents Render from crashing when cookies/kingdom list aren't configured yet.
+    """
+
+    # Comma-separated list of kingdoms to track (top 300 list later)
+    kingdoms_csv = os.getenv("NW_KINGDOMS", "").strip()
+
+    # Poll seconds (default 240 = 4 minutes)
+    poll_seconds = int(os.getenv("NW_POLL_SECONDS", "240"))
+
+    # Cookies for logged in dummy account (JSON object string)
+    # Example: {"ASP.NET_SessionId":"...","auth":"..."}
+    cookies_json = os.getenv("KG_COOKIES_JSON", "").strip()
+
+    if not kingdoms_csv:
+        print("[startup] NW poller not started: NW_KINGDOMS not set")
+        return
+
+    if not cookies_json:
+        print("[startup] NW poller not started: KG_COOKIES_JSON not set")
+        return
+
+    try:
+        cookies = __import__("json").loads(cookies_json)
+        kingdoms = [k.strip() for k in kingdoms_csv.split(",") if k.strip()]
+        if not kingdoms:
+            print("[startup] NW poller not started: NW_KINGDOMS parsed empty")
+            return
+
+        start_nw_poller(kingdoms=kingdoms, poll_seconds=poll_seconds, cookies=cookies)
+        print(f"[startup] NW poller started: kingdoms={len(kingdoms)} poll_seconds={poll_seconds}")
+    except Exception as e:
+        print(f"[startup] NW poller failed to start: {e}")
 
 
 # -------------------------
