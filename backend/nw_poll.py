@@ -1,27 +1,43 @@
 import os
-import time
 import json
+import time
 import threading
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
+from typing import Dict, List, Optional, Tuple
 
+import httpx
 import psycopg
 from psycopg.rows import dict_row
-import requests
-
 
 KG_NWOT_URL = "https://www.kingdomgame.net/WebService/Kingdoms.asmx/GetNetworthOverTime"
 
+# TEMP: put a few known ids here to prove DB writes work.
+# Replace this once you capture the Rankings endpoint response that includes kingdomId.
+DEFAULT_TRACK: List[Tuple[str, int]] = [
+    ("Galileo", 3334),
+]
 
-def _get_dsn() -> str:
-    dsn = os.getenv("DATABASE_URL") or os.getenv("POSTGRES_URL") or ""
-    if not dsn:
-        raise RuntimeError("DATABASE_URL is not set")
-    return dsn
-
+def _dsn() -> str:
+    return os.getenv("DATABASE_URL") or os.getenv("POSTGRES_URL") or ""
 
 def _connect():
-    return psycopg.connect(_get_dsn(), row_factory=dict_row)
+    dsn = _dsn()
+    if not dsn:
+        raise RuntimeError("DATABASE_URL is not set")
+    return psycopg.connect(dsn, row_factory=dict_row)
 
+def _parse_kg_response(resp_json: Dict) -> List[Dict]:
+    """
+    KG returns: {"d": "{\"dataPoints\":[...]}"}  (stringified JSON inside "d")
+    """
+    d = resp_json.get("d")
+    if not d:
+        return []
+    try:
+        inner = json.loads(d)
+    except Exception:
+        return []
+    return inner.get("dataPoints") or []
 
 def _ensure_table():
     conn = _connect()
@@ -32,45 +48,23 @@ def _ensure_table():
                 CREATE TABLE IF NOT EXISTS public.nw_history (
                     kingdom text NOT NULL,
                     networth bigint NOT NULL,
-                    tick_time timestamptz NOT NULL,
-                    PRIMARY KEY (kingdom, tick_time)
+                    tick_time timestamptz NOT NULL
                 );
                 """
             )
             cur.execute(
-                "CREATE INDEX IF NOT EXISTS nw_history_kingdom_time_idx ON public.nw_history (kingdom, tick_time DESC);"
+                """
+                CREATE INDEX IF NOT EXISTS nw_history_kingdom_tick_idx
+                ON public.nw_history (kingdom, tick_time DESC);
+                """
             )
-        conn.commit()
+            conn.commit()
     finally:
         conn.close()
 
-
-def _fetch_nwot(session: requests.Session, cookies: dict) -> list[dict]:
-    # KG returns: {"d": "{\"dataPoints\":[...]}"} (string JSON inside JSON)
-    r = session.post(
-        KG_NWOT_URL,
-        json={},  # KG endpoint doesn't need a body for "current kingdom" context
-        headers={"Accept": "application/json"},
-        cookies=cookies,
-        timeout=20,
-    )
-    r.raise_for_status()
-    payload = r.json()
-    d = payload.get("d")
-
-    # d is a JSON string
-    if isinstance(d, str):
-        inner = json.loads(d)
-    else:
-        inner = d or {}
-
-    return inner.get("dataPoints", []) or []
-
-
-def _upsert_points(kingdom: str, points: list[dict]):
-    if not kingdom or not points:
+def _insert_points(kingdom: str, points: List[Dict]):
+    if not points:
         return
-
     conn = _connect()
     try:
         with conn.cursor() as cur:
@@ -80,63 +74,58 @@ def _upsert_points(kingdom: str, points: list[dict]):
                 if nw is None or not dt:
                     continue
 
-                # dt looks like "2026-02-03T18:25:15" (no timezone)
-                # treat as UTC (or "offset" per Paul) — adjust later if needed.
-                try:
-                    tick_time = datetime.fromisoformat(dt).replace(tzinfo=timezone.utc)
-                except Exception:
-                    continue
+                # dt is like "2026-02-03T18:25:15" (no timezone)
+                # We'll treat it as UTC unless you later confirm it's server-local.
+                tick_time = datetime.fromisoformat(dt).replace(tzinfo=timezone.utc)
 
                 cur.execute(
                     """
                     INSERT INTO public.nw_history (kingdom, networth, tick_time)
                     VALUES (%s, %s, %s)
-                    ON CONFLICT (kingdom, tick_time) DO UPDATE
-                    SET networth = EXCLUDED.networth
                     """,
                     (kingdom, int(nw), tick_time),
                 )
-        conn.commit()
+            conn.commit()
     finally:
         conn.close()
 
+def _poll_once(world_id: str, kg_token: str, track: List[Tuple[str, int]]):
+    headers = {
+        "Accept": "application/json",
+        "Content-Type": "application/json",
+        "world-id": str(world_id),
+        "Origin": "https://www.kingdomgame.net",
+        "Referer": "https://www.kingdomgame.net/rankings",
+    }
 
-def _poll_loop(kingdoms: list[str], poll_seconds: int, cookies: dict):
+    # If KG endpoints accept token header, we’ll add it. (Harmless if ignored.)
+    if kg_token:
+        headers["token"] = kg_token
+
+    with httpx.Client(timeout=30.0) as client:
+        for name, kid in track:
+            payload = {"kingdomId": kid, "hours": 24}
+            r = client.post(KG_NWOT_URL, headers=headers, json=payload)
+            r.raise_for_status()
+            points = _parse_kg_response(r.json())
+            _insert_points(name, points)
+
+def start_nw_poller(poll_seconds: int, world_id: str, kg_token: str):
+    """
+    Starts a background thread that polls NWOT every poll_seconds.
+    Safe to call once at startup.
+    """
     _ensure_table()
-    s = requests.Session()
 
-    while True:
-        start = time.time()
-        for k in kingdoms:
+    def loop():
+        while True:
             try:
-                # We need kingdom context; easiest: use a separate cookies per kingdom if you have it.
-                # If your dummy account can switch viewed kingdom server-side, you’ll replace this later.
-                points = _fetch_nwot(s, cookies=cookies)
-                _upsert_points(k, points)
+                _poll_once(world_id=world_id, kg_token=kg_token, track=DEFAULT_TRACK)
             except Exception as e:
-                # don’t crash the process because one kingdom failed
-                print(f"[nw_poll] error kingdom={k}: {e}")
+                # Don't crash the app if KG is down; just log
+                print("[nw_poller] error:", repr(e))
+            time.sleep(poll_seconds)
 
-        elapsed = time.time() - start
-        sleep_for = max(5, poll_seconds - elapsed)
-        time.sleep(sleep_for)
-
-
-_thread = None
-
-
-def start_nw_poller(kingdoms: list[str], poll_seconds: int, cookies: dict):
-    """
-    Starts background thread that polls KG and stores points into nw_history.
-    """
-    global _thread
-    if _thread and _thread.is_alive():
-        return
-
-    _thread = threading.Thread(
-        target=_poll_loop,
-        args=(kingdoms, poll_seconds, cookies),
-        daemon=True,
-        name="nw_poller",
-    )
-    _thread.start()
+    t = threading.Thread(target=loop, daemon=True)
+    t.start()
+    return t
