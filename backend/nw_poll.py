@@ -3,7 +3,7 @@ import json
 import time
 import threading
 from datetime import datetime, timezone
-from typing import Dict, List, Tuple
+from typing import Dict, List, Tuple, Optional
 
 import httpx
 import psycopg
@@ -11,8 +11,8 @@ from psycopg.rows import dict_row
 
 KG_NWOT_URL = "https://www.kingdomgame.net/WebService/Kingdoms.asmx/GetNetworthOverTime"
 
-# TEMP list so you can prove end-to-end works immediately.
-# We'll replace this with "top 300 from rankings" once we wire rankings endpoint.
+# TEMP: hardcode one kingdom so we can prove end-to-end works.
+# We'll swap this to "top 300 from rankings" once we wire rankings scraping.
 DEFAULT_TRACK: List[Tuple[str, int]] = [
     ("Galileo", 3334),
 ]
@@ -72,6 +72,8 @@ def _insert_points(kingdom: str, points: List[Dict]):
                 if nw is None or not dt:
                     continue
 
+                # KG returns e.g. "2026-02-03T18:25:15" (no tz).
+                # Treat as UTC by default.
                 tick_time = datetime.fromisoformat(dt).replace(tzinfo=timezone.utc)
 
                 cur.execute(
@@ -87,14 +89,14 @@ def _insert_points(kingdom: str, points: List[Dict]):
 
 def _poll_once(world_id: str, kg_token: str, track: List[Tuple[str, int]]):
     headers = {
-        "Accept": "application/json",
+        "Accept": "application/json, text/plain, */*",
         "Content-Type": "application/json",
         "world-id": str(world_id),
         "Origin": "https://www.kingdomgame.net",
         "Referer": "https://www.kingdomgame.net/rankings",
     }
 
-    # Add token if provided (might be required for some endpoints; NWOT might ignore it)
+    # Some KG endpoints require token; NWOT might not, but harmless to send.
     if kg_token:
         headers["token"] = kg_token
 
@@ -106,27 +108,28 @@ def _poll_once(world_id: str, kg_token: str, track: List[Tuple[str, int]]):
             points = _parse_kg_response(r.json())
             _insert_points(name, points)
 
-def start_nw_poller():
+def start_nw_poller(*, poll_seconds: int = 240, world_id: str = "1", kg_token: str = "", track: Optional[List[Tuple[str,int]]] = None):
     """
-    Starts a background thread.
-    Configured via env vars:
-      - NW_POLL_SECONDS (default 240)
-      - KG_WORLD_ID (default 1)
-      - KG_TOKEN (optional)
+    Starts a background polling thread.
+
+    Args:
+      poll_seconds: how often to poll (default 240 = 4 min)
+      world_id: KG world-id header (default "1")
+      kg_token: optional token header (from Login response)
+      track: optional [(kingdom_name, kingdom_id)] list; defaults to DEFAULT_TRACK
     """
     _ensure_table()
 
-    poll_seconds = int(os.getenv("NW_POLL_SECONDS", "240"))
-    world_id = os.getenv("KG_WORLD_ID", "1")
-    kg_token = os.getenv("KG_TOKEN", "")
+    if track is None:
+        track = DEFAULT_TRACK
 
     def loop():
         while True:
             try:
-                _poll_once(world_id=world_id, kg_token=kg_token, track=DEFAULT_TRACK)
+                _poll_once(world_id=world_id, kg_token=kg_token, track=track)
             except Exception as e:
                 print("[nw_poller] error:", repr(e))
-            time.sleep(poll_seconds)
+            time.sleep(int(poll_seconds))
 
     t = threading.Thread(target=loop, daemon=True)
     t.start()
