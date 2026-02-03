@@ -3,7 +3,7 @@ import json
 import time
 import threading
 from datetime import datetime, timezone
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Tuple
 
 import httpx
 import psycopg
@@ -11,8 +11,8 @@ from psycopg.rows import dict_row
 
 KG_NWOT_URL = "https://www.kingdomgame.net/WebService/Kingdoms.asmx/GetNetworthOverTime"
 
-# TEMP: put a few known ids here to prove DB writes work.
-# Replace this once you capture the Rankings endpoint response that includes kingdomId.
+# TEMP list so you can prove end-to-end works immediately.
+# We'll replace this with "top 300 from rankings" once we wire rankings endpoint.
 DEFAULT_TRACK: List[Tuple[str, int]] = [
     ("Galileo", 3334),
 ]
@@ -25,19 +25,6 @@ def _connect():
     if not dsn:
         raise RuntimeError("DATABASE_URL is not set")
     return psycopg.connect(dsn, row_factory=dict_row)
-
-def _parse_kg_response(resp_json: Dict) -> List[Dict]:
-    """
-    KG returns: {"d": "{\"dataPoints\":[...]}"}  (stringified JSON inside "d")
-    """
-    d = resp_json.get("d")
-    if not d:
-        return []
-    try:
-        inner = json.loads(d)
-    except Exception:
-        return []
-    return inner.get("dataPoints") or []
 
 def _ensure_table():
     conn = _connect()
@@ -62,9 +49,20 @@ def _ensure_table():
     finally:
         conn.close()
 
+def _parse_kg_response(resp_json: Dict) -> List[Dict]:
+    d = resp_json.get("d")
+    if not d:
+        return []
+    try:
+        inner = json.loads(d)
+    except Exception:
+        return []
+    return inner.get("dataPoints") or []
+
 def _insert_points(kingdom: str, points: List[Dict]):
     if not points:
         return
+
     conn = _connect()
     try:
         with conn.cursor() as cur:
@@ -74,8 +72,6 @@ def _insert_points(kingdom: str, points: List[Dict]):
                 if nw is None or not dt:
                     continue
 
-                # dt is like "2026-02-03T18:25:15" (no timezone)
-                # We'll treat it as UTC unless you later confirm it's server-local.
                 tick_time = datetime.fromisoformat(dt).replace(tzinfo=timezone.utc)
 
                 cur.execute(
@@ -98,7 +94,7 @@ def _poll_once(world_id: str, kg_token: str, track: List[Tuple[str, int]]):
         "Referer": "https://www.kingdomgame.net/rankings",
     }
 
-    # If KG endpoints accept token header, we’ll add it. (Harmless if ignored.)
+    # Add token if provided (might be required for some endpoints; NWOT might ignore it)
     if kg_token:
         headers["token"] = kg_token
 
@@ -110,19 +106,25 @@ def _poll_once(world_id: str, kg_token: str, track: List[Tuple[str, int]]):
             points = _parse_kg_response(r.json())
             _insert_points(name, points)
 
-def start_nw_poller(poll_seconds: int, world_id: str, kg_token: str):
+def start_nw_poller():
     """
-    Starts a background thread that polls NWOT every poll_seconds.
-    Safe to call once at startup.
+    Starts a background thread.
+    Configured via env vars:
+      - NW_POLL_SECONDS (default 240)
+      - KG_WORLD_ID (default 1)
+      - KG_TOKEN (optional)
     """
     _ensure_table()
+
+    poll_seconds = int(os.getenv("NW_POLL_SECONDS", "240"))
+    world_id = os.getenv("KG_WORLD_ID", "1")
+    kg_token = os.getenv("KG_TOKEN", "")
 
     def loop():
         while True:
             try:
                 _poll_once(world_id=world_id, kg_token=kg_token, track=DEFAULT_TRACK)
             except Exception as e:
-                # Don't crash the app if KG is down; just log
                 print("[nw_poller] error:", repr(e))
             time.sleep(poll_seconds)
 
