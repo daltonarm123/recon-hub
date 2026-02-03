@@ -3,7 +3,7 @@ import re
 import gzip
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional
 
 import psycopg
 from psycopg.rows import dict_row
@@ -12,6 +12,11 @@ from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, RedirectResponse, PlainTextResponse
 from fastapi.staticfiles import StaticFiles
+
+# ---- NW over time (NEW) ----
+# these files must exist in backend/: nw_api.py, nw_poll.py
+from nw_api import router as nw_router
+from nw_poll import start_nw_poller
 
 BASE_DIR = Path(__file__).resolve().parent
 STATIC_DIR = BASE_DIR / "static"
@@ -28,6 +33,20 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# -------------------------
+# Startup: kick off NW poller (NEW)
+# -------------------------
+@app.on_event("startup")
+def _startup():
+    # starts a background thread/process that polls KG and stores into nw_history
+    # safe if tables are empty; it will begin filling as it runs on Render
+    start_nw_poller()
+
+# -------------------------
+# Include NW API router (NEW)
+# -------------------------
+app.include_router(nw_router)
 
 # -------------------------
 # Static (SPA + assets)
