@@ -33,6 +33,17 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+@app.get("/api/routes")
+def list_routes():
+    out = []
+    for r in app.routes:
+        methods = sorted(list(getattr(r, "methods", []) or []))
+        path = getattr(r, "path", "")
+        name = getattr(r, "name", "")
+        out.append({"path": path, "methods": methods, "name": name})
+    return {"ok": True, "routes": out}
+
+
 # -------------------------
 # Static (SPA + assets)
 # -------------------------
