@@ -46,7 +46,8 @@ def _startup():
 # -------------------------
 # Include NW API router (NEW)
 # -------------------------
-app.include_router(nw_router)
+app.include_router(nw_router, prefix="/api/nw", tags=["nw"])
+
 
 # -------------------------
 # Static (SPA + assets)
