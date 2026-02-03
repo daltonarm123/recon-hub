@@ -13,11 +13,9 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, RedirectResponse, PlainTextResponse
 from fastapi.staticfiles import StaticFiles
 
-# --- NW imports ---
-# nw_api.py MUST define: router = APIRouter()
+# NEW
 from nw_api import router as nw_router
 from nw_poll import start_nw_poller
-
 
 BASE_DIR = Path(__file__).resolve().parent
 STATIC_DIR = BASE_DIR / "static"
@@ -34,10 +32,6 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
-# Mount NW API routes
-app.include_router(nw_router, prefix="/api/nw", tags=["nw"])
-
 
 # -------------------------
 # Static (SPA + assets)
@@ -232,7 +226,7 @@ def _load_raw_text(row: Dict[str, Any]) -> str:
 
 
 # -------------------------
-# API: Kingdom list (from public.spy_reports)
+# API: Kingdom list
 # -------------------------
 @app.get("/api/kingdoms")
 def list_kingdoms(search: str = "", limit: int = 500):
@@ -344,7 +338,6 @@ def get_spy_report_raw(report_id: int):
         with conn.cursor() as cur:
             cur.execute("SELECT raw, raw_gz FROM public.spy_reports WHERE id = %s", (report_id,))
             row = cur.fetchone()
-
         if not row:
             raise HTTPException(status_code=404, detail="Raw report not found")
 
@@ -371,7 +364,6 @@ def get_spy_report(report_id: int):
                 (report_id,),
             )
             row = cur.fetchone()
-
         if not row:
             raise HTTPException(status_code=404, detail="Report not found")
 
@@ -395,44 +387,27 @@ def get_spy_report(report_id: int):
 
 
 # -------------------------
-# Startup: NW poller (safe)
+# NEW: Mount NW API + start poller
 # -------------------------
+app.include_router(nw_router, prefix="/api/nw", tags=["nw"])
+
 @app.on_event("startup")
 def _startup():
-    """
-    Only start NW poller if env vars exist.
-    This prevents Render from crashing when cookies/kingdom list aren't configured yet.
-    """
-
-    # Comma-separated list of kingdoms to track (top 300 list later)
-    kingdoms_csv = os.getenv("NW_KINGDOMS", "").strip()
-
-    # Poll seconds (default 240 = 4 minutes)
+    # Poll interval in seconds (4 minutes)
     poll_seconds = int(os.getenv("NW_POLL_SECONDS", "240"))
 
-    # Cookies for logged in dummy account (JSON object string)
-    # Example: {"ASP.NET_SessionId":"...","auth":"..."}
-    cookies_json = os.getenv("KG_COOKIES_JSON", "").strip()
+    # World id
+    world_id = os.getenv("KG_WORLD_ID", "1")
 
-    if not kingdoms_csv:
-        print("[startup] NW poller not started: NW_KINGDOMS not set")
-        return
+    # Token (optional for NWOT, likely required for rankings once we add it)
+    kg_token = os.getenv("KG_TOKEN", "")
 
-    if not cookies_json:
-        print("[startup] NW poller not started: KG_COOKIES_JSON not set")
-        return
-
-    try:
-        cookies = __import__("json").loads(cookies_json)
-        kingdoms = [k.strip() for k in kingdoms_csv.split(",") if k.strip()]
-        if not kingdoms:
-            print("[startup] NW poller not started: NW_KINGDOMS parsed empty")
-            return
-
-        start_nw_poller(kingdoms=kingdoms, poll_seconds=poll_seconds, cookies=cookies)
-        print(f"[startup] NW poller started: kingdoms={len(kingdoms)} poll_seconds={poll_seconds}")
-    except Exception as e:
-        print(f"[startup] NW poller failed to start: {e}")
+    # Start poller safely
+    start_nw_poller(
+        poll_seconds=poll_seconds,
+        world_id=world_id,
+        kg_token=kg_token,
+    )
 
 
 # -------------------------
