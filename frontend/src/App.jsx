@@ -11,6 +11,7 @@ import {
 
 import BackendBadge from "./BackendBadge";
 import AdminHealth from "./AdminHealth";
+import NWChart from "./NWChart";
 
 const API_BASE = ""; // same-origin
 
@@ -109,6 +110,9 @@ function Layout({ children }) {
             <Link style={navLink} to="/kingdoms">
               Kingdoms
             </Link>
+            <Link style={navLink} to="/nwot">
+              NWOT
+            </Link>
             <Link style={navLink} to="/reports">
               Reports
             </Link>
@@ -191,7 +195,10 @@ function Dashboard() {
 function Kingdoms() {
   const [search, setSearch] = useState("");
   const query = useMemo(
-    () => `${API_BASE}/api/kingdoms?search=${encodeURIComponent(search)}&limit=500`,
+    () =>
+      `${API_BASE}/api/kingdoms?search=${encodeURIComponent(
+        search
+      )}&limit=500`,
     [search]
   );
   const { data, err, loading } = useFetchJson(query, [query]);
@@ -237,7 +244,8 @@ function Kingdoms() {
 
           {grouped.length === 0 && !loading ? (
             <div style={{ color: "rgba(231,236,255,.65)", fontSize: 12 }}>
-              No kingdoms yet. Paste a spy report in <b>Reports</b> to start building the list.
+              No kingdoms yet. Paste a spy report in <b>Reports</b> to start
+              building the list.
             </div>
           ) : null}
 
@@ -270,7 +278,9 @@ function Kingdoms() {
                         <td style={td}>
                           <button
                             style={linkBtn}
-                            onClick={() => nav(`/kingdoms/${encodeURIComponent(k.name)}`)}
+                            onClick={() =>
+                              nav(`/kingdoms/${encodeURIComponent(k.name)}`)
+                            }
                             title="Open reports"
                           >
                             {k.name}
@@ -278,7 +288,9 @@ function Kingdoms() {
                         </td>
                         <td style={td}>{k.report_count ?? 0}</td>
                         <td style={td}>
-                          {k.latest_report_at ? new Date(k.latest_report_at).toLocaleString() : "—"}
+                          {k.latest_report_at
+                            ? new Date(k.latest_report_at).toLocaleString()
+                            : "—"}
                         </td>
                       </tr>
                     ))}
@@ -298,7 +310,9 @@ function Kingdoms() {
 function KingdomDetail() {
   const { name } = useParams();
   const decoded = decodeURIComponent(name || "");
-  const url = `${API_BASE}/api/kingdoms/${encodeURIComponent(decoded)}/spy-reports?limit=100`;
+  const url = `${API_BASE}/api/kingdoms/${encodeURIComponent(
+    decoded
+  )}/spy-reports?limit=100`;
   const { data, err, loading } = useFetchJson(url, [url]);
   const nav = useNavigate();
 
@@ -332,9 +346,17 @@ function KingdomDetail() {
               <tbody>
                 {(data?.reports || []).map((r) => (
                   <tr key={r.id}>
-                    <td style={td}>{r.created_at ? new Date(r.created_at).toLocaleString() : "—"}</td>
+                    <td style={td}>
+                      {r.created_at
+                        ? new Date(r.created_at).toLocaleString()
+                        : "—"}
+                    </td>
                     <td style={td}>{r.alliance || "—"}</td>
-                    <td style={td}>{r.defender_dp ? Number(r.defender_dp).toLocaleString() : "—"}</td>
+                    <td style={td}>
+                      {r.defender_dp
+                        ? Number(r.defender_dp).toLocaleString()
+                        : "—"}
+                    </td>
                     <td style={td}>{r.castles ?? "—"}</td>
                     <td style={td}>{r.troops ? Object.keys(r.troops).length : 0}</td>
                     <td style={td}>
@@ -364,7 +386,8 @@ function KingdomDetail() {
 
           {(data?.reports || []).length === 0 && !loading ? (
             <div style={{ color: "rgba(231,236,255,.65)", fontSize: 12 }}>
-              No spy reports stored yet for this kingdom. Paste one in the Reports page.
+              No spy reports stored yet for this kingdom. Paste one in the Reports
+              page.
             </div>
           ) : null}
         </Card>
@@ -387,8 +410,12 @@ function SpyReportView() {
 
   const r = meta.data?.report || null;
 
-  const title = r?.kingdom_name ? `Latest Spy Report — ${r.kingdom_name}` : `Spy Report #${id}`;
-  const subtitle = r?.created_at ? `Stored: ${new Date(r.created_at).toLocaleString()}` : "Readable spy report view";
+  const title = r?.kingdom_name
+    ? `Latest Spy Report — ${r.kingdom_name}`
+    : `Spy Report #${id}`;
+  const subtitle = r?.created_at
+    ? `Stored: ${new Date(r.created_at).toLocaleString()}`
+    : "Readable spy report view";
 
   const troops = r?.troops || {};
   const resources = r?.resources || {};
@@ -402,7 +429,9 @@ function SpyReportView() {
   function KVTable({ obj }) {
     const entries = Object.entries(obj || {});
     if (entries.length === 0) {
-      return <div style={{ color: "rgba(231,236,255,.65)", fontSize: 12 }}>—</div>;
+      return (
+        <div style={{ color: "rgba(231,236,255,.65)", fontSize: 12 }}>—</div>
+      );
     }
     return (
       <div style={{ overflowX: "auto" }}>
@@ -572,7 +601,10 @@ function Reports() {
   return (
     <Layout>
       <div style={{ display: "grid", gap: 14 }}>
-        <Card title="Reports" subtitle="Paste a KG spy report to store + index it (Postgres rh_* tables)">
+        <Card
+          title="Reports"
+          subtitle="Paste a KG spy report to store + index it (Postgres rh_* tables)"
+        >
           <textarea
             value={raw}
             onChange={(e) => setRaw(e.target.value)}
@@ -641,6 +673,140 @@ function Admin() {
   );
 }
 
+/* ---------------- NWOT ---------------- */
+
+function NWOT() {
+  const [search, setSearch] = useState("");
+  const [selected, setSelected] = useState("Galileo");
+  const [hours, setHours] = useState(24);
+
+  const kingdomsUrl = useMemo(() => `${API_BASE}/api/nw/kingdoms?limit=300`, []);
+  const kingdoms = useFetchJson(kingdomsUrl, [kingdomsUrl]);
+
+  const filtered = useMemo(() => {
+    const list = kingdoms.data?.kingdoms || [];
+    const s = search.trim().toLowerCase();
+    if (!s) return list;
+    return list.filter((k) =>
+      String(k.kingdom || "").toLowerCase().includes(s)
+    );
+  }, [kingdoms.data, search]);
+
+  const historyUrl = useMemo(() => {
+    if (!selected) return "";
+    return `${API_BASE}/api/nw/history/${encodeURIComponent(
+      selected
+    )}?hours=${encodeURIComponent(hours)}`;
+  }, [selected, hours]);
+
+  const history = useFetchJson(historyUrl, [historyUrl]);
+
+  return (
+    <Layout>
+      <div style={{ display: "grid", gap: 14 }}>
+        <Card
+          title="Networth Over Time"
+          subtitle="Select a kingdom to view NWOT (from nw_history)."
+          right={
+            <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
+              <input
+                value={search}
+                onChange={(e) => setSearch(e.target.value)}
+                placeholder="Search kingdom…"
+                style={{ ...input, width: 220 }}
+              />
+              <select
+                value={String(hours)}
+                onChange={(e) => setHours(Number(e.target.value))}
+                style={{ ...input, width: 120, cursor: "pointer" }}
+              >
+                <option value={6}>6h</option>
+                <option value={12}>12h</option>
+                <option value={24}>24h</option>
+                <option value={48}>48h</option>
+                <option value={72}>72h</option>
+              </select>
+            </div>
+          }
+        >
+          {kingdoms.loading ? <div>Loading kingdoms…</div> : null}
+          {kingdoms.err ? <div style={{ color: "#ff6b6b" }}>{kingdoms.err}</div> : null}
+
+          <div style={{ display: "grid", gridTemplateColumns: "320px 1fr", gap: 12 }}>
+            {/* Left: list */}
+            <div
+              style={{
+                border: "1px solid rgba(255,255,255,.10)",
+                borderRadius: 12,
+                overflow: "hidden",
+                background: "rgba(0,0,0,.20)",
+              }}
+            >
+              <div style={{ maxHeight: 520, overflowY: "auto" }}>
+                {filtered.length === 0 && !kingdoms.loading ? (
+                  <div style={{ padding: 12, fontSize: 12, color: "rgba(231,236,255,.65)" }}>
+                    No matches.
+                  </div>
+                ) : null}
+
+                {filtered.map((k) => {
+                  const name = k.kingdom;
+                  const active = name === selected;
+                  return (
+                    <button
+                      key={name}
+                      onClick={() => setSelected(name)}
+                      style={{
+                        width: "100%",
+                        textAlign: "left",
+                        padding: "10px 12px",
+                        border: "none",
+                        borderBottom: "1px solid rgba(255,255,255,.08)",
+                        background: active ? "rgba(90,160,255,.18)" : "transparent",
+                        color: "#e7ecff",
+                        cursor: "pointer",
+                        fontSize: 12,
+                      }}
+                      title={`Last tick: ${k.last_tick || "—"} • Points: ${k.points ?? "—"}`}
+                    >
+                      <div style={{ fontWeight: 800 }}>{name}</div>
+                      <div style={{ opacity: 0.7, fontSize: 11, marginTop: 2 }}>
+                        {k.points ?? 0} pts •{" "}
+                        {k.last_tick ? new Date(k.last_tick).toLocaleString() : "—"}
+                      </div>
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+
+            {/* Right: chart */}
+            <div>
+              <div style={{ display: "flex", gap: 10, flexWrap: "wrap", marginBottom: 10 }}>
+                <div style={{ fontWeight: 800 }}>{selected || "—"}</div>
+                {history.loading ? (
+                  <div style={{ fontSize: 12, opacity: 0.7 }}>Loading history…</div>
+                ) : null}
+                {history.err ? (
+                  <div style={{ fontSize: 12, color: "#ff6b6b" }}>{history.err}</div>
+                ) : null}
+              </div>
+
+              {Array.isArray(history.data) && history.data.length > 0 ? (
+                <NWChart data={history.data} />
+              ) : (
+                <div style={{ fontSize: 12, color: "rgba(231,236,255,.65)" }}>
+                  No history points yet for this kingdom/time range.
+                </div>
+              )}
+            </div>
+          </div>
+        </Card>
+      </div>
+    </Layout>
+  );
+}
+
 /* ---------------- Router ---------------- */
 
 export default function App() {
@@ -649,6 +815,7 @@ export default function App() {
       <Routes>
         <Route path="/" element={<Dashboard />} />
         <Route path="/kingdoms" element={<Kingdoms />} />
+        <Route path="/nwot" element={<NWOT />} />
         <Route path="/kingdoms/:name" element={<KingdomDetail />} />
         <Route path="/spy-reports/:id" element={<SpyReportView />} />
         <Route path="/reports" element={<Reports />} />
@@ -740,4 +907,3 @@ const pillValue = {
   fontWeight: 800,
   color: "#e7ecff",
 };
-
