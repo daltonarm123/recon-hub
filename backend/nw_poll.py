@@ -74,15 +74,23 @@ def _insert_points(kingdom: str, points: List[Dict]):
 
                 # KG returns e.g. "2026-02-03T18:25:15" (no tz).
                 # Treat as UTC by default.
-                tick_time = datetime.fromisoformat(dt).replace(tzinfo=timezone.utc)
+                try:
+                    tick_time = datetime.fromisoformat(dt).replace(tzinfo=timezone.utc)
+                except Exception:
+                    continue
 
+                # ✅ Fix: KG sometimes returns overlapping history.
+                # Upsert by (kingdom, tick_time) so duplicates don't throw.
                 cur.execute(
                     """
                     INSERT INTO public.nw_history (kingdom, networth, tick_time)
                     VALUES (%s, %s, %s)
+                    ON CONFLICT (kingdom, tick_time)
+                    DO UPDATE SET networth = EXCLUDED.networth
                     """,
                     (kingdom, int(nw), tick_time),
                 )
+
             conn.commit()
     finally:
         conn.close()
@@ -108,7 +116,13 @@ def _poll_once(world_id: str, kg_token: str, track: List[Tuple[str, int]]):
             points = _parse_kg_response(r.json())
             _insert_points(name, points)
 
-def start_nw_poller(*, poll_seconds: int = 240, world_id: str = "1", kg_token: str = "", track: Optional[List[Tuple[str,int]]] = None):
+def start_nw_poller(
+    *,
+    poll_seconds: int = 240,
+    world_id: str = "1",
+    kg_token: str = "",
+    track: Optional[List[Tuple[str, int]]] = None
+):
     """
     Starts a background polling thread.
 
