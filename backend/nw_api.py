@@ -1,5 +1,6 @@
 import os
 from datetime import datetime, timedelta, timezone
+from typing import Any, Dict, List
 
 import psycopg
 from psycopg.rows import dict_row
@@ -7,56 +8,60 @@ from fastapi import APIRouter, HTTPException
 
 router = APIRouter()
 
-
 def _get_dsn() -> str:
     dsn = os.getenv("DATABASE_URL") or os.getenv("POSTGRES_URL") or ""
     if not dsn:
         raise HTTPException(status_code=500, detail="DATABASE_URL is not set")
     return dsn
 
-
 def _connect() -> psycopg.Connection:
     return psycopg.connect(_get_dsn(), row_factory=dict_row)
 
-
 @router.get("/kingdoms")
-def nw_kingdoms(limit: int = 300):
+def nw_kingdoms(limit: int = 300, world_id: str = "1"):
     """
-    ✅ Option A:
-    Return the accurate Top 300 list from public.kg_top_kingdoms
-    (filled by rankings_poll.py).
+    Source of truth for the NWOT list = rankings_top300.
+    We LEFT JOIN nw_history so the UI can show last_tick + points if we have them.
     """
     conn = _connect()
     try:
         with conn.cursor() as cur:
             cur.execute(
                 """
+                WITH hist AS (
+                    SELECT kingdom,
+                           MAX(tick_time) AS last_tick,
+                           COUNT(*)::int  AS points
+                    FROM public.nw_history
+                    GROUP BY kingdom
+                )
                 SELECT
-                    kingdom,
-                    kingdom_id,
-                    alliance,
-                    ranking,
-                    networth,
-                    fetched_at
-                FROM public.kg_top_kingdoms
-                ORDER BY ranking ASC NULLS LAST
+                    r.rank,
+                    r.kingdom_id,
+                    r.kingdom,
+                    r.networth,
+                    COALESCE(r.alliance, '') AS alliance,
+                    r.updated_at,
+                    h.last_tick,
+                    COALESCE(h.points, 0)::int AS points
+                FROM public.rankings_top300 r
+                LEFT JOIN hist h
+                    ON h.kingdom = r.kingdom
+                WHERE r.world_id = %s
+                ORDER BY r.rank ASC
                 LIMIT %s
                 """,
-                (limit,),
+                (str(world_id), limit),
             )
             rows = cur.fetchall()
 
-        return {"ok": True, "kingdoms": rows}
+        return {"ok": True, "world_id": str(world_id), "kingdoms": rows}
     finally:
         conn.close()
 
-
 @router.get("/history/{kingdom}")
 def nw_history(kingdom: str, hours: int = 24):
-    """
-    Chart-ready points: [{t: ISO, v: networth}, ...]
-    Reads from nw_history which is updated by nw_poll.py.
-    """
+    # Use aware UTC time to match timestamptz comparisons cleanly.
     since = datetime.now(timezone.utc) - timedelta(hours=hours)
 
     conn = _connect()
@@ -74,6 +79,7 @@ def nw_history(kingdom: str, hours: int = 24):
             )
             rows = cur.fetchall()
 
+        # Chart-ready: [{t: "...ISO...", v: 123}, ...]
         points = []
         for r in rows:
             tt = r["tick_time"]
