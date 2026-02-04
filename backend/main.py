@@ -12,18 +12,10 @@ from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, RedirectResponse, PlainTextResponse
 from fastapi.staticfiles import StaticFiles
-from rankings_poll import start_rankings_poller
-from nw_poll import start_nw_poller
 
-WORLD_ID = os.getenv("KG_WORLD_ID", "1")
-KG_TOKEN = os.getenv("KG_TOKEN", "")
-
-start_rankings_poller(poll_seconds=900, world_id=WORLD_ID, kg_token=KG_TOKEN)
-start_nw_poller(poll_seconds=240, world_id=WORLD_ID, kg_token=KG_TOKEN)
-
-# NEW
 from nw_api import router as nw_router
 from nw_poll import start_nw_poller
+from rankings_poll import start_rankings_poller
 
 BASE_DIR = Path(__file__).resolve().parent
 STATIC_DIR = BASE_DIR / "static"
@@ -406,27 +398,28 @@ def get_spy_report(report_id: int):
 
 
 # -------------------------
-# NEW: Mount NW API + start poller
+# Mount NW API
 # -------------------------
 app.include_router(nw_router, prefix="/api/nw", tags=["nw"])
 
+
+# -------------------------
+# Startup: start pollers safely (NOT at import-time)
+# -------------------------
 @app.on_event("startup")
 def _startup():
-    # Poll interval in seconds (4 minutes)
-    poll_seconds = int(os.getenv("NW_POLL_SECONDS", "240"))
-
-    # World id
     world_id = os.getenv("KG_WORLD_ID", "1")
-
-    # Token (optional for NWOT, likely required for rankings once we add it)
     kg_token = os.getenv("KG_TOKEN", "")
 
-    # Start poller safely
-    start_nw_poller(
-        poll_seconds=poll_seconds,
-        world_id=world_id,
-        kg_token=kg_token,
-    )
+    # Rankings refresh (top 300) every 15 minutes by default
+    rankings_seconds = int(os.getenv("RANKINGS_POLL_SECONDS", "900"))
+
+    # NWOT every 4 minutes by default
+    nw_seconds = int(os.getenv("NW_POLL_SECONDS", "240"))
+
+    # Start both pollers
+    start_rankings_poller(poll_seconds=rankings_seconds, world_id=world_id, kg_token=kg_token)
+    start_nw_poller(poll_seconds=nw_seconds, world_id=world_id, kg_token=kg_token)
 
 
 # -------------------------
