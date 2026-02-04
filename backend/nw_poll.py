@@ -11,11 +11,6 @@ from psycopg.rows import dict_row
 
 KG_NWOT_URL = "https://www.kingdomgame.net/WebService/Kingdoms.asmx/GetNetworthOverTime"
 
-# TEMP: hardcode one kingdom so we can prove end-to-end works.
-# We'll swap this to "top 300 from rankings" once we wire rankings scraping.
-DEFAULT_TRACK: List[Tuple[str, int]] = [
-    ("Galileo", 3334),
-]
 
 def _dsn() -> str:
     return os.getenv("DATABASE_URL") or os.getenv("POSTGRES_URL") or ""
@@ -30,19 +25,22 @@ def _ensure_table():
     conn = _connect()
     try:
         with conn.cursor() as cur:
+            # ✅ add PK so we don't duplicate ticks
             cur.execute(
                 """
                 CREATE TABLE IF NOT EXISTS public.nw_history (
+                    kingdom_id int NOT NULL,
                     kingdom text NOT NULL,
                     networth bigint NOT NULL,
-                    tick_time timestamptz NOT NULL
+                    tick_time timestamptz NOT NULL,
+                    PRIMARY KEY (kingdom_id, tick_time)
                 );
                 """
             )
             cur.execute(
                 """
                 CREATE INDEX IF NOT EXISTS nw_history_kingdom_tick_idx
-                ON public.nw_history (kingdom, tick_time DESC);
+                ON public.nw_history (kingdom_id, tick_time DESC);
                 """
             )
             conn.commit()
@@ -59,7 +57,7 @@ def _parse_kg_response(resp_json: Dict) -> List[Dict]:
         return []
     return inner.get("dataPoints") or []
 
-def _insert_points(kingdom: str, points: List[Dict]):
+def _insert_points(kingdom_id: int, kingdom: str, points: List[Dict]):
     if not points:
         return
 
@@ -72,26 +70,42 @@ def _insert_points(kingdom: str, points: List[Dict]):
                 if nw is None or not dt:
                     continue
 
-                # KG returns e.g. "2026-02-03T18:25:15" (no tz).
-                # Treat as UTC by default.
-                try:
-                    tick_time = datetime.fromisoformat(dt).replace(tzinfo=timezone.utc)
-                except Exception:
-                    continue
+                tick_time = datetime.fromisoformat(dt).replace(tzinfo=timezone.utc)
 
-                # ✅ Fix: KG sometimes returns overlapping history.
-                # Upsert by (kingdom, tick_time) so duplicates don't throw.
+                # ✅ ON CONFLICT DO NOTHING = no dupes
                 cur.execute(
                     """
-                    INSERT INTO public.nw_history (kingdom, networth, tick_time)
-                    VALUES (%s, %s, %s)
-                    ON CONFLICT (kingdom, tick_time)
-                    DO UPDATE SET networth = EXCLUDED.networth
+                    INSERT INTO public.nw_history (kingdom_id, kingdom, networth, tick_time)
+                    VALUES (%s, %s, %s, %s)
+                    ON CONFLICT (kingdom_id, tick_time) DO NOTHING
                     """,
-                    (kingdom, int(nw), tick_time),
+                    (int(kingdom_id), str(kingdom), int(nw), tick_time),
                 )
-
             conn.commit()
+    finally:
+        conn.close()
+
+def _load_top300_track() -> List[Tuple[str, int]]:
+    """
+    Reads current top 300 from public.kg_top_kingdoms.
+    Returns [(kingdom_name, kingdom_id)].
+    """
+    conn = _connect()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT kingdom, kingdom_id
+                FROM public.kg_top_kingdoms
+                ORDER BY ranking ASC NULLS LAST
+                LIMIT 300
+                """
+            )
+            rows = cur.fetchall()
+        return [(r["kingdom"], int(r["kingdom_id"])) for r in rows]
+    except Exception as e:
+        print("[nw_poller] load_top300 error:", repr(e))
+        return []
     finally:
         conn.close()
 
@@ -103,44 +117,39 @@ def _poll_once(world_id: str, kg_token: str, track: List[Tuple[str, int]]):
         "Origin": "https://www.kingdomgame.net",
         "Referer": "https://www.kingdomgame.net/rankings",
     }
-
-    # Some KG endpoints require token; NWOT might not, but harmless to send.
     if kg_token:
         headers["token"] = kg_token
 
     with httpx.Client(timeout=30.0) as client:
         for name, kid in track:
-            payload = {"kingdomId": kid, "hours": 24}
+            payload = {"kingdomId": int(kid), "hours": 24}
             r = client.post(KG_NWOT_URL, headers=headers, json=payload)
             r.raise_for_status()
             points = _parse_kg_response(r.json())
-            _insert_points(name, points)
+            _insert_points(kid, name, points)
 
 def start_nw_poller(
     *,
     poll_seconds: int = 240,
     world_id: str = "1",
     kg_token: str = "",
-    track: Optional[List[Tuple[str, int]]] = None
 ):
     """
-    Starts a background polling thread.
-
-    Args:
-      poll_seconds: how often to poll (default 240 = 4 min)
-      world_id: KG world-id header (default "1")
-      kg_token: optional token header (from Login response)
-      track: optional [(kingdom_name, kingdom_id)] list; defaults to DEFAULT_TRACK
+    Every poll:
+      1) load top-300 from kg_top_kingdoms
+      2) pull NWOT for each kingdomId
+      3) upsert into nw_history
     """
     _ensure_table()
-
-    if track is None:
-        track = DEFAULT_TRACK
 
     def loop():
         while True:
             try:
-                _poll_once(world_id=world_id, kg_token=kg_token, track=track)
+                track = _load_top300_track()
+                if not track:
+                    print("[nw_poller] top300 empty — waiting for rankings poller.")
+                else:
+                    _poll_once(world_id=world_id, kg_token=kg_token, track=track)
             except Exception as e:
                 print("[nw_poller] error:", repr(e))
             time.sleep(int(poll_seconds))

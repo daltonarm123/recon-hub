@@ -12,6 +12,14 @@ from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, RedirectResponse, PlainTextResponse
 from fastapi.staticfiles import StaticFiles
+from rankings_poll import start_rankings_poller
+from nw_poll import start_nw_poller
+
+WORLD_ID = os.getenv("KG_WORLD_ID", "1")
+KG_TOKEN = os.getenv("KG_TOKEN", "")
+
+start_rankings_poller(poll_seconds=900, world_id=WORLD_ID, kg_token=KG_TOKEN)
+start_nw_poller(poll_seconds=240, world_id=WORLD_ID, kg_token=KG_TOKEN)
 
 # NEW
 from nw_api import router as nw_router

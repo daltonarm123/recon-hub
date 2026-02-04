@@ -40,3 +40,54 @@
 .read-the-docs {
   color: #888;
 }
+/* -------- NWOT responsive layout -------- */
+.nwot-controls {
+    display: flex;
+    gap: 10px;
+    align-items: center;
+    justify-content: flex-end;
+    flex-wrap: wrap;
+}
+
+.nwot-grid {
+    display: grid;
+    grid-template-columns: 320px 1fr;
+    gap: 12px;
+    align-items: stretch;
+}
+
+.nwot-sidebar {
+    min-height: 420px;
+}
+
+.nwot-chart {
+    min-height: 420px;
+}
+
+@media (max-width: 900px) {
+    .nwot-controls {
+        justify-content: stretch;
+    }
+
+        .nwot-controls > * {
+            width: 100% !important;
+        }
+
+    .nwot-grid {
+        grid-template-columns: 1fr; /* stack */
+    }
+
+    .nwot-sidebar {
+        min-height: auto;
+    }
+
+    .nwot-chart {
+        min-height: 320px;
+    }
+}
+
+@media (max-width: 900px) {
+    #root {
+        padding: 0.75rem;
+    }
+}
