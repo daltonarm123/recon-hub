@@ -20,9 +20,6 @@ from rankings_poll import start_rankings_poller
 BASE_DIR = Path(__file__).resolve().parent
 STATIC_DIR = BASE_DIR / "static"
 
-# -------------------------
-# FastAPI
-# -------------------------
 app = FastAPI()
 
 app.add_middleware(
@@ -404,22 +401,17 @@ app.include_router(nw_router, prefix="/api/nw", tags=["nw"])
 
 
 # -------------------------
-# Startup: start pollers safely (NOT at import-time)
+# Startup: start pollers
 # -------------------------
 @app.on_event("startup")
 def _startup():
     world_id = os.getenv("KG_WORLD_ID", "1")
-    kg_token = os.getenv("KG_TOKEN", "")
 
-    # Rankings refresh (top 300) every 15 minutes by default
     rankings_seconds = int(os.getenv("RANKINGS_POLL_SECONDS", "900"))
-
-    # NWOT every 4 minutes by default
     nw_seconds = int(os.getenv("NW_POLL_SECONDS", "240"))
 
-    # Start both pollers
     start_rankings_poller(poll_seconds=rankings_seconds, world_id=world_id)
-    start_nw_poller(poll_seconds=nw_seconds, world_id=world_id, kg_token=kg_token)
+    start_nw_poller(poll_seconds=nw_seconds)
 
 
 # -------------------------

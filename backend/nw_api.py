@@ -8,60 +8,98 @@ from fastapi import APIRouter, HTTPException
 
 router = APIRouter()
 
+
 def _get_dsn() -> str:
     dsn = os.getenv("DATABASE_URL") or os.getenv("POSTGRES_URL") or ""
     if not dsn:
         raise HTTPException(status_code=500, detail="DATABASE_URL is not set")
     return dsn
 
+
 def _connect() -> psycopg.Connection:
     return psycopg.connect(_get_dsn(), row_factory=dict_row)
 
+
 @router.get("/kingdoms")
-def nw_kingdoms(limit: int = 300, world_id: str = "1"):
+def nw_kingdoms(limit: int = 300, search: str = ""):
     """
-    Source of truth for the NWOT list = rankings_top300.
-    We LEFT JOIN nw_history so the UI can show last_tick + points if we have them.
+    Source of truth for NWOT list = public.kg_top_kingdoms (filled by rankings_poller).
+    We LEFT JOIN nw_history so the UI can show last_tick + points.
     """
+    s = (search or "").strip()
+
     conn = _connect()
     try:
         with conn.cursor() as cur:
-            cur.execute(
-                """
-                WITH hist AS (
-                    SELECT kingdom,
-                           MAX(tick_time) AS last_tick,
-                           COUNT(*)::int  AS points
-                    FROM public.nw_history
-                    GROUP BY kingdom
+            if s:
+                like = f"%{s}%"
+                cur.execute(
+                    """
+                    WITH hist AS (
+                        SELECT kingdom,
+                               MAX(tick_time) AS last_tick,
+                               COUNT(*)::int  AS points
+                        FROM public.nw_history
+                        GROUP BY kingdom
+                    )
+                    SELECT
+                        k.ranking AS rank,
+                        k.kingdom_id,
+                        k.kingdom,
+                        k.networth,
+                        COALESCE(k.alliance, '') AS alliance,
+                        k.fetched_at,
+                        h.last_tick,
+                        COALESCE(h.points, 0)::int AS points
+                    FROM public.kg_top_kingdoms k
+                    LEFT JOIN hist h
+                        ON h.kingdom = k.kingdom
+                    WHERE k.kingdom ILIKE %s
+                       OR COALESCE(k.alliance,'') ILIKE %s
+                    ORDER BY k.ranking ASC NULLS LAST
+                    LIMIT %s
+                    """,
+                    (like, like, limit),
                 )
-                SELECT
-                    r.rank,
-                    r.kingdom_id,
-                    r.kingdom,
-                    r.networth,
-                    COALESCE(r.alliance, '') AS alliance,
-                    r.updated_at,
-                    h.last_tick,
-                    COALESCE(h.points, 0)::int AS points
-                FROM public.rankings_top300 r
-                LEFT JOIN hist h
-                    ON h.kingdom = r.kingdom
-                WHERE r.world_id = %s
-                ORDER BY r.rank ASC
-                LIMIT %s
-                """,
-                (str(world_id), limit),
-            )
+            else:
+                cur.execute(
+                    """
+                    WITH hist AS (
+                        SELECT kingdom,
+                               MAX(tick_time) AS last_tick,
+                               COUNT(*)::int  AS points
+                        FROM public.nw_history
+                        GROUP BY kingdom
+                    )
+                    SELECT
+                        k.ranking AS rank,
+                        k.kingdom_id,
+                        k.kingdom,
+                        k.networth,
+                        COALESCE(k.alliance, '') AS alliance,
+                        k.fetched_at,
+                        h.last_tick,
+                        COALESCE(h.points, 0)::int AS points
+                    FROM public.kg_top_kingdoms k
+                    LEFT JOIN hist h
+                        ON h.kingdom = k.kingdom
+                    ORDER BY k.ranking ASC NULLS LAST
+                    LIMIT %s
+                    """,
+                    (limit,),
+                )
             rows = cur.fetchall()
 
-        return {"ok": True, "world_id": str(world_id), "kingdoms": rows}
+        return {"ok": True, "kingdoms": rows}
     finally:
         conn.close()
 
+
 @router.get("/history/{kingdom}")
 def nw_history(kingdom: str, hours: int = 24):
-    # Use aware UTC time to match timestamptz comparisons cleanly.
+    """
+    Returns chart points: [{t: ISO8601, v: networth}, ...]
+    """
     since = datetime.now(timezone.utc) - timedelta(hours=hours)
 
     conn = _connect()
@@ -79,11 +117,10 @@ def nw_history(kingdom: str, hours: int = 24):
             )
             rows = cur.fetchall()
 
-        # Chart-ready: [{t: "...ISO...", v: 123}, ...]
         points = []
         for r in rows:
-            tt = r["tick_time"]
-            nw = r["networth"]
+            tt = r.get("tick_time")
+            nw = r.get("networth")
             if tt is None or nw is None:
                 continue
             points.append({"t": tt.isoformat(), "v": int(nw)})
