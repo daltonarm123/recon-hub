@@ -3,18 +3,42 @@ import json
 import time
 import threading
 import random
-from datetime import datetime, timezone
-from typing import Dict, List, Optional
+from datetime import datetime, timezone, timedelta
+from typing import Dict, List, Optional, Tuple
 
 import httpx
 import psycopg
 from psycopg.rows import dict_row
 
-# Browser shows: POST /WebService/Kingdoms.asmx/GetKingdomRankings
 KG_RANKINGS_URL = os.getenv(
     "KG_RANKINGS_URL",
     "https://www.kingdomgame.net/WebService/Kingdoms.asmx/GetKingdomRankings",
 )
+
+# How long to wait AFTER the tick boundary before hitting KG
+# (important because the game UI often lags a bit after :00/:05)
+KG_TICK_DELAY_SECONDS = float(os.getenv("KG_TICK_DELAY_SECONDS", "45"))
+
+
+# -------------------------
+# Tick scheduling helpers
+# -------------------------
+def _next_5min_boundary_utc(now: datetime) -> datetime:
+    base = now.replace(second=0, microsecond=0)
+    m = (base.minute // 5) * 5
+    boundary = base.replace(minute=m)
+    if boundary <= now:
+        boundary += timedelta(minutes=5)
+    return boundary
+
+
+def _sleep_until(dt: datetime):
+    while True:
+        now = datetime.now(timezone.utc)
+        sec = (dt - now).total_seconds()
+        if sec <= 0:
+            return
+        time.sleep(min(2.0, sec))
 
 
 # -------------------------
@@ -62,10 +86,6 @@ def _ensure_tables():
 # KG response parsing
 # -------------------------
 def _parse_kg_d_json(resp_json: Dict) -> Dict:
-    """
-    KG returns: {"d": "<stringified json>"}.
-    Normalize to dict.
-    """
     d = resp_json.get("d")
     if not d:
         return {}
@@ -76,9 +96,6 @@ def _parse_kg_d_json(resp_json: Dict) -> Dict:
 
 
 def _extract_kingdoms(payload: Dict) -> List[Dict]:
-    """
-    Payload shape from GetKingdomRankings: {"kingdoms":[...], "totalKingdoms":..., ...}
-    """
     rows = payload.get("kingdoms")
     if not isinstance(rows, list):
         return []
@@ -128,38 +145,38 @@ def _extract_kingdoms(payload: Dict) -> List[Dict]:
 # -------------------------
 # DB upsert
 # -------------------------
-def _upsert_top(rows: List[Dict]):
+def _upsert_top(rows: List[Dict], fetched_at: datetime):
     if not rows:
         return
-
-    now = datetime.now(timezone.utc)
 
     conn = _connect()
     try:
         with conn.cursor() as cur:
-            for r in rows:
-                cur.execute(
-                    """
-                    INSERT INTO public.kg_top_kingdoms
-                      (kingdom_id, kingdom, alliance, ranking, networth, fetched_at)
-                    VALUES
-                      (%s, %s, %s, %s, %s, %s)
-                    ON CONFLICT (kingdom_id) DO UPDATE SET
-                      kingdom    = EXCLUDED.kingdom,
-                      alliance   = EXCLUDED.alliance,
-                      ranking    = EXCLUDED.ranking,
-                      networth   = EXCLUDED.networth,
-                      fetched_at = EXCLUDED.fetched_at
-                    """,
+            cur.executemany(
+                """
+                INSERT INTO public.kg_top_kingdoms
+                  (kingdom_id, kingdom, alliance, ranking, networth, fetched_at)
+                VALUES
+                  (%s, %s, %s, %s, %s, %s)
+                ON CONFLICT (kingdom_id) DO UPDATE SET
+                  kingdom    = EXCLUDED.kingdom,
+                  alliance   = EXCLUDED.alliance,
+                  ranking    = EXCLUDED.ranking,
+                  networth   = EXCLUDED.networth,
+                  fetched_at = EXCLUDED.fetched_at
+                """,
+                [
                     (
                         r["kingdom_id"],
                         r["kingdom"],
                         r["alliance"],
                         r["ranking"],
                         r["networth"],
-                        now,
-                    ),
-                )
+                        fetched_at,
+                    )
+                    for r in rows
+                ],
+            )
         conn.commit()
     finally:
         conn.close()
@@ -169,7 +186,6 @@ def _upsert_top(rows: List[Dict]):
 # KG request builders
 # -------------------------
 def _kg_headers(world_id: str) -> Dict[str, str]:
-    # Match browser essentials (cookies not required)
     return {
         "Accept": "application/json, text/plain, */*",
         "Content-Type": "application/json",
@@ -181,16 +197,12 @@ def _kg_headers(world_id: str) -> Dict[str, str]:
 
 
 def _kg_base_payload() -> Dict[str, object]:
-    """
-    Matches what you captured in DevTools.
-    Values should be provided via env vars (do NOT hardcode secrets).
-    """
     account_id = os.getenv("KG_ACCOUNT_ID", "").strip()
     token = os.getenv("KG_TOKEN", "").strip()
     kingdom_id = os.getenv("KG_KINGDOM_ID", "").strip()
 
     continent_id = int(os.getenv("KG_CONTINENT_ID", "-1"))
-    start_number = int(os.getenv("KG_START_NUMBER", "-1"))  # we'll override during pagination
+    start_number = int(os.getenv("KG_START_NUMBER", "-1"))
 
     if not account_id or not token or not kingdom_id:
         raise RuntimeError("Missing KG env vars: set KG_ACCOUNT_ID, KG_TOKEN, KG_KINGDOM_ID")
@@ -207,16 +219,14 @@ def _kg_base_payload() -> Dict[str, object]:
 # -------------------------
 # Poll once (paginated to 300)
 # -------------------------
-def _poll_rankings_once(*, world_id: str) -> int:
+def _poll_rankings_once(*, world_id: str) -> Tuple[int, Optional[int]]:
     headers = _kg_headers(world_id)
     base_payload = _kg_base_payload()
 
     all_rows: List[Dict] = []
     seen_ids = set()
-
-    # Most common: API returns 20 per call when startingRank increments.
-    # We'll keep requesting until we reach 300 or the API stops returning new rows.
     start = 1
+    parsed_last: Dict = {}
 
     with httpx.Client(timeout=30.0) as client:
         while len(all_rows) < 300:
@@ -228,8 +238,9 @@ def _poll_rankings_once(*, world_id: str) -> int:
 
             raw = r.json()
             parsed = _parse_kg_d_json(raw) or raw
-            chunk = _extract_kingdoms(parsed)
+            parsed_last = parsed if isinstance(parsed, dict) else {}
 
+            chunk = _extract_kingdoms(parsed)
             if not chunk:
                 break
 
@@ -244,43 +255,74 @@ def _poll_rankings_once(*, world_id: str) -> int:
                 if len(all_rows) >= 300:
                     break
 
-            # Advance by what we just got (works for 20-per-page or variable page sizes)
             start += max(1, len(chunk))
 
-            # Safety stop: if we didn't add anything new, don't loop forever
             if added_this_page == 0:
                 break
 
-            # Tiny sleep to be polite
-            time.sleep(0.15)
+            time.sleep(0.12)
 
     if not all_rows:
-        snippet = str(parsed)[:350] if "parsed" in locals() else "n/a"
+        snippet = str(parsed_last)[:350]
         raise RuntimeError(f"Parsed 0 kingdoms from KG response. Snippet: {snippet}")
 
-    _upsert_top(all_rows[:300])
-    return min(len(all_rows), 300)
+    fetched_at = datetime.now(timezone.utc)
+    _upsert_top(all_rows[:300], fetched_at=fetched_at)
+
+    # Debug Galileo NW if present
+    gal_nw = None
+    for r in all_rows[:300]:
+        if r.get("kingdom") == "Galileo":
+            gal_nw = r.get("networth")
+            break
+
+    return (min(len(all_rows), 300), gal_nw)
 
 
 # -------------------------
 # Public: start poller
 # -------------------------
-def start_rankings_poller(*, poll_seconds: int = 900, world_id: str = "1"):
-    """
-    Poll rankings on an interval (default 15 min) and upsert top 300 into public.kg_top_kingdoms.
+_POLL_THREAD: Optional[threading.Thread] = None
 
-    Uses retries/backoff because KG can be flaky.
+
+def start_rankings_poller(*, poll_seconds: int = 300, world_id: str = "1"):
     """
+    Tick-aligned rankings poller:
+    - wakes up exactly on :00/:05/:10...
+    - waits KG_TICK_DELAY_SECONDS so KG has time to settle
+    - fetches/upserts top 300 into public.kg_top_kingdoms
+    """
+    global _POLL_THREAD
+    if _POLL_THREAD and _POLL_THREAD.is_alive():
+        return _POLL_THREAD
+
     _ensure_tables()
 
     def loop():
+        # small boot jitter so multiple restarts don't hammer KG at once
+        time.sleep(random.uniform(0.0, 2.0))
+
         while True:
             try:
+                # Align to tick boundary
+                target = _next_5min_boundary_utc(datetime.now(timezone.utc))
+                _sleep_until(target)
+
+                # Let KG settle post-tick
+                if KG_TICK_DELAY_SECONDS > 0:
+                    time.sleep(KG_TICK_DELAY_SECONDS)
+
                 last_err: Optional[Exception] = None
+                gal_nw: Optional[int] = None
+                n: int = 0
+
                 for attempt in range(1, 7):
                     try:
-                        n = _poll_rankings_once(world_id=world_id)
-                        print(f"[rankings_poller] ok: upserted {n} kingdoms")
+                        n, gal_nw = _poll_rankings_once(world_id=world_id)
+                        if gal_nw is not None:
+                            print(f"[rankings_poller] ok: upserted {n} kingdoms @ {target.isoformat()} GalileoNW={gal_nw}")
+                        else:
+                            print(f"[rankings_poller] ok: upserted {n} kingdoms @ {target.isoformat()}")
                         last_err = None
                         break
                     except Exception as e:
@@ -290,11 +332,14 @@ def start_rankings_poller(*, poll_seconds: int = 900, world_id: str = "1"):
 
                 if last_err:
                     print("[rankings_poller] error:", repr(last_err))
+
             except Exception as e:
                 print("[rankings_poller] fatal error:", repr(e))
 
-            time.sleep(int(poll_seconds))
+            # We ignore poll_seconds sleeping because we tick-align every cycle
+            # (poll_seconds kept for compatibility with main.py)
+            _ = poll_seconds
 
-    t = threading.Thread(target=loop, daemon=True)
-    t.start()
-    return t
+    _POLL_THREAD = threading.Thread(target=loop, daemon=True)
+    _POLL_THREAD.start()
+    return _POLL_THREAD

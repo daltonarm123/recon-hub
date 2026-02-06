@@ -1,11 +1,34 @@
 import os
 import threading
 import time
-from datetime import datetime, timezone
-from typing import Dict, Any, List, Optional, Tuple
+from datetime import datetime, timezone, timedelta
+from typing import List, Optional, Tuple
 
 import psycopg
 from psycopg.rows import dict_row
+
+KG_TICK_DELAY_SECONDS = float(os.getenv("KG_TICK_DELAY_SECONDS", "45"))
+
+
+# -------------------------
+# Tick scheduling helpers
+# -------------------------
+def _next_5min_boundary_utc(now: datetime) -> datetime:
+    base = now.replace(second=0, microsecond=0)
+    m = (base.minute // 5) * 5
+    boundary = base.replace(minute=m)
+    if boundary <= now:
+        boundary += timedelta(minutes=5)
+    return boundary
+
+
+def _sleep_until(dt: datetime):
+    while True:
+        now = datetime.now(timezone.utc)
+        sec = (dt - now).total_seconds()
+        if sec <= 0:
+            return
+        time.sleep(min(2.0, sec))
 
 
 def _get_dsn() -> str:
@@ -82,78 +105,10 @@ def _fetch_from_kg_top() -> Snapshot:
         conn.close()
 
 
-def _fetch_from_latest() -> Snapshot:
-    conn = _connect()
-    try:
-        with conn.cursor() as cur:
-            cur.execute("SELECT to_regclass('public.nw_latest') AS t;")
-            reg = cur.fetchone()
-            if not reg or not reg.get("t"):
-                return []
-
-            cur.execute("""
-                SELECT kingdom, COALESCE(rank, 999999) AS rank, networth
-                FROM public.nw_latest
-                ORDER BY networth DESC
-                LIMIT 300;
-            """)
-            rows = cur.fetchall()
-
-        out: Snapshot = []
-        for r in rows:
-            k = (r.get("kingdom") or "").strip()
-            if not k or r.get("networth") is None:
-                continue
-            out.append((k, int(r.get("rank") or 999999), int(r["networth"])))
-        return out
-    finally:
-        conn.close()
-
-
-def _fetch_from_history() -> Snapshot:
-    conn = _connect()
-    try:
-        with conn.cursor() as cur:
-            cur.execute("""
-                WITH latest AS (
-                    SELECT DISTINCT ON (kingdom)
-                        kingdom,
-                        networth,
-                        tick_time
-                    FROM public.nw_history
-                    ORDER BY kingdom, tick_time DESC
-                )
-                SELECT kingdom, 999999 AS rank, networth
-                FROM latest
-                ORDER BY networth DESC
-                LIMIT 300;
-            """)
-            rows = cur.fetchall()
-
-        out: Snapshot = []
-        for r in rows:
-            k = (r.get("kingdom") or "").strip()
-            if not k or r.get("networth") is None:
-                continue
-            out.append((k, 999999, int(r["networth"])))
-        return out
-    finally:
-        conn.close()
-
-
 def _fetch_top300_resilient() -> Tuple[str, Snapshot]:
     rows = _fetch_from_kg_top()
     if rows:
         return ("kg_top_kingdoms", rows)
-
-    rows = _fetch_from_latest()
-    if rows:
-        return ("nw_latest", rows)
-
-    rows = _fetch_from_history()
-    if rows:
-        return ("nw_history", rows)
-
     return ("none", [])
 
 
@@ -198,7 +153,14 @@ _POLL_THREAD: Optional[threading.Thread] = None
 _STOP = False
 
 
-def start_nw_poller(poll_seconds: int = 240):
+def start_nw_poller(poll_seconds: int = 300):
+    """
+    Tick-aligned NW poller:
+    - wakes up exactly on :00/:05/:10...
+    - waits KG_TICK_DELAY_SECONDS (same as rankings poller)
+    - reads kg_top_kingdoms and writes nw_latest + nw_history
+    - uses tick boundary time as tick_time (perfect alignment)
+    """
     global _POLL_THREAD, _STOP
 
     if _POLL_THREAD and _POLL_THREAD.is_alive():
@@ -208,26 +170,41 @@ def start_nw_poller(poll_seconds: int = 240):
     _STOP = False
 
     def loop():
+        # small boot jitter
+        time.sleep(1.0)
+
         while not _STOP:
             try:
+                target = _next_5min_boundary_utc(datetime.now(timezone.utc))
+                _sleep_until(target)
+
+                if KG_TICK_DELAY_SECONDS > 0:
+                    time.sleep(KG_TICK_DELAY_SECONDS)
+
                 source, snapshot = _fetch_top300_resilient()
 
                 if not snapshot:
                     print("[nw_poll] source=none no snapshot available")
                 else:
-                    now = datetime.now(timezone.utc)
+                    now = target  # <- align exactly to tick boundary
 
                     _upsert_latest(snapshot, now)
 
                     points = [(k, now, nw) for (k, _rank, nw) in snapshot]
                     _upsert_history(points)
 
-                    print(f"[nw_poll] source={source} ok: wrote {len(points)} points @ {now.isoformat()}")
+                    # Debug Galileo NW each tick
+                    gal = next((nw for (k, _r, nw) in snapshot if k == "Galileo"), None)
+                    if gal is not None:
+                        print(f"[nw_poll] source={source} ok: wrote {len(points)} points @ {now.isoformat()} GalileoNW={gal}")
+                    else:
+                        print(f"[nw_poll] source={source} ok: wrote {len(points)} points @ {now.isoformat()}")
 
             except Exception as e:
                 print(f"[nw_poll] error: {repr(e)}")
 
-            time.sleep(max(30, int(poll_seconds)))
+            # poll_seconds kept for compatibility; tick alignment drives the schedule
+            _ = poll_seconds
 
     _POLL_THREAD = threading.Thread(target=loop, daemon=True)
     _POLL_THREAD.start()
