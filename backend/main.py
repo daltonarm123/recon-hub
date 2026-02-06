@@ -418,7 +418,7 @@ def _startup():
     nw_seconds = int(os.getenv("NW_POLL_SECONDS", "240"))
 
     # Start both pollers
-    start_rankings_poller(poll_seconds=rankings_seconds, world_id=world_id, kg_token=kg_token)
+    start_rankings_poller(poll_seconds=rankings_seconds, world_id=world_id)
     start_nw_poller(poll_seconds=nw_seconds, world_id=world_id, kg_token=kg_token)
 
 
