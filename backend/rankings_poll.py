@@ -2,6 +2,7 @@ import os
 import json
 import time
 import threading
+import random
 from datetime import datetime, timezone
 from typing import Dict, List, Optional
 
@@ -10,12 +11,10 @@ import psycopg
 from psycopg.rows import dict_row
 
 
-# ✅ IMPORTANT:
-# This URL must match what the KG rankings page calls in Network tab.
-# If this exact endpoint name differs, just update this constant.
+# Browser shows: POST /WebService/Kingdoms.asmx/GetKingdomRankings
 KG_RANKINGS_URL = os.getenv(
     "KG_RANKINGS_URL",
-    "https://www.kingdomgame.net/WebService/Kingdoms.asmx/GetRankings"
+    "https://www.kingdomgame.net/WebService/Kingdoms.asmx/GetKingdomRankings",
 )
 
 def _dsn() -> str:
@@ -31,7 +30,6 @@ def _ensure_tables():
     conn = _connect()
     try:
         with conn.cursor() as cur:
-            # Stores latest known top-300 snapshot (we overwrite/upsert these rows)
             cur.execute(
                 """
                 CREATE TABLE IF NOT EXISTS public.kg_top_kingdoms (
@@ -50,14 +48,14 @@ def _ensure_tables():
                 ON public.kg_top_kingdoms (ranking ASC NULLS LAST);
                 """
             )
-            conn.commit()
+        conn.commit()
     finally:
         conn.close()
 
 def _parse_kg_d_json(resp_json: Dict) -> Dict:
     """
-    KG often returns: {"d": "<stringified json>"}.
-    This normalizes to a dict.
+    KG returns: {"d": "<stringified json>"}.
+    Normalize to dict.
     """
     d = resp_json.get("d")
     if not d:
@@ -69,34 +67,22 @@ def _parse_kg_d_json(resp_json: Dict) -> Dict:
 
 def _extract_top_kingdoms(payload: Dict, limit: int = 300) -> List[Dict]:
     """
-    We try to be resilient to whatever key names KG uses.
-    Typical shapes include: {"data": [...]} or {"kingdoms":[...]} etc.
+    Payload shape from GetKingdomRankings: {"kingdoms":[...], "totalKingdoms":..., ...}
     """
-    # find the first list in common keys
-    candidates = [
-        payload.get("data"),
-        payload.get("kingdoms"),
-        payload.get("rankings"),
-        payload.get("items"),
-        payload.get("results"),
-    ]
-    rows = next((c for c in candidates if isinstance(c, list)), None)
-    if rows is None and isinstance(payload, list):
-        rows = payload
+    rows = payload.get("kingdoms")
     if not isinstance(rows, list):
         return []
 
-    out = []
+    out: List[Dict] = []
     for r in rows[:limit]:
         if not isinstance(r, dict):
             continue
 
-        # Try multiple possible field names
-        kid = r.get("kingdomId") or r.get("kingdom_id") or r.get("id")
-        name = r.get("kingdom") or r.get("name") or r.get("kingdomName")
-        alliance = r.get("alliance") or r.get("allianceName") or r.get("ally")
-        ranking = r.get("ranking") or r.get("rank") or r.get("position")
-        networth = r.get("networth") or r.get("nettWorth") or r.get("nw")
+        kid = r.get("id")
+        name = r.get("name")
+        alliance = r.get("allianceName")
+        ranking = r.get("rank")
+        networth = r.get("networth")
 
         if kid is None or name is None:
             continue
@@ -159,48 +145,94 @@ def _upsert_top(rows: List[Dict]):
                         now,
                     ),
                 )
-            conn.commit()
+        conn.commit()
     finally:
         conn.close()
 
-def _poll_rankings_once(*, world_id: str, kg_token: str):
-    headers = {
+def _kg_headers(world_id: str) -> Dict[str, str]:
+    # Match browser essentials (no cookies needed)
+    return {
         "Accept": "application/json, text/plain, */*",
         "Content-Type": "application/json",
-        "world-id": str(world_id),
         "Origin": "https://www.kingdomgame.net",
         "Referer": "https://www.kingdomgame.net/rankings",
+        "World-Id": str(world_id),
+        "User-Agent": "recon-hub/1.0 (rankings_poller)",
     }
-    if kg_token:
-        headers["token"] = kg_token
 
-    # Some implementations need a payload; some don't.
-    # We send a minimal one that many KG endpoints accept.
-    payload = {"page": 1, "pageSize": 300}
+def _kg_payload() -> Dict[str, object]:
+    """
+    This matches what you captured in DevTools.
+    You can set these via env vars so you don't hardcode secrets.
+    """
+    account_id = os.getenv("KG_ACCOUNT_ID", "").strip()
+    token = os.getenv("KG_TOKEN", "").strip()
+    kingdom_id = os.getenv("KG_KINGDOM_ID", "").strip()
+
+    # These were in your payload (continentId -1, startNumber -1)
+    continent_id = int(os.getenv("KG_CONTINENT_ID", "-1"))
+    start_number = int(os.getenv("KG_START_NUMBER", "-1"))
+
+    if not account_id or not token or not kingdom_id:
+        raise RuntimeError(
+            "Missing KG auth env vars. Set KG_ACCOUNT_ID, KG_TOKEN, KG_KINGDOM_ID."
+        )
+
+    return {
+        "accountId": str(account_id),
+        "token": str(token),
+        "kingdomId": int(kingdom_id),
+        "continentId": int(continent_id),
+        "startNumber": int(start_number),
+    }
+
+def _poll_rankings_once(*, world_id: str):
+    headers = _kg_headers(world_id)
+    payload = _kg_payload()
 
     with httpx.Client(timeout=30.0) as client:
         r = client.post(KG_RANKINGS_URL, headers=headers, json=payload)
         r.raise_for_status()
-
         j = r.json()
-        payload = _parse_kg_d_json(j) or j  # prefer parsed "d" but fallback raw
 
-        top = _extract_top_kingdoms(payload, limit=300)
-        _upsert_top(top)
+    parsed = _parse_kg_d_json(j) or j
+    top = _extract_top_kingdoms(parsed, limit=300)
 
-def start_rankings_poller(*, poll_seconds: int = 900, world_id: str = "1", kg_token: str = ""):
+    if not top:
+        # log a tiny snippet to help debugging schema changes
+        snippet = str(parsed)[:300]
+        raise RuntimeError(f"Parsed 0 kingdoms from KG response. Snippet: {snippet}")
+
+    _upsert_top(top)
+    print(f"[rankings_poller] ok: upserted {len(top)} kingdoms")
+
+def start_rankings_poller(*, poll_seconds: int = 900, world_id: str = "1"):
     """
     Poll rankings every 15 minutes by default.
-    This is plenty, and much lighter than 4-min NWOT polling.
+    Adds retry/backoff because KG is flaky.
     """
     _ensure_tables()
 
     def loop():
         while True:
             try:
-                _poll_rankings_once(world_id=world_id, kg_token=kg_token)
+                # retries with exponential backoff + jitter
+                last_err: Optional[Exception] = None
+                for attempt in range(1, 7):
+                    try:
+                        _poll_rankings_once(world_id=world_id)
+                        last_err = None
+                        break
+                    except Exception as e:
+                        last_err = e
+                        backoff = min(2 ** (attempt - 1), 30)
+                        time.sleep(backoff + random.uniform(0.0, 1.0))
+
+                if last_err:
+                    print("[rankings_poller] error:", repr(last_err))
             except Exception as e:
-                print("[rankings_poller] error:", repr(e))
+                print("[rankings_poller] fatal error:", repr(e))
+
             time.sleep(int(poll_seconds))
 
     t = threading.Thread(target=loop, daemon=True)
