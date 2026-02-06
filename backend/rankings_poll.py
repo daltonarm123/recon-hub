@@ -10,21 +10,26 @@ import httpx
 import psycopg
 from psycopg.rows import dict_row
 
-
 # Browser shows: POST /WebService/Kingdoms.asmx/GetKingdomRankings
 KG_RANKINGS_URL = os.getenv(
     "KG_RANKINGS_URL",
     "https://www.kingdomgame.net/WebService/Kingdoms.asmx/GetKingdomRankings",
 )
 
-def _dsn() -> str:
-    return os.getenv("DATABASE_URL") or os.getenv("POSTGRES_URL") or ""
 
-def _connect():
-    dsn = _dsn()
+# -------------------------
+# DB helpers
+# -------------------------
+def _dsn() -> str:
+    dsn = os.getenv("DATABASE_URL") or os.getenv("POSTGRES_URL") or ""
     if not dsn:
         raise RuntimeError("DATABASE_URL is not set")
-    return psycopg.connect(dsn, row_factory=dict_row)
+    return dsn
+
+
+def _connect():
+    return psycopg.connect(_dsn(), row_factory=dict_row)
+
 
 def _ensure_tables():
     conn = _connect()
@@ -52,6 +57,10 @@ def _ensure_tables():
     finally:
         conn.close()
 
+
+# -------------------------
+# KG response parsing
+# -------------------------
 def _parse_kg_d_json(resp_json: Dict) -> Dict:
     """
     KG returns: {"d": "<stringified json>"}.
@@ -65,7 +74,8 @@ def _parse_kg_d_json(resp_json: Dict) -> Dict:
     except Exception:
         return {}
 
-def _extract_top_kingdoms(payload: Dict, limit: int = 300) -> List[Dict]:
+
+def _extract_kingdoms(payload: Dict) -> List[Dict]:
     """
     Payload shape from GetKingdomRankings: {"kingdoms":[...], "totalKingdoms":..., ...}
     """
@@ -74,7 +84,7 @@ def _extract_top_kingdoms(payload: Dict, limit: int = 300) -> List[Dict]:
         return []
 
     out: List[Dict] = []
-    for r in rows[:limit]:
+    for r in rows:
         if not isinstance(r, dict):
             continue
 
@@ -105,8 +115,8 @@ def _extract_top_kingdoms(payload: Dict, limit: int = 300) -> List[Dict]:
         out.append(
             {
                 "kingdom_id": kid,
-                "kingdom": str(name),
-                "alliance": str(alliance) if alliance is not None else None,
+                "kingdom": str(name).strip(),
+                "alliance": str(alliance).strip() if alliance is not None else None,
                 "ranking": ranking,
                 "networth": networth,
             }
@@ -114,9 +124,14 @@ def _extract_top_kingdoms(payload: Dict, limit: int = 300) -> List[Dict]:
 
     return out
 
+
+# -------------------------
+# DB upsert
+# -------------------------
 def _upsert_top(rows: List[Dict]):
     if not rows:
         return
+
     now = datetime.now(timezone.utc)
 
     conn = _connect()
@@ -149,8 +164,12 @@ def _upsert_top(rows: List[Dict]):
     finally:
         conn.close()
 
+
+# -------------------------
+# KG request builders
+# -------------------------
 def _kg_headers(world_id: str) -> Dict[str, str]:
-    # Match browser essentials (no cookies needed)
+    # Match browser essentials (cookies not required)
     return {
         "Accept": "application/json, text/plain, */*",
         "Content-Type": "application/json",
@@ -160,23 +179,21 @@ def _kg_headers(world_id: str) -> Dict[str, str]:
         "User-Agent": "recon-hub/1.0 (rankings_poller)",
     }
 
-def _kg_payload() -> Dict[str, object]:
+
+def _kg_base_payload() -> Dict[str, object]:
     """
-    This matches what you captured in DevTools.
-    You can set these via env vars so you don't hardcode secrets.
+    Matches what you captured in DevTools.
+    Values should be provided via env vars (do NOT hardcode secrets).
     """
     account_id = os.getenv("KG_ACCOUNT_ID", "").strip()
     token = os.getenv("KG_TOKEN", "").strip()
     kingdom_id = os.getenv("KG_KINGDOM_ID", "").strip()
 
-    # These were in your payload (continentId -1, startNumber -1)
     continent_id = int(os.getenv("KG_CONTINENT_ID", "-1"))
-    start_number = int(os.getenv("KG_START_NUMBER", "-1"))
+    start_number = int(os.getenv("KG_START_NUMBER", "-1"))  # we'll override during pagination
 
     if not account_id or not token or not kingdom_id:
-        raise RuntimeError(
-            "Missing KG auth env vars. Set KG_ACCOUNT_ID, KG_TOKEN, KG_KINGDOM_ID."
-        )
+        raise RuntimeError("Missing KG env vars: set KG_ACCOUNT_ID, KG_TOKEN, KG_KINGDOM_ID")
 
     return {
         "accountId": str(account_id),
@@ -186,47 +203,90 @@ def _kg_payload() -> Dict[str, object]:
         "startNumber": int(start_number),
     }
 
-def _poll_rankings_once(*, world_id: str):
+
+# -------------------------
+# Poll once (paginated to 300)
+# -------------------------
+def _poll_rankings_once(*, world_id: str) -> int:
     headers = _kg_headers(world_id)
-    payload = _kg_payload()
+    base_payload = _kg_base_payload()
+
+    all_rows: List[Dict] = []
+    seen_ids = set()
+
+    # Most common: API returns 20 per call when startingRank increments.
+    # We'll keep requesting until we reach 300 or the API stops returning new rows.
+    start = 1
 
     with httpx.Client(timeout=30.0) as client:
-        r = client.post(KG_RANKINGS_URL, headers=headers, json=payload)
-        r.raise_for_status()
-        j = r.json()
+        while len(all_rows) < 300:
+            payload = dict(base_payload)
+            payload["startNumber"] = start
 
-    parsed = _parse_kg_d_json(j) or j
-    top = _extract_top_kingdoms(parsed, limit=300)
+            r = client.post(KG_RANKINGS_URL, headers=headers, json=payload)
+            r.raise_for_status()
 
-    if not top:
-        # log a tiny snippet to help debugging schema changes
-        snippet = str(parsed)[:300]
+            raw = r.json()
+            parsed = _parse_kg_d_json(raw) or raw
+            chunk = _extract_kingdoms(parsed)
+
+            if not chunk:
+                break
+
+            added_this_page = 0
+            for row in chunk:
+                kid = row["kingdom_id"]
+                if kid in seen_ids:
+                    continue
+                seen_ids.add(kid)
+                all_rows.append(row)
+                added_this_page += 1
+                if len(all_rows) >= 300:
+                    break
+
+            # Advance by what we just got (works for 20-per-page or variable page sizes)
+            start += max(1, len(chunk))
+
+            # Safety stop: if we didn't add anything new, don't loop forever
+            if added_this_page == 0:
+                break
+
+            # Tiny sleep to be polite
+            time.sleep(0.15)
+
+    if not all_rows:
+        snippet = str(parsed)[:350] if "parsed" in locals() else "n/a"
         raise RuntimeError(f"Parsed 0 kingdoms from KG response. Snippet: {snippet}")
 
-    _upsert_top(top)
-    print(f"[rankings_poller] ok: upserted {len(top)} kingdoms")
+    _upsert_top(all_rows[:300])
+    return min(len(all_rows), 300)
 
+
+# -------------------------
+# Public: start poller
+# -------------------------
 def start_rankings_poller(*, poll_seconds: int = 900, world_id: str = "1"):
     """
-    Poll rankings every 15 minutes by default.
-    Adds retry/backoff because KG is flaky.
+    Poll rankings on an interval (default 15 min) and upsert top 300 into public.kg_top_kingdoms.
+
+    Uses retries/backoff because KG can be flaky.
     """
     _ensure_tables()
 
     def loop():
         while True:
             try:
-                # retries with exponential backoff + jitter
                 last_err: Optional[Exception] = None
                 for attempt in range(1, 7):
                     try:
-                        _poll_rankings_once(world_id=world_id)
+                        n = _poll_rankings_once(world_id=world_id)
+                        print(f"[rankings_poller] ok: upserted {n} kingdoms")
                         last_err = None
                         break
                     except Exception as e:
                         last_err = e
                         backoff = min(2 ** (attempt - 1), 30)
-                        time.sleep(backoff + random.uniform(0.0, 1.0))
+                        time.sleep(backoff + random.uniform(0.0, 1.2))
 
                 if last_err:
                     print("[rankings_poller] error:", repr(last_err))
