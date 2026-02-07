@@ -41,6 +41,10 @@ def _sleep_until(dt: datetime):
         time.sleep(min(2.0, sec))
 
 
+def _log(msg: str):
+    print(msg, flush=True)
+
+
 # -------------------------
 # DB helpers
 # -------------------------
@@ -335,20 +339,30 @@ def start_rankings_poller(*, poll_seconds: int = 300, world_id: str = "1"):
         return _POLL_THREAD
 
     _ensure_tables()
+    _log(
+        f"[rankings_poller] startup world_id={world_id} "
+        f"tick_delay={KG_TICK_DELAY_SECONDS}s"
+    )
 
     def loop():
         # small boot jitter so multiple restarts don't hammer KG at once
         time.sleep(random.uniform(0.0, 2.0))
+        first_run = True
 
         while True:
             try:
-                # Align to tick boundary
-                target = _next_5min_boundary_utc(datetime.now(timezone.utc))
-                _sleep_until(target)
+                if first_run:
+                    # Run once immediately after boot to avoid long cold-start staleness.
+                    target = datetime.now(timezone.utc).replace(second=0, microsecond=0)
+                    first_run = False
+                else:
+                    # Align to tick boundary
+                    target = _next_5min_boundary_utc(datetime.now(timezone.utc))
+                    _sleep_until(target)
 
-                # Let KG settle post-tick
-                if KG_TICK_DELAY_SECONDS > 0:
-                    time.sleep(KG_TICK_DELAY_SECONDS)
+                    # Let KG settle post-tick
+                    if KG_TICK_DELAY_SECONDS > 0:
+                        time.sleep(KG_TICK_DELAY_SECONDS)
 
                 last_err: Optional[Exception] = None
                 gal_nw: Optional[int] = None
@@ -358,9 +372,9 @@ def start_rankings_poller(*, poll_seconds: int = 300, world_id: str = "1"):
                     try:
                         n, gal_nw = _poll_rankings_once(world_id=world_id)
                         if gal_nw is not None:
-                            print(f"[rankings_poller] ok: upserted {n} kingdoms @ {target.isoformat()} GalileoNW={gal_nw}")
+                            _log(f"[rankings_poller] ok: upserted {n} kingdoms @ {target.isoformat()} GalileoNW={gal_nw}")
                         else:
-                            print(f"[rankings_poller] ok: upserted {n} kingdoms @ {target.isoformat()}")
+                            _log(f"[rankings_poller] ok: upserted {n} kingdoms @ {target.isoformat()}")
                         last_err = None
                         break
                     except Exception as e:
@@ -369,10 +383,10 @@ def start_rankings_poller(*, poll_seconds: int = 300, world_id: str = "1"):
                         time.sleep(backoff + random.uniform(0.0, 1.2))
 
                 if last_err:
-                    print("[rankings_poller] error:", repr(last_err))
+                    _log(f"[rankings_poller] error: {repr(last_err)}")
 
             except Exception as e:
-                print("[rankings_poller] fatal error:", repr(e))
+                _log(f"[rankings_poller] fatal error: {repr(e)}")
 
             # We ignore poll_seconds sleeping because we tick-align every cycle
             # (poll_seconds kept for compatibility with main.py)
