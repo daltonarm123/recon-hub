@@ -199,8 +199,18 @@ def _parse_kg_resp_json(raw: Dict[str, Any]) -> Dict[str, Any]:
 
 def _kg_post_json(url: str, payload: Dict[str, Any]) -> Dict[str, Any]:
     with httpx.Client(timeout=30.0) as client:
-        r = client.post(url, headers=_kg_headers(), json=payload)
-        r.raise_for_status()
+        try:
+            r = client.post(url, headers=_kg_headers(), json=payload)
+            r.raise_for_status()
+        except httpx.HTTPStatusError as e:
+            body = ""
+            try:
+                body = (e.response.text or "").strip().replace("\n", " ")[:220]
+            except Exception:
+                body = ""
+            status = e.response.status_code if e.response is not None else "?"
+            raise RuntimeError(f"HTTP {status} for {url} body={body}")
+
         j = r.json()
         return _parse_kg_resp_json(j)
 
@@ -239,7 +249,20 @@ def _extract_list(payload: Dict[str, Any], keys: List[str]) -> List[Any]:
 
 
 def _extract_settlements(payload: Dict[str, Any]) -> List[Dict[str, Any]]:
-    candidates = _extract_list(payload, ["settlements", "cities", "towns", "kingdomSettlements"])
+    candidates = _extract_list(
+        payload,
+        [
+            "settlements",
+            "cities",
+            "towns",
+            "kingdomSettlements",
+            "settlementList",
+            "cityList",
+            "townList",
+            "kingdomCities",
+            "kingdomTowns",
+        ],
+    )
     out: List[Dict[str, Any]] = []
     for item in candidates:
         if not isinstance(item, dict):
@@ -263,7 +286,20 @@ def _extract_settlements(payload: Dict[str, Any]) -> List[Dict[str, Any]]:
 
 
 def _extract_buildings(payload: Dict[str, Any]) -> List[Dict[str, Any]]:
-    rows = _extract_list(payload, ["buildings", "settlementBuildings", "cityBuildings", "townBuildings"])
+    rows = _extract_list(
+        payload,
+        [
+            "buildings",
+            "settlementBuildings",
+            "cityBuildings",
+            "townBuildings",
+            "buildingList",
+            "settlementBuildingList",
+            "cityBuildingList",
+            "townBuildingList",
+            "slots",
+        ],
+    )
     out: List[Dict[str, Any]] = []
     for row in rows:
         if not isinstance(row, dict):
@@ -293,30 +329,59 @@ def _fetch_settlements_live(conn_row: Dict[str, Any]) -> List[Dict[str, Any]]:
         os.getenv("KG_SETTLEMENTS_URL", "").strip(),
         "https://www.kingdomgame.net/WebService/Kingdoms.asmx/GetSettlements",
         "https://www.kingdomgame.net/WebService/Kingdoms.asmx/GetKingdomSettlements",
+        "https://www.kingdomgame.net/WebService/Kingdoms.asmx/GetKingdom",
+        "https://www.kingdomgame.net/WebService/Kingdoms.asmx/GetCities",
+        "https://www.kingdomgame.net/WebService/Kingdoms.asmx/GetTowns",
     ]
     settlements_urls = [u for u in settlements_urls if u]
 
+    continent_id = int(os.getenv("KG_CONTINENT_ID", "-1"))
+    variants: List[Dict[str, Any]] = [
+        dict(base),
+        {**base, "continentId": continent_id},
+        {**base, "continentId": -1},
+        {**base, "startNumber": -1},
+        {**base, "continentId": continent_id, "startNumber": -1},
+        {**base, "settlementId": -1},
+        {**base, "cityId": -1},
+        {**base, "townId": -1},
+        {
+            "accountID": str(base["accountId"]),
+            "token": base["token"],
+            "kingdomID": int(base["kingdomId"]),
+        },
+    ]
+
     settlements: List[Dict[str, Any]] = []
-    last_err: Optional[str] = None
+    attempts: List[str] = []
     for url in settlements_urls:
-        try:
-            parsed = _kg_post_json(url, base)
-            settlements = _extract_settlements(parsed)
-            if settlements:
-                break
-        except Exception as e:
-            last_err = repr(e)
+        for idx, payload in enumerate(variants):
+            try:
+                parsed = _kg_post_json(url, payload)
+                settlements = _extract_settlements(parsed)
+                if settlements:
+                    break
+                if isinstance(parsed, dict):
+                    ks = ",".join(sorted(list(parsed.keys()))[:12])
+                    attempts.append(f"{url} v{idx}: no-list keys=[{ks}]")
+                else:
+                    attempts.append(f"{url} v{idx}: no-list")
+            except Exception as e:
+                attempts.append(f"{url} v{idx}: {repr(e)}")
+        if settlements:
+            break
 
     if not settlements:
-        detail = "No settlements returned from KG"
-        if last_err:
-            detail += f" ({last_err})"
+        tail = " | ".join(attempts[-4:]) if attempts else "no-attempts"
+        detail = f"No settlements returned from KG. Last attempts: {tail}"
         raise HTTPException(status_code=502, detail=detail)
 
     details_urls = [
         os.getenv("KG_SETTLEMENT_DETAIL_URL", "").strip(),
         "https://www.kingdomgame.net/WebService/Kingdoms.asmx/GetSettlement",
         "https://www.kingdomgame.net/WebService/Kingdoms.asmx/GetSettlementInfo",
+        "https://www.kingdomgame.net/WebService/Kingdoms.asmx/GetCity",
+        "https://www.kingdomgame.net/WebService/Kingdoms.asmx/GetTown",
     ]
     details_urls = [u for u in details_urls if u]
 
@@ -330,17 +395,34 @@ def _fetch_settlements_live(conn_row: Dict[str, Any]) -> List[Dict[str, Any]]:
         sid = s["settlement_id"]
         found = []
         for url in details_urls:
-            payload = dict(base)
-            payload["settlementId"] = sid
-            payload["cityId"] = sid
-            payload["townId"] = sid
-            try:
-                parsed = _kg_post_json(url, payload)
-                found = _extract_buildings(parsed)
-                if found:
-                    break
-            except Exception:
-                continue
+            payloads = [
+                {
+                    **base,
+                    "settlementId": sid,
+                    "cityId": sid,
+                    "townId": sid,
+                },
+                {"accountId": base["accountId"], "token": base["token"], "settlementId": sid},
+                {"accountId": base["accountId"], "token": base["token"], "cityId": sid},
+                {"accountId": base["accountId"], "token": base["token"], "townId": sid},
+                {
+                    "accountID": str(base["accountId"]),
+                    "token": base["token"],
+                    "settlementID": sid,
+                    "cityID": sid,
+                    "townID": sid,
+                },
+            ]
+            for payload in payloads:
+                try:
+                    parsed = _kg_post_json(url, payload)
+                    found = _extract_buildings(parsed)
+                    if found:
+                        break
+                except Exception:
+                    continue
+            if found:
+                break
         s["buildings"] = found
 
     for s in settlements:
