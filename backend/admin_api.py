@@ -84,6 +84,14 @@ def _latest_ts(cur, fq_table: str, col: str) -> Optional[datetime]:
     return ts if isinstance(ts, datetime) else None
 
 
+def _as_utc_aware(ts: Optional[datetime]) -> Optional[datetime]:
+    if ts is None:
+        return None
+    if ts.tzinfo is None:
+        return ts.replace(tzinfo=timezone.utc)
+    return ts.astimezone(timezone.utc)
+
+
 @router.get("/api/admin/overview")
 def admin_overview(request: Request):
     user = _require_admin(request)
@@ -92,6 +100,7 @@ def admin_overview(request: Request):
     conn = _connect()
     try:
         with conn.cursor() as cur:
+            has_nw_latest = _table_exists(cur, "public.nw_latest")
             counts = {
                 "spy_reports": _count_table(cur, "public.spy_reports"),
                 "kg_top_kingdoms": _count_table(cur, "public.kg_top_kingdoms"),
@@ -109,20 +118,24 @@ def admin_overview(request: Request):
             cur.execute("SELECT current_database() AS db_name")
             db_name = (cur.fetchone() or {}).get("db_name")
 
-            cur.execute(
-                """
-                SELECT kingdom, rank, networth, updated_at
-                FROM public.nw_latest
-                ORDER BY rank ASC
-                LIMIT 10
-                """
-            ) if _table_exists(cur, "public.nw_latest") else None
-            top = cur.fetchall() if _table_exists(cur, "public.nw_latest") else []
+            if has_nw_latest:
+                cur.execute(
+                    """
+                    SELECT kingdom, rank, networth, updated_at
+                    FROM public.nw_latest
+                    ORDER BY rank ASC
+                    LIMIT 10
+                    """
+                )
+                top = cur.fetchall()
+            else:
+                top = []
 
         def age_s(ts: Optional[datetime]) -> Optional[int]:
-            if ts is None:
+            ts_aware = _as_utc_aware(ts)
+            if ts_aware is None:
                 return None
-            return int((now - ts).total_seconds())
+            return int((now - ts_aware).total_seconds())
 
         health = {
             "rankings_age_seconds": age_s(latest["rankings_fetch_at"]),
