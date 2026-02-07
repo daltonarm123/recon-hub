@@ -1,6 +1,7 @@
 import json
 import os
 import re
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import urlencode
@@ -479,68 +480,56 @@ def _fetch_settlements_live(conn_row: Dict[str, Any]) -> List[Dict[str, Any]]:
         detail = f"No settlements returned from KG. Last attempts: {tail}"
         raise HTTPException(status_code=502, detail=detail)
 
-    details_urls = [
-        os.getenv("KG_SETTLEMENT_DETAIL_URL", "").strip(),
+    primary_detail_url = (
+        os.getenv("KG_SETTLEMENT_DETAIL_URL", "").strip()
+        or "https://www.kingdomgame.net/WebService/Settlement.asmx/GetSettlementBuildings"
+    )
+    fallback_detail_urls = [
         "https://www.kingdomgame.net/WebService/Settlement.asmx/GetSettlement",
         "https://www.kingdomgame.net/WebService/Settlement.asmx/GetSettlementInfo",
-        "https://www.kingdomgame.net/WebService/Settlement.asmx/GetSettlementBuildings",
-        "https://www.kingdomgame.net/WebService/Settlement.asmx/GetBuildings",
-        "https://www.kingdomgame.net/WebService/Settlement.asmx/GetCity",
-        "https://www.kingdomgame.net/WebService/Settlement.asmx/GetTown",
-        "https://www.kingdomgame.net/WebService/Kingdoms.asmx/GetSettlement",
-        "https://www.kingdomgame.net/WebService/Kingdoms.asmx/GetSettlementInfo",
-        "https://www.kingdomgame.net/WebService/Kingdoms.asmx/GetCity",
-        "https://www.kingdomgame.net/WebService/Kingdoms.asmx/GetTown",
     ]
-    details_urls = [u for u in details_urls if u]
 
     for s in settlements:
-        raw = s.get("raw") if isinstance(s.get("raw"), dict) else {}
-        b = _extract_buildings(raw)
-        if b and not _is_summary_only_buildings(b):
-            s["buildings"] = b
-            continue
+        s["buildings"] = []
 
-        sid = s["settlement_id"]
-        found = []
-        for url in details_urls:
-            payloads = [
-                {
-                    **base,
-                    "settlementId": sid,
-                    "cityId": sid,
-                    "townId": sid,
-                },
-                {"id": sid, **base},
-                {"accountId": base["accountId"], "token": base["token"], "settlementId": sid},
-                {"accountId": base["accountId"], "token": base["token"], "cityId": sid},
-                {"accountId": base["accountId"], "token": base["token"], "townId": sid},
-                {"accountId": base["accountId"], "token": base["token"], "id": sid},
-                {
-                    "accountID": str(base["accountId"]),
-                    "token": base["token"],
-                    "settlementID": sid,
-                    "cityID": sid,
-                    "townID": sid,
-                },
-                {
-                    "accountID": str(base["accountId"]),
-                    "token": base["token"],
-                    "id": sid,
-                },
-            ]
-            for payload in payloads:
-                try:
-                    parsed = _kg_post_json(url, payload)
-                    candidate = _extract_buildings(parsed)
-                    if candidate and not _is_summary_only_buildings(candidate):
-                        found = candidate
-                        break
-                except Exception:
-                    continue
-            if found:
-                break
-        s["buildings"] = found
+    def fetch_detail_for_settlement(s: Dict[str, Any]) -> Tuple[int, List[Dict[str, Any]]]:
+        sid = int(s["settlement_id"])
+        payload = {
+            "accountId": base["accountId"],
+            "token": base["token"],
+            "kingdomId": int(base["kingdomId"]),
+            "settlementId": sid,
+        }
+
+        try:
+            parsed = _kg_post_json(primary_detail_url, payload)
+            buildings = _extract_buildings(parsed)
+            if buildings and not _is_summary_only_buildings(buildings):
+                return (sid, buildings)
+        except Exception:
+            pass
+
+        for url in fallback_detail_urls:
+            try:
+                parsed = _kg_post_json(url, payload)
+                buildings = _extract_buildings(parsed)
+                if buildings and not _is_summary_only_buildings(buildings):
+                    return (sid, buildings)
+            except Exception:
+                continue
+
+        return (sid, [])
+
+    workers = max(1, min(8, len(settlements)))
+    sid_to_buildings: Dict[int, List[Dict[str, Any]]] = {}
+    with ThreadPoolExecutor(max_workers=workers) as ex:
+        futures = [ex.submit(fetch_detail_for_settlement, s) for s in settlements]
+        for fut in as_completed(futures):
+            sid, b = fut.result()
+            sid_to_buildings[sid] = b
+
+    for s in settlements:
+        s["buildings"] = sid_to_buildings.get(int(s["settlement_id"]), [])
 
     for s in settlements:
         if "raw" in s:
