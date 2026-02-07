@@ -348,7 +348,13 @@ def _extract_buildings(payload: Dict[str, Any]) -> List[Dict[str, Any]]:
     def parse_row(row: Any):
         if not isinstance(row, dict):
             return
-        btype = row.get("buildingType") or row.get("type") or row.get("name") or row.get("buildingName")
+        btype = (
+            row.get("buildingType")
+            or row.get("typeName")
+            or row.get("type")
+            or row.get("name")
+            or row.get("buildingName")
+        )
         level = row.get("level") or row.get("lvl") or row.get("buildingLevel")
         effect = row.get("effect") or row.get("description") or row.get("text") or row.get("bonus")
         if not btype:
@@ -357,11 +363,18 @@ def _extract_buildings(payload: Dict[str, Any]) -> List[Dict[str, Any]]:
             level_i = int(level) if level is not None else 0
         except Exception:
             level_i = 0
+        effect_text = str(effect).strip() if effect is not None else ""
+        if effect_text:
+            # KG settlement building descriptions often use [LEVEL] placeholders.
+            effect_text = (
+                effect_text.replace("[LEVEL]", str(level_i))
+                .replace("[level]", str(level_i))
+            )
         out.append(
             {
                 "building_type": str(btype).strip(),
                 "level": level_i,
-                "effect_text": str(effect).strip() if effect is not None else "",
+                "effect_text": effect_text,
             }
         )
     
