@@ -773,7 +773,8 @@ function Settlements() {
             });
             const j = await r.json().catch(() => ({}));
             if (!r.ok) throw new Error(j?.detail || `HTTP ${r.status}`);
-            setMsg("KG login connected successfully.");
+            const policy = j?.password_policy || "one-time-only-not-stored";
+            setMsg(`KG login connected successfully. Password policy: ${policy}.`);
             setKgLogin((x) => ({ ...x, password: "" }));
             setRefresh((x) => x + 1);
         } catch (e) {
@@ -892,7 +893,7 @@ function Settlements() {
                                 </button>
                             </div>
                             <div style={{ fontSize: 12, color: "rgba(231,236,255,.55)" }}>
-                                We do not store your password; it is used once to exchange for token.
+                                Password is used one-time only for KG token exchange and is not stored.
                             </div>
                             <div style={{ fontSize: 12, color: "rgba(231,236,255,.75)" }}>
                                 Easy connect: paste the KG request snippet (from `GetKingdomDetails` or `GetSettlements`) and click Detect.

@@ -10,7 +10,7 @@ import httpx
 import jwt
 import psycopg
 from cryptography.fernet import Fernet, InvalidToken
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, HTTPException, Request, Response
 from fastapi.responses import RedirectResponse
 from psycopg.rows import dict_row
 from pydantic import BaseModel, Field
@@ -915,39 +915,59 @@ def kg_connect(body: KGConnectBody, request: Request):
 
 
 @router.post("/api/kg/login")
-def kg_login(body: KGLoginBody, request: Request):
+def kg_login(body: KGLoginBody, request: Request, response: Response):
     user = _get_current_user(request)
     ip = request.client.host if request.client else "unknown"
     _rate_limit_login(ip)
+    # Security policy: password is used one-time only for KG token exchange.
+    # It is not persisted to DB or logs.
+    response.headers["X-Password-Storage-Policy"] = "one-time-only-not-stored"
 
-    login = _kg_login(body.email.strip(), body.password)
-    account_id = int(login["account_id"])
-    token = str(login["token"])
-
+    email = body.email.strip()
+    password = body.password
+    account_id: Optional[int] = None
+    token: Optional[str] = None
     kingdom_id = body.kingdom_id
-    if kingdom_id is None:
-        kingdom_id = _discover_kingdom_id(account_id, token)
-    if kingdom_id is None:
-        raise HTTPException(
-            status_code=400,
-            detail="KG login succeeded but kingdomId was not discovered automatically. Please provide kingdomId once.",
-        )
+    try:
+        login = _kg_login(email, password)
+        account_id = int(login["account_id"])
+        token = str(login["token"])
 
-    _upsert_user_kg_connection(
-        user["discord_user_id"],
-        user["discord_username"],
-        account_id,
-        int(kingdom_id),
-        token,
-    )
-    return {
-        "ok": True,
-        "connected": True,
-        "connection": {
-            "account_id": account_id,
-            "kingdom_id": int(kingdom_id),
-        },
-    }
+        if kingdom_id is None:
+            kingdom_id = _discover_kingdom_id(account_id, token)
+        if kingdom_id is None:
+            raise HTTPException(
+                status_code=400,
+                detail="KG login succeeded but kingdomId was not discovered automatically. Please provide kingdomId once.",
+            )
+
+        _upsert_user_kg_connection(
+            user["discord_user_id"],
+            user["discord_username"],
+            account_id,
+            int(kingdom_id),
+            token,
+        )
+        print(
+            f"[kg_login] connected discord_user_id={user['discord_user_id']} "
+            f"account_id={account_id} kingdom_id={int(kingdom_id)} "
+            "password_not_stored=true",
+            flush=True,
+        )
+        return {
+            "ok": True,
+            "connected": True,
+            "password_policy": "one-time-only-not-stored",
+            "connection": {
+                "account_id": account_id,
+                "kingdom_id": int(kingdom_id),
+            },
+        }
+    finally:
+        # Defensive scrubbing of sensitive variables after exchange.
+        password = None
+        email = None
+        token = None
 
 
 @router.delete("/api/kg/connection")
