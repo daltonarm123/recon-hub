@@ -532,8 +532,9 @@ def _fetch_settlements_live(conn_row: Dict[str, Any]) -> List[Dict[str, Any]]:
             for payload in payloads:
                 try:
                     parsed = _kg_post_json(url, payload)
-                    found = _extract_buildings(parsed)
-                    if found:
+                    candidate = _extract_buildings(parsed)
+                    if candidate and not _is_summary_only_buildings(candidate):
+                        found = candidate
                         break
                 except Exception:
                     continue
