@@ -537,7 +537,17 @@ def _fetch_settlements_live(conn_row: Dict[str, Any]) -> List[Dict[str, Any]]:
     return settlements
 
 
-def _extract_pct(text: str) -> Optional[float]:
+def _extract_pct(text: str, level: int = 0) -> Optional[float]:
+    # Handle formulas like +[LEVELx5]%
+    m_formula = re.search(r"([+-]?)\s*\[\s*LEVEL\s*x\s*([0-9]+(?:\.\d+)?)\s*\]\s*%", text, flags=re.I)
+    if m_formula and level > 0:
+        try:
+            sign = -1.0 if (m_formula.group(1) or "") == "-" else 1.0
+            factor = float(m_formula.group(2))
+            return sign * float(level) * factor
+        except Exception:
+            pass
+
     m = re.search(r"([+-]?\d+(?:\.\d+)?)\s*%", text)
     if not m:
         return None
@@ -548,13 +558,19 @@ def _extract_pct(text: str) -> Optional[float]:
 
 
 def _extract_cap(text: str) -> Optional[float]:
-    m = re.search(r"max effect amount\s*([+-]?\d+(?:\.\d+)?)\s*%", text, flags=re.I)
-    if not m:
-        return None
-    try:
-        return float(m.group(1))
-    except Exception:
-        return None
+    patterns = [
+        r"max effect amount\s*([+-]?\d+(?:\.\d+)?)\s*%",
+        r"max effect\s*([+-]?\d+(?:\.\d+)?)\s*%",
+    ]
+    for pat in patterns:
+        m = re.search(pat, text, flags=re.I)
+        if not m:
+            continue
+        try:
+            return float(m.group(1))
+        except Exception:
+            continue
+    return None
 
 
 def _effect_key(building_type: str, effect_text: str) -> Tuple[str, str]:
@@ -585,7 +601,8 @@ def _aggregate_effects(settlements: List[Dict[str, Any]]) -> List[Dict[str, Any]
             if not bt:
                 continue
             et = str(b.get("effect_text") or "").strip()
-            delta = _extract_pct(et)
+            level = int(b.get("level") or 0)
+            delta = _extract_pct(et, level=level)
             if delta is None:
                 continue
             cap = _extract_cap(et)
@@ -606,7 +623,7 @@ def _aggregate_effects(settlements: List[Dict[str, Any]]) -> List[Dict[str, Any]
                 {
                     "settlement": sname,
                     "building_type": bt,
-                    "level": int(b.get("level") or 0),
+                    "level": level,
                     "delta_pct": float(delta),
                 }
             )
