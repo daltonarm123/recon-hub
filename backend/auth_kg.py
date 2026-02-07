@@ -195,7 +195,7 @@ def _kg_headers() -> Dict[str, str]:
 
 
 def _kg_login_headers() -> Dict[str, str]:
-    return {
+    headers = {
         "Accept": "application/json, text/plain, */*",
         "Content-Type": "application/json",
         "Origin": "https://www.kingdomgame.net",
@@ -212,6 +212,10 @@ def _kg_login_headers() -> Dict[str, str]:
         "Sec-Fetch-Mode": "cors",
         "Sec-Fetch-Dest": "empty",
     }
+    cookie = os.getenv("KG_COOKIE", "").strip()
+    if cookie:
+        headers["Cookie"] = cookie
+    return headers
 
 
 def _kg_base_payload(conn_row: Dict[str, Any]) -> Dict[str, Any]:
@@ -266,30 +270,53 @@ def _rate_limit_login(ip: str):
 
 def _kg_login(email: str, password: str) -> Dict[str, Any]:
     url = os.getenv("KG_LOGIN_URL", "").strip() or "https://www.kingdomgame.net/WebService/User.asmx/Login"
-    payload = {"email": email, "password": password}
+    payloads = [
+        {"email": email, "password": password},
+        {"Email": email, "Password": password},
+        {"username": email, "password": password},
+    ]
     with httpx.Client(timeout=30.0) as client:
+        # Pre-warm session cookies like a browser hitting /login first.
         try:
-            r = client.post(url, headers=_kg_login_headers(), json=payload)
-            r.raise_for_status()
-        except httpx.HTTPStatusError as e:
-            status = e.response.status_code if e.response is not None else 502
-            body = ""
-            try:
-                body = (e.response.text or "").strip().replace("\n", " ")[:220]
-            except Exception:
-                body = ""
-            raise HTTPException(
-                status_code=502,
-                detail=f"KG login upstream HTTP {status}. body={body}",
+            client.get(
+                "https://www.kingdomgame.net/login",
+                headers={
+                    "User-Agent": _kg_login_headers().get("User-Agent", ""),
+                    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+                },
             )
-        except Exception as e:
-            raise HTTPException(status_code=502, detail=f"KG login request failed: {repr(e)}")
-
-        try:
-            raw = r.json()
         except Exception:
-            snippet = (r.text or "").strip().replace("\n", " ")[:220]
-            raise HTTPException(status_code=502, detail=f"KG login returned non-JSON response. body={snippet}")
+            pass
+
+        last_error = ""
+        raw = None
+        for payload in payloads:
+            try:
+                r = client.post(url, headers=_kg_login_headers(), json=payload)
+                r.raise_for_status()
+            except httpx.HTTPStatusError as e:
+                status = e.response.status_code if e.response is not None else 502
+                body = ""
+                try:
+                    body = (e.response.text or "").strip().replace("\n", " ")[:220]
+                except Exception:
+                    body = ""
+                last_error = f"KG login upstream HTTP {status}. body={body}"
+                continue
+            except Exception as e:
+                last_error = f"KG login request failed: {repr(e)}"
+                continue
+
+            try:
+                raw = r.json()
+                break
+            except Exception:
+                snippet = (r.text or "").strip().replace("\n", " ")[:220]
+                last_error = f"KG login returned non-JSON response. body={snippet}"
+                continue
+
+        if raw is None:
+            raise HTTPException(status_code=502, detail=last_error or "KG login failed")
     parsed = _parse_kg_resp_json(raw) or raw
     if not isinstance(parsed, dict):
         raise HTTPException(status_code=502, detail="Invalid KG login response")
