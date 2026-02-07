@@ -9,6 +9,8 @@ from psycopg.rows import dict_row
 
 KG_TICK_DELAY_SECONDS = float(os.getenv("KG_TICK_DELAY_SECONDS", "45"))
 MAX_SOURCE_AGE_SECONDS = int(os.getenv("NW_MAX_SOURCE_AGE_SECONDS", "540"))
+SOURCE_WAIT_TIMEOUT_SECONDS = int(os.getenv("NW_SOURCE_WAIT_TIMEOUT_SECONDS", "120"))
+SOURCE_WAIT_STEP_SECONDS = float(os.getenv("NW_SOURCE_WAIT_STEP_SECONDS", "3"))
 
 
 # -------------------------
@@ -124,6 +126,30 @@ def _is_fresh(source_ts: Optional[datetime], now: datetime) -> bool:
     return (now - source_ts).total_seconds() <= MAX_SOURCE_AGE_SECONDS
 
 
+def _fetch_snapshot_for_tick(tick_time: datetime) -> Tuple[str, Snapshot, Optional[datetime]]:
+    """
+    Wait briefly for rankings_poller to finish writing this tick's data.
+    Accept only snapshots fetched at/after tick_time (UTC 5-min boundary).
+    """
+    deadline = datetime.now(timezone.utc) + timedelta(seconds=SOURCE_WAIT_TIMEOUT_SECONDS)
+    latest_source = "none"
+    latest_snapshot: Snapshot = []
+    latest_fetched_at: Optional[datetime] = None
+
+    while datetime.now(timezone.utc) <= deadline:
+        source, snapshot, source_fetched_at = _fetch_top300_resilient()
+        latest_source = source
+        latest_snapshot = snapshot
+        latest_fetched_at = source_fetched_at
+
+        if snapshot and source_fetched_at is not None and source_fetched_at >= tick_time:
+            return (source, snapshot, source_fetched_at)
+
+        time.sleep(max(0.5, SOURCE_WAIT_STEP_SECONDS))
+
+    return (latest_source, latest_snapshot, latest_fetched_at)
+
+
 def _upsert_history(points: List[Tuple[str, datetime, int]]):
     if not points:
         return
@@ -193,7 +219,7 @@ def start_nw_poller(poll_seconds: int = 300):
                 if KG_TICK_DELAY_SECONDS > 0:
                     time.sleep(KG_TICK_DELAY_SECONDS)
 
-                source, snapshot, source_fetched_at = _fetch_top300_resilient()
+                source, snapshot, source_fetched_at = _fetch_snapshot_for_tick(target)
 
                 if not snapshot:
                     print("[nw_poll] source=none no snapshot available")
@@ -204,6 +230,13 @@ def start_nw_poller(poll_seconds: int = 300):
                             f"[nw_poll] stale source data: source={source} "
                             f"fetched_at={source_fetched_at} tick={now.isoformat()} "
                             f"(max_age={MAX_SOURCE_AGE_SECONDS}s)"
+                        )
+                        continue
+                    if source_fetched_at is None or source_fetched_at < target:
+                        print(
+                            f"[nw_poll] no in-tick snapshot ready: source={source} "
+                            f"fetched_at={source_fetched_at} tick={now.isoformat()} "
+                            f"(wait_timeout={SOURCE_WAIT_TIMEOUT_SECONDS}s)"
                         )
                         continue
 
