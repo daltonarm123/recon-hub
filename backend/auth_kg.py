@@ -27,6 +27,15 @@ class KGConnectBody(BaseModel):
     token: str = Field(..., min_length=8)
 
 
+class KGLoginBody(BaseModel):
+    email: str = Field(..., min_length=3)
+    password: str = Field(..., min_length=3)
+    kingdom_id: Optional[int] = Field(default=None, gt=0)
+
+
+_LOGIN_ATTEMPTS: Dict[str, List[float]] = {}
+
+
 def _get_dsn() -> str:
     dsn = os.getenv("DATABASE_URL") or os.getenv("POSTGRES_URL") or ""
     if not dsn:
@@ -185,6 +194,26 @@ def _kg_headers() -> Dict[str, str]:
     }
 
 
+def _kg_login_headers() -> Dict[str, str]:
+    return {
+        "Accept": "application/json, text/plain, */*",
+        "Content-Type": "application/json",
+        "Origin": "https://www.kingdomgame.net",
+        "Referer": "https://www.kingdomgame.net/login",
+        "World-Id": _kg_world_id(),
+        "world-id": _kg_world_id(),
+        "User-Agent": os.getenv(
+            "KG_USER_AGENT",
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+            "(KHTML, like Gecko) Chrome/144.0.0.0 Safari/537.36 Edg/144.0.0.0",
+        ),
+        "Accept-Language": os.getenv("KG_ACCEPT_LANGUAGE", "en-US,en;q=0.9"),
+        "Sec-Fetch-Site": "same-origin",
+        "Sec-Fetch-Mode": "cors",
+        "Sec-Fetch-Dest": "empty",
+    }
+
+
 def _kg_base_payload(conn_row: Dict[str, Any]) -> Dict[str, Any]:
     return {
         "accountId": str(conn_row["account_id"]),
@@ -223,6 +252,91 @@ def _kg_post_json(url: str, payload: Dict[str, Any]) -> Dict[str, Any]:
 
         j = r.json()
         return _parse_kg_resp_json(j)
+
+
+def _rate_limit_login(ip: str):
+    now = datetime.now(timezone.utc).timestamp()
+    bucket = _LOGIN_ATTEMPTS.get(ip, [])
+    bucket = [t for t in bucket if now - t <= 300.0]
+    if len(bucket) >= 12:
+        raise HTTPException(status_code=429, detail="Too many KG login attempts, please wait.")
+    bucket.append(now)
+    _LOGIN_ATTEMPTS[ip] = bucket
+
+
+def _kg_login(email: str, password: str) -> Dict[str, Any]:
+    url = os.getenv("KG_LOGIN_URL", "").strip() or "https://www.kingdomgame.net/WebService/User.asmx/Login"
+    payload = {"email": email, "password": password}
+    with httpx.Client(timeout=30.0) as client:
+        r = client.post(url, headers=_kg_login_headers(), json=payload)
+        r.raise_for_status()
+        raw = r.json()
+    parsed = _parse_kg_resp_json(raw) or raw
+    if not isinstance(parsed, dict):
+        raise HTTPException(status_code=502, detail="Invalid KG login response")
+    rv = parsed.get("ReturnValue")
+    if rv not in (None, 1, "1"):
+        msg = str(parsed.get("ReturnString") or "KG login failed")
+        raise HTTPException(status_code=401, detail=msg)
+    account_id = parsed.get("accountId")
+    token = parsed.get("token")
+    if account_id is None or not token:
+        raise HTTPException(status_code=502, detail="KG login response missing accountId/token")
+    return {"account_id": int(str(account_id)), "token": str(token).strip()}
+
+
+def _discover_kingdom_id(account_id: int, token: str) -> Optional[int]:
+    urls = [
+        os.getenv("KG_KINGDOM_DISCOVERY_URL", "").strip(),
+        "https://www.kingdomgame.net/WebService/Kingdoms.asmx/GetKingdoms",
+    ]
+    urls = [u for u in urls if u]
+    payload = {"accountId": str(account_id), "token": token}
+    for url in urls:
+        try:
+            parsed = _kg_post_json(url, payload)
+        except Exception:
+            continue
+        rows = parsed.get("kingdoms")
+        if isinstance(rows, list):
+            for row in rows:
+                if isinstance(row, dict) and row.get("id") is not None:
+                    try:
+                        return int(row["id"])
+                    except Exception:
+                        continue
+    return None
+
+
+def _upsert_user_kg_connection(discord_user_id: str, discord_username: str, account_id: int, kingdom_id: int, token: str):
+    token_enc = _encrypt_token(token.strip())
+    conn = _connect()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO public.user_kg_connections
+                  (discord_user_id, discord_username, account_id, kingdom_id, token_enc, created_at, updated_at)
+                VALUES
+                  (%s, %s, %s, %s, %s, now(), now())
+                ON CONFLICT (discord_user_id) DO UPDATE SET
+                  discord_username = EXCLUDED.discord_username,
+                  account_id = EXCLUDED.account_id,
+                  kingdom_id = EXCLUDED.kingdom_id,
+                  token_enc = EXCLUDED.token_enc,
+                  updated_at = now()
+                """,
+                (
+                    discord_user_id,
+                    discord_username,
+                    account_id,
+                    kingdom_id,
+                    token_enc,
+                ),
+            )
+        conn.commit()
+    finally:
+        conn.close()
 
 
 def _load_user_kg_connection(discord_user_id: str) -> Optional[Dict[str, Any]]:
@@ -789,37 +903,51 @@ def kg_connection(request: Request):
 @router.post("/api/kg/connect")
 def kg_connect(body: KGConnectBody, request: Request):
     user = _get_current_user(request)
-    token_enc = _encrypt_token(body.token.strip())
-
-    conn = _connect()
-    try:
-        with conn.cursor() as cur:
-            cur.execute(
-                """
-                INSERT INTO public.user_kg_connections
-                  (discord_user_id, discord_username, account_id, kingdom_id, token_enc, created_at, updated_at)
-                VALUES
-                  (%s, %s, %s, %s, %s, now(), now())
-                ON CONFLICT (discord_user_id) DO UPDATE SET
-                  discord_username = EXCLUDED.discord_username,
-                  account_id = EXCLUDED.account_id,
-                  kingdom_id = EXCLUDED.kingdom_id,
-                  token_enc = EXCLUDED.token_enc,
-                  updated_at = now()
-                """,
-                (
-                    user["discord_user_id"],
-                    user["discord_username"],
-                    body.account_id,
-                    body.kingdom_id,
-                    token_enc,
-                ),
-            )
-        conn.commit()
-    finally:
-        conn.close()
+    _upsert_user_kg_connection(
+        user["discord_user_id"],
+        user["discord_username"],
+        body.account_id,
+        body.kingdom_id,
+        body.token,
+    )
 
     return {"ok": True, "connected": True}
+
+
+@router.post("/api/kg/login")
+def kg_login(body: KGLoginBody, request: Request):
+    user = _get_current_user(request)
+    ip = request.client.host if request.client else "unknown"
+    _rate_limit_login(ip)
+
+    login = _kg_login(body.email.strip(), body.password)
+    account_id = int(login["account_id"])
+    token = str(login["token"])
+
+    kingdom_id = body.kingdom_id
+    if kingdom_id is None:
+        kingdom_id = _discover_kingdom_id(account_id, token)
+    if kingdom_id is None:
+        raise HTTPException(
+            status_code=400,
+            detail="KG login succeeded but kingdomId was not discovered automatically. Please provide kingdomId once.",
+        )
+
+    _upsert_user_kg_connection(
+        user["discord_user_id"],
+        user["discord_username"],
+        account_id,
+        int(kingdom_id),
+        token,
+    )
+    return {
+        "ok": True,
+        "connected": True,
+        "connection": {
+            "account_id": account_id,
+            "kingdom_id": int(kingdom_id),
+        },
+    }
 
 
 @router.delete("/api/kg/connection")

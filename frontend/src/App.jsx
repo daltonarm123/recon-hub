@@ -721,6 +721,7 @@ function Settlements() {
     const [refresh, setRefresh] = useState(0);
     const [form, setForm] = useState({ account_id: "", kingdom_id: "", token: "" });
     const [snippet, setSnippet] = useState("");
+    const [kgLogin, setKgLogin] = useState({ email: "", password: "", kingdom_id: "" });
     const [busy, setBusy] = useState(false);
     const [msg, setMsg] = useState("");
 
@@ -745,6 +746,35 @@ function Settlements() {
             if (!r.ok) throw new Error(j?.detail || `HTTP ${r.status}`);
             setMsg("KG account connected.");
             setForm((f) => ({ ...f, token: "" }));
+            setRefresh((x) => x + 1);
+        } catch (e) {
+            setMsg(String(e.message || e));
+        } finally {
+            setBusy(false);
+        }
+    }
+
+    async function loginKg() {
+        setBusy(true);
+        setMsg("");
+        try {
+            const body = {
+                email: kgLogin.email.trim(),
+                password: kgLogin.password,
+            };
+            if (kgLogin.kingdom_id.trim()) {
+                body.kingdom_id = Number(kgLogin.kingdom_id);
+            }
+            const r = await fetch(`${API_BASE}/api/kg/login`, {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                credentials: "include",
+                body: JSON.stringify(body),
+            });
+            const j = await r.json().catch(() => ({}));
+            if (!r.ok) throw new Error(j?.detail || `HTTP ${r.status}`);
+            setMsg("KG login connected successfully.");
+            setKgLogin((x) => ({ ...x, password: "" }));
             setRefresh((x) => x + 1);
         } catch (e) {
             setMsg(String(e.message || e));
@@ -830,6 +860,40 @@ function Settlements() {
                             <a style={{ ...btn, textDecoration: "none", width: "fit-content" }} href="/auth/discord/login">
                                 Login with Discord
                             </a>
+                            <div style={{ marginTop: 4, fontSize: 12, color: "rgba(231,236,255,.82)", fontWeight: 700 }}>
+                                Quick connect for phone users
+                            </div>
+                            <input
+                                style={input}
+                                placeholder="KG email"
+                                value={kgLogin.email}
+                                onChange={(e) => setKgLogin((x) => ({ ...x, email: e.target.value }))}
+                            />
+                            <input
+                                style={input}
+                                placeholder="KG password"
+                                type="password"
+                                value={kgLogin.password}
+                                onChange={(e) => setKgLogin((x) => ({ ...x, password: e.target.value }))}
+                            />
+                            <input
+                                style={input}
+                                placeholder="Kingdom ID (optional, for first-time connect)"
+                                value={kgLogin.kingdom_id}
+                                onChange={(e) => setKgLogin((x) => ({ ...x, kingdom_id: e.target.value }))}
+                            />
+                            <div>
+                                <button
+                                    style={btn}
+                                    disabled={busy || !kgLogin.email.trim() || !kgLogin.password}
+                                    onClick={loginKg}
+                                >
+                                    {busy ? "Connecting..." : "Login with KG"}
+                                </button>
+                            </div>
+                            <div style={{ fontSize: 12, color: "rgba(231,236,255,.55)" }}>
+                                We do not store your password; it is used once to exchange for token.
+                            </div>
                             <div style={{ fontSize: 12, color: "rgba(231,236,255,.75)" }}>
                                 Easy connect: paste the KG request snippet (from `GetKingdomDetails` or `GetSettlements`) and click Detect.
                             </div>
