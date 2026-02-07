@@ -235,9 +235,8 @@ def _parse_cred(raw: Dict[str, object]) -> Optional[Dict[str, object]]:
 
 def _resolve_rankings_creds() -> Dict[str, object]:
     """
-    Credential order:
-    1) KG_POLLER_ACCOUNT_ID / KG_POLLER_TOKEN / KG_POLLER_KINGDOM_ID (recommended dedicated bot account)
-    2) KG_ACCOUNT_ID / KG_TOKEN / KG_KINGDOM_ID (legacy fallback)
+    Strict credential source:
+    - KG_POLLER_ACCOUNT_ID / KG_POLLER_TOKEN / KG_POLLER_KINGDOM_ID
     """
     preferred = _parse_cred(
         {
@@ -249,20 +248,9 @@ def _resolve_rankings_creds() -> Dict[str, object]:
     if preferred:
         return preferred
 
-    legacy = _parse_cred(
-        {
-            "account_id": os.getenv("KG_ACCOUNT_ID"),
-            "token": os.getenv("KG_TOKEN"),
-            "kingdom_id": os.getenv("KG_KINGDOM_ID"),
-        }
-    )
-    if legacy:
-        return legacy
-
     raise RuntimeError(
-        "Missing KG poller credentials. Set either "
-        "(KG_POLLER_ACCOUNT_ID, KG_POLLER_TOKEN, KG_POLLER_KINGDOM_ID) "
-        "or legacy (KG_ACCOUNT_ID, KG_TOKEN, KG_KINGDOM_ID)."
+        "Missing KG poller credentials. Set "
+        "KG_POLLER_ACCOUNT_ID, KG_POLLER_TOKEN, KG_POLLER_KINGDOM_ID."
     )
 
 
