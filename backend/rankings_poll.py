@@ -190,18 +190,32 @@ def _upsert_top(rows: List[Dict], fetched_at: datetime):
 # KG request builders
 # -------------------------
 def _kg_headers(world_id: str) -> Dict[str, str]:
-    return {
+    headers = {
         "Accept": "application/json, text/plain, */*",
         "Content-Type": "application/json",
         "Origin": "https://www.kingdomgame.net",
         "Referer": "https://www.kingdomgame.net/rankings",
+        # Some KG endpoints/anti-bot layers appear sensitive to header casing;
+        # send both variants to match browser captures.
         "World-Id": str(world_id),
-        "User-Agent": "recon-hub/1.0 (rankings_poller)",
+        "world-id": str(world_id),
+        "User-Agent": os.getenv(
+            "KG_USER_AGENT",
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+            "(KHTML, like Gecko) Chrome/144.0.0.0 Safari/537.36 Edg/144.0.0.0",
+        ),
+        "Accept-Language": os.getenv("KG_ACCEPT_LANGUAGE", "en-US,en;q=0.9"),
+        "Sec-Fetch-Site": "same-origin",
+        "Sec-Fetch-Mode": "cors",
+        "Sec-Fetch-Dest": "empty",
     }
+    cookie = os.getenv("KG_COOKIE", "").strip()
+    if cookie:
+        headers["Cookie"] = cookie
+    return headers
 
 
-def _kg_base_payload() -> Dict[str, object]:
-    creds = _resolve_rankings_creds()
+def _kg_base_payload(creds: Dict[str, object]) -> Dict[str, object]:
 
     continent_id = int(os.getenv("KG_CONTINENT_ID", "-1"))
     start_number = int(os.getenv("KG_START_NUMBER", "-1"))
@@ -237,11 +251,28 @@ def _parse_cred(raw: Dict[str, object]) -> Optional[Dict[str, object]]:
     return {"account_id": account_id, "kingdom_id": kingdom_id, "token": token}
 
 
-def _resolve_rankings_creds() -> Dict[str, object]:
+def _resolve_rankings_creds() -> List[Dict[str, object]]:
     """
-    Strict credential source:
-    - KG_POLLER_ACCOUNT_ID / KG_POLLER_TOKEN / KG_POLLER_KINGDOM_ID
+    Credential sources (in priority order):
+    1) KG_POLLER_CREDENTIALS_JSON: JSON array of objects
+       [{"account_id":16881,"kingdom_id":6045,"token":"..."}, ...]
+    2) KG_POLLER_ACCOUNT_ID / KG_POLLER_TOKEN / KG_POLLER_KINGDOM_ID
     """
+    creds: List[Dict[str, object]] = []
+
+    raw_json = os.getenv("KG_POLLER_CREDENTIALS_JSON", "").strip()
+    if raw_json:
+        try:
+            parsed = json.loads(raw_json)
+            if isinstance(parsed, list):
+                for item in parsed:
+                    if isinstance(item, dict):
+                        c = _parse_cred(item)
+                        if c:
+                            creds.append(c)
+        except Exception:
+            pass
+
     preferred = _parse_cred(
         {
             "account_id": os.getenv("KG_POLLER_ACCOUNT_ID"),
@@ -250,20 +281,32 @@ def _resolve_rankings_creds() -> Dict[str, object]:
         }
     )
     if preferred:
-        return preferred
+        dup = False
+        for c in creds:
+            if (
+                c["account_id"] == preferred["account_id"]
+                and c["kingdom_id"] == preferred["kingdom_id"]
+                and c["token"] == preferred["token"]
+            ):
+                dup = True
+                break
+        if not dup:
+            creds.insert(0, preferred)
 
-    raise RuntimeError(
-        "Missing KG poller credentials. Set "
-        "KG_POLLER_ACCOUNT_ID, KG_POLLER_TOKEN, KG_POLLER_KINGDOM_ID."
-    )
+    if not creds:
+        raise RuntimeError(
+            "Missing KG poller credentials. Set either KG_POLLER_CREDENTIALS_JSON "
+            "or KG_POLLER_ACCOUNT_ID/KG_POLLER_TOKEN/KG_POLLER_KINGDOM_ID."
+        )
+    return creds
 
 
 # -------------------------
 # Poll once (paginated to 300)
 # -------------------------
-def _poll_rankings_once(*, world_id: str) -> Tuple[int, Optional[int]]:
+def _poll_rankings_once(*, world_id: str, creds: Dict[str, object]) -> Tuple[int, Optional[int]]:
     headers = _kg_headers(world_id)
-    base_payload = _kg_base_payload()
+    base_payload = _kg_base_payload(creds)
 
     all_rows: List[Dict] = []
     seen_ids = set()
@@ -325,6 +368,7 @@ def _poll_rankings_once(*, world_id: str) -> Tuple[int, Optional[int]]:
 # Public: start poller
 # -------------------------
 _POLL_THREAD: Optional[threading.Thread] = None
+_LAST_GOOD_CRED_IDX: int = 0
 
 
 def start_rankings_poller(*, poll_seconds: int = 300, world_id: str = "1"):
@@ -339,12 +383,14 @@ def start_rankings_poller(*, poll_seconds: int = 300, world_id: str = "1"):
         return _POLL_THREAD
 
     _ensure_tables()
+    cred_pool = _resolve_rankings_creds()
     _log(
         f"[rankings_poller] startup world_id={world_id} "
-        f"tick_delay={KG_TICK_DELAY_SECONDS}s"
+        f"tick_delay={KG_TICK_DELAY_SECONDS}s creds={len(cred_pool)}"
     )
 
     def loop():
+        global _LAST_GOOD_CRED_IDX
         # small boot jitter so multiple restarts don't hammer KG at once
         time.sleep(random.uniform(0.0, 2.0))
         first_run = True
@@ -369,14 +415,33 @@ def start_rankings_poller(*, poll_seconds: int = 300, world_id: str = "1"):
                 n: int = 0
 
                 for attempt in range(1, 7):
+                    last_cred_err: Optional[Exception] = None
                     try:
-                        n, gal_nw = _poll_rankings_once(world_id=world_id)
-                        if gal_nw is not None:
-                            _log(f"[rankings_poller] ok: upserted {n} kingdoms @ {target.isoformat()} GalileoNW={gal_nw}")
-                        else:
-                            _log(f"[rankings_poller] ok: upserted {n} kingdoms @ {target.isoformat()}")
-                        last_err = None
-                        break
+                        ordered = cred_pool[_LAST_GOOD_CRED_IDX:] + cred_pool[:_LAST_GOOD_CRED_IDX]
+                        success = False
+                        for i, cred in enumerate(ordered):
+                            try:
+                                n, gal_nw = _poll_rankings_once(world_id=world_id, creds=cred)
+                                _LAST_GOOD_CRED_IDX = (i + _LAST_GOOD_CRED_IDX) % len(cred_pool)
+                                acct = cred.get("account_id")
+                                if gal_nw is not None:
+                                    _log(
+                                        f"[rankings_poller] ok: upserted {n} kingdoms @ "
+                                        f"{target.isoformat()} GalileoNW={gal_nw} acct={acct}"
+                                    )
+                                else:
+                                    _log(
+                                        f"[rankings_poller] ok: upserted {n} kingdoms @ "
+                                        f"{target.isoformat()} acct={acct}"
+                                    )
+                                last_err = None
+                                success = True
+                                break
+                            except Exception as ce:
+                                last_cred_err = ce
+                        if success:
+                            break
+                        raise last_cred_err or RuntimeError("all credentials failed")
                     except Exception as e:
                         last_err = e
                         backoff = min(2 ** (attempt - 1), 30)
