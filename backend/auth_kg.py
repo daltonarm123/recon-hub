@@ -391,6 +391,27 @@ def _extract_buildings(payload: Dict[str, Any]) -> List[Dict[str, Any]]:
     return out
 
 
+def _is_summary_only_buildings(buildings: List[Dict[str, Any]]) -> bool:
+    """
+    Some KG settlement-list responses include only one summary row like:
+    "Small Town", "Large City", etc.
+    That is not actual per-building data and should trigger detail fetch.
+    """
+    if not buildings:
+        return True
+    if len(buildings) > 2:
+        return False
+
+    for b in buildings:
+        bt = str(b.get("building_type") or "").strip().lower()
+        et = str(b.get("effect_text") or "").strip()
+        if et:
+            return False
+        if not any(x in bt for x in ("town", "city", "settlement")):
+            return False
+    return True
+
+
 def _fetch_settlements_live(conn_row: Dict[str, Any]) -> List[Dict[str, Any]]:
     base = _kg_base_payload(conn_row)
     settlements_urls = [
@@ -460,7 +481,7 @@ def _fetch_settlements_live(conn_row: Dict[str, Any]) -> List[Dict[str, Any]]:
     for s in settlements:
         raw = s.get("raw") if isinstance(s.get("raw"), dict) else {}
         b = _extract_buildings(raw)
-        if b:
+        if b and not _is_summary_only_buildings(b):
             s["buildings"] = b
             continue
 
