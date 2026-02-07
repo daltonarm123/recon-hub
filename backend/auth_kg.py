@@ -471,6 +471,9 @@ def _fetch_settlements_live(conn_row: Dict[str, Any]) -> List[Dict[str, Any]]:
         "https://www.kingdomgame.net/WebService/Settlement.asmx/GetSettlement",
         "https://www.kingdomgame.net/WebService/Settlement.asmx/GetSettlementInfo",
         "https://www.kingdomgame.net/WebService/Settlement.asmx/GetSettlementBuildings",
+        "https://www.kingdomgame.net/WebService/Settlement.asmx/GetBuildings",
+        "https://www.kingdomgame.net/WebService/Settlement.asmx/GetCity",
+        "https://www.kingdomgame.net/WebService/Settlement.asmx/GetTown",
         "https://www.kingdomgame.net/WebService/Kingdoms.asmx/GetSettlement",
         "https://www.kingdomgame.net/WebService/Kingdoms.asmx/GetSettlementInfo",
         "https://www.kingdomgame.net/WebService/Kingdoms.asmx/GetCity",
@@ -495,15 +498,22 @@ def _fetch_settlements_live(conn_row: Dict[str, Any]) -> List[Dict[str, Any]]:
                     "cityId": sid,
                     "townId": sid,
                 },
+                {"id": sid, **base},
                 {"accountId": base["accountId"], "token": base["token"], "settlementId": sid},
                 {"accountId": base["accountId"], "token": base["token"], "cityId": sid},
                 {"accountId": base["accountId"], "token": base["token"], "townId": sid},
+                {"accountId": base["accountId"], "token": base["token"], "id": sid},
                 {
                     "accountID": str(base["accountId"]),
                     "token": base["token"],
                     "settlementID": sid,
                     "cityID": sid,
                     "townID": sid,
+                },
+                {
+                    "accountID": str(base["accountId"]),
+                    "token": base["token"],
+                    "id": sid,
                 },
             ]
             for payload in payloads:
