@@ -17,6 +17,7 @@ from nw_api import router as nw_router
 from nw_poll import start_nw_poller
 from rankings_poll import start_rankings_poller
 from auth_kg import router as auth_kg_router, ensure_auth_tables
+from admin_api import router as admin_router
 
 BASE_DIR = Path(__file__).resolve().parent
 STATIC_DIR = BASE_DIR / "static"
@@ -400,6 +401,7 @@ def get_spy_report(report_id: int):
 # -------------------------
 app.include_router(nw_router, prefix="/api/nw", tags=["nw"])
 app.include_router(auth_kg_router, tags=["auth", "kg"])
+app.include_router(admin_router, tags=["admin"])
 
 
 # -------------------------

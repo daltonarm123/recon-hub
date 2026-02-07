@@ -12,6 +12,7 @@ import {
 import BackendBadge from "./BackendBadge";
 import AdminHealth from "./AdminHealth";
 import NWChart from "./NWChart";
+import "./App.css";
 
 const API_BASE = ""; // same-origin
 
@@ -106,11 +107,12 @@ function useAuthMe(refreshKey = 0) {
 const navLink = {
     color: "#e7ecff",
     textDecoration: "none",
-    padding: "8px 10px",
+    padding: "8px 12px",
     borderRadius: 10,
-    border: "1px solid rgba(255,255,255,.10)",
-    background: "rgba(255,255,255,.04)",
+    border: "1px solid rgba(255,255,255,.14)",
+    background: "linear-gradient(180deg, rgba(255,255,255,.09), rgba(255,255,255,.04))",
     fontSize: 12,
+    fontWeight: 700,
 };
 
 function Layout({ children }) {
@@ -126,8 +128,8 @@ function Layout({ children }) {
     }
 
     return (
-        <div style={{ minHeight: "100vh", background: "#0b1020", color: "#e7ecff" }}>
-            <div style={{ maxWidth: 1100, margin: "0 auto", padding: 16 }}>
+        <div style={{ minHeight: "100vh", background: "transparent", color: "#e7ecff" }}>
+            <div style={{ maxWidth: 1240, margin: "0 auto", padding: 20 }}>
                 <header
                     style={{
                         display: "flex",
@@ -135,6 +137,11 @@ function Layout({ children }) {
                         justifyContent: "space-between",
                         gap: 12,
                         flexWrap: "wrap",
+                        background: "rgba(255,255,255,.03)",
+                        border: "1px solid rgba(255,255,255,.11)",
+                        borderRadius: 14,
+                        padding: 12,
+                        boxShadow: "0 14px 36px rgba(0,0,0,.2)",
                     }}
                 >
                     <div>
@@ -166,9 +173,11 @@ function Layout({ children }) {
                         <Link style={navLink} to="/research">
                             Research
                         </Link>
-                        <Link style={navLink} to="/admin/health">
-                            Admin
-                        </Link>
+                        {auth.data?.user?.is_admin ? (
+                            <Link style={navLink} to="/admin/health">
+                                Admin
+                            </Link>
+                        ) : null}
                         <a style={navLink} href="/kg-calc.html">
                             Calc
                         </a>
@@ -187,7 +196,7 @@ function Layout({ children }) {
                 <div
                     style={{
                         height: 1,
-                        background: "rgba(255,255,255,.10)",
+                        background: "rgba(255,255,255,.12)",
                         margin: "14px 0",
                     }}
                 />
@@ -201,11 +210,11 @@ function Card({ title, subtitle, children, right }) {
     return (
         <div
             style={{
-                border: "1px solid rgba(255,255,255,.10)",
+                border: "1px solid rgba(255,255,255,.13)",
                 borderRadius: 14,
                 overflow: "hidden",
-                background: "rgba(255,255,255,.03)",
-                boxShadow: "0 10px 30px rgba(0,0,0,.25)",
+                background: "linear-gradient(180deg, rgba(255,255,255,.08), rgba(255,255,255,.03))",
+                boxShadow: "0 16px 40px rgba(0,0,0,.25)",
             }}
         >
             <div
@@ -940,6 +949,47 @@ function Research() {
 /* ---------------- Admin ---------------- */
 
 function Admin() {
+    const auth = useAuthMe(0);
+
+    if (auth.loading) {
+        return (
+            <Layout>
+                <Card title="Admin" subtitle="Checking access">
+                    <div style={{ fontSize: 12, color: "rgba(231,236,255,.7)" }}>Loading...</div>
+                </Card>
+            </Layout>
+        );
+    }
+
+    if (!auth.data?.authenticated) {
+        return (
+            <Layout>
+                <Card title="Admin" subtitle="Authentication required">
+                    <div style={{ fontSize: 12, color: "rgba(231,236,255,.75)" }}>
+                        You need to login with Discord to access admin tools.
+                    </div>
+                    <div style={{ marginTop: 10 }}>
+                        <a style={{ ...btn, textDecoration: "none" }} href="/auth/discord/login">
+                            Login with Discord
+                        </a>
+                    </div>
+                </Card>
+            </Layout>
+        );
+    }
+
+    if (!auth.data?.user?.is_admin) {
+        return (
+            <Layout>
+                <Card title="Admin" subtitle="Access denied">
+                    <div style={{ fontSize: 12, color: "#ff8b8b" }}>
+                        Your Discord account is not in the admin allow-list (`DEV_USER_IDS`).
+                    </div>
+                </Card>
+            </Layout>
+        );
+    }
+
     return (
         <Layout>
             <AdminHealth />

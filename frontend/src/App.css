@@ -1,93 +1,99 @@
+@import url("https://fonts.googleapis.com/css2?family=Manrope:wght@400;600;700;800&display=swap");
+
+:root {
+  --rh-bg-a: #081229;
+  --rh-bg-b: #0d1a35;
+  --rh-bg-c: #070d1c;
+  --rh-text: #e7ecff;
+  --rh-muted: rgba(231, 236, 255, 0.72);
+  --rh-border: rgba(255, 255, 255, 0.12);
+  --rh-glow: rgba(66, 154, 255, 0.16);
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
 #root {
-  max-width: 1280px;
-  margin: 0 auto;
-  padding: 2rem;
-  text-align: center;
+  min-height: 100%;
 }
 
-.logo {
-  height: 6em;
-  padding: 1.5em;
-  will-change: filter;
-  transition: filter 300ms;
-}
-.logo:hover {
-  filter: drop-shadow(0 0 2em #646cffaa);
-}
-.logo.react:hover {
-  filter: drop-shadow(0 0 2em #61dafbaa);
+body {
+  margin: 0;
+  font-family: "Manrope", ui-sans-serif, system-ui, sans-serif;
+  color: var(--rh-text);
+  background:
+    radial-gradient(1300px 700px at -15% -15%, #143a71 0%, transparent 55%),
+    radial-gradient(1000px 600px at 120% 10%, #1a2a57 0%, transparent 50%),
+    linear-gradient(180deg, var(--rh-bg-a), var(--rh-bg-b) 45%, var(--rh-bg-c));
 }
 
-@keyframes logo-spin {
-  from {
-    transform: rotate(0deg);
-  }
-  to {
-    transform: rotate(360deg);
-  }
+a,
+button,
+input,
+select,
+textarea {
+  font-family: inherit;
 }
 
-@media (prefers-reduced-motion: no-preference) {
-  a:nth-of-type(2) .logo {
-    animation: logo-spin infinite 20s linear;
-  }
+button {
+  transition: transform 140ms ease, border-color 140ms ease, background-color 140ms ease;
 }
 
-.card {
-  padding: 2em;
+button:hover {
+  transform: translateY(-1px);
 }
 
-.read-the-docs {
-  color: #888;
+button:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+  transform: none;
 }
-/* -------- NWOT responsive layout -------- */
+
 .nwot-controls {
-    display: flex;
-    gap: 10px;
-    align-items: center;
-    justify-content: flex-end;
-    flex-wrap: wrap;
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  justify-content: flex-end;
+  flex-wrap: wrap;
 }
 
 .nwot-grid {
-    display: grid;
-    grid-template-columns: 320px 1fr;
-    gap: 12px;
-    align-items: stretch;
+  display: grid;
+  grid-template-columns: 320px 1fr;
+  gap: 12px;
+  align-items: stretch;
 }
 
 .nwot-sidebar {
-    min-height: 420px;
+  min-height: 420px;
+  backdrop-filter: blur(4px);
 }
 
 .nwot-chart {
-    min-height: 420px;
+  min-height: 420px;
 }
 
 @media (max-width: 900px) {
-    .nwot-controls {
-        justify-content: stretch;
-    }
+  .nwot-controls {
+    justify-content: stretch;
+  }
 
-        .nwot-controls > * {
-            width: 100% !important;
-        }
+  .nwot-controls > * {
+    width: 100% !important;
+  }
 
-    .nwot-grid {
-        grid-template-columns: 1fr; /* stack */
-    }
+  .nwot-grid {
+    grid-template-columns: 1fr;
+  }
 
-    .nwot-sidebar {
-        min-height: auto;
-    }
+  .nwot-sidebar {
+    min-height: auto;
+  }
 
-    .nwot-chart {
-        min-height: 320px;
-    }
-}
-
-@media (max-width: 900px) {
-    #root {
-        padding: 0.75rem;
-    }
+  .nwot-chart {
+    min-height: 320px;
+  }
 }

@@ -126,15 +126,24 @@ def _auth_scope() -> str:
     return "identify"
 
 
+def _admin_user_ids() -> set[str]:
+    raw = os.getenv("DEV_USER_IDS", "").strip()
+    if not raw:
+        return set()
+    return {x.strip() for x in raw.split(",") if x.strip()}
+
+
 def _get_current_user(request: Request) -> Dict[str, Any]:
     token = request.cookies.get(JWT_COOKIE_NAME, "")
     if not token:
         raise HTTPException(status_code=401, detail="Not authenticated")
     claims = _decode_session_jwt(token)
+    uid = str(claims.get("sub") or "")
     return {
-        "discord_user_id": str(claims.get("sub") or ""),
+        "discord_user_id": uid,
         "discord_username": str(claims.get("name") or ""),
         "avatar": claims.get("avatar"),
+        "is_admin": uid in _admin_user_ids(),
     }
 
 
@@ -744,13 +753,15 @@ def auth_me(request: Request):
         return {"ok": True, "authenticated": False}
     try:
         claims = _decode_session_jwt(token)
+        uid = str(claims.get("sub") or "")
         return {
             "ok": True,
             "authenticated": True,
             "user": {
-                "discord_user_id": str(claims.get("sub") or ""),
+                "discord_user_id": uid,
                 "discord_username": str(claims.get("name") or ""),
                 "avatar": claims.get("avatar"),
+                "is_admin": uid in _admin_user_ids(),
             },
         }
     except HTTPException:

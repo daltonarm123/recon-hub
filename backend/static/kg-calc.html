@@ -326,6 +326,10 @@
                 <div class="lbl">Castles</div>
                 <input class="inp" id="defCastles" type="number" min="0" step="1" />
               </div>
+              <div class="row compact">
+                <div class="lbl">Defender DP (override)</div>
+                <input class="inp" id="defDP" type="number" min="0" step="1" />
+              </div>
             </div>
           </div>
 
@@ -608,7 +612,7 @@
   el("btnAddTroop").addEventListener("click", () => addTroopRow("", 0));
 
   el("btnClearDef").addEventListener("click", () => {
-    ["defTarget","defAlliance","defRank","defNetworth","defHonour","defCastles",
+    ["defTarget","defAlliance","defRank","defNetworth","defHonour","defCastles","defDP",
      "resGold","resFood","resWood","resStone","resHorses","resGems"].forEach(id => el(id).value = "");
     clearTroopRows();
     addTroopRow("", 0);
@@ -639,6 +643,8 @@
       if (parsed.networth != null) el("defNetworth").value = parsed.networth;
       if (parsed.honour != null) el("defHonour").value = parsed.honour;
       if (parsed.castles != null) el("defCastles").value = parsed.castles;
+      const parsedDP = extractDefenderDPFromSpyText(txt);
+      if (parsedDP != null) el("defDP").value = parsedDP;
 
       if (parsed.resources.gold != null) el("resGold").value = parsed.resources.gold;
       if (parsed.resources.food != null) el("resFood").value = parsed.resources.food;
@@ -679,6 +685,7 @@
       networth: parseNumberLoose(el("defNetworth").value),
       honour: parseNumberLoose(el("defHonour").value),
       castles: parseNumberLoose(el("defCastles").value),
+      defenderDP: parseNumberLoose(el("defDP").value),
       troops: readTroopsFromRows(),
       resources: {
         gold: parseNumberLoose(el("resGold").value),
@@ -721,12 +728,14 @@
 
   el("btnCalc").addEventListener("click", () => {
     const spyText = el("spyPaste").value || "";
-    const defDP = extractDefenderDPFromSpyText(spyText);
+    const manualDP = parseNumberLoose(el("defDP").value);
+    const parsedDP = extractDefenderDPFromSpyText(spyText);
+    const defDP = manualDP && manualDP > 0 ? manualDP : parsedDP;
 
     if (!defDP || !Number.isFinite(defDP) || defDP <= 0) {
       setStatus(el("atkStatus"), [
         { k:"Calc", v:"failed" },
-        { k:"Reason", v:"Paste a full Spy Report (must include Approximate defensive power*)" }
+        { k:"Reason", v:"Paste a full Spy Report with Approximate defensive power, or enter Defender DP override." }
       ]);
       return;
     }
@@ -739,7 +748,8 @@
       { k:"Attack Power", v: Math.round(atkPower).toLocaleString() },
       { k:"Defender DP", v: defDP.toLocaleString() },
       { k:"Ratio (A/D)", v: ratio.toFixed(2) },
-      { k:"Predicted Result", v: outcome }
+      { k:"Predicted Result", v: outcome },
+      { k:"DP Source", v: manualDP && manualDP > 0 ? "manual override" : "spy report" }
     ]);
   });
 </script>
