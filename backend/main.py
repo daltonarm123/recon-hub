@@ -16,6 +16,7 @@ from fastapi.staticfiles import StaticFiles
 from nw_api import router as nw_router
 from nw_poll import start_nw_poller
 from rankings_poll import start_rankings_poller
+from auth_kg import router as auth_kg_router, ensure_auth_tables
 
 BASE_DIR = Path(__file__).resolve().parent
 STATIC_DIR = BASE_DIR / "static"
@@ -398,6 +399,7 @@ def get_spy_report(report_id: int):
 # Mount NW API
 # -------------------------
 app.include_router(nw_router, prefix="/api/nw", tags=["nw"])
+app.include_router(auth_kg_router, tags=["auth", "kg"])
 
 
 # -------------------------
@@ -410,6 +412,7 @@ def _startup():
     rankings_seconds = int(os.getenv("RANKINGS_POLL_SECONDS", "900"))
     nw_seconds = int(os.getenv("NW_POLL_SECONDS", "240"))
 
+    ensure_auth_tables()
     start_rankings_poller(poll_seconds=rankings_seconds, world_id=world_id)
     start_nw_poller(poll_seconds=nw_seconds)
 

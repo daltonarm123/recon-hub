@@ -73,6 +73,36 @@ function useFetchText(url, deps = []) {
     return { data, err, loading };
 }
 
+function useAuthMe(refreshKey = 0) {
+    const [data, setData] = useState({ authenticated: false });
+    const [loading, setLoading] = useState(true);
+
+    useEffect(() => {
+        let alive = true;
+        setLoading(true);
+        fetch(`${API_BASE}/auth/me`, { credentials: "include" })
+            .then((r) => r.json().catch(() => ({ authenticated: false })))
+            .then((j) => {
+                if (!alive) return;
+                setData({
+                    authenticated: Boolean(j?.authenticated),
+                    user: j?.user || null,
+                });
+            })
+            .catch(() => {
+                if (!alive) return;
+                setData({ authenticated: false, user: null });
+            })
+            .finally(() => alive && setLoading(false));
+
+        return () => {
+            alive = false;
+        };
+    }, [refreshKey]);
+
+    return { data, loading };
+}
+
 const navLink = {
     color: "#e7ecff",
     textDecoration: "none",
@@ -84,6 +114,17 @@ const navLink = {
 };
 
 function Layout({ children }) {
+    const [authRefresh, setAuthRefresh] = useState(0);
+    const auth = useAuthMe(authRefresh);
+
+    async function logout() {
+        await fetch(`${API_BASE}/auth/logout`, {
+            method: "POST",
+            credentials: "include",
+        }).catch(() => null);
+        setAuthRefresh((x) => x + 1);
+    }
+
     return (
         <div style={{ minHeight: "100vh", background: "#0b1020", color: "#e7ecff" }}>
             <div style={{ maxWidth: 1100, margin: "0 auto", padding: 16 }}>
@@ -113,6 +154,12 @@ function Layout({ children }) {
                         <Link style={navLink} to="/nwot">
                             NWOT
                         </Link>
+                        <Link style={navLink} to="/settlements">
+                            Settlements
+                        </Link>
+                        <Link style={navLink} to="/settlement-effects">
+                            Settlement Effects
+                        </Link>
                         <Link style={navLink} to="/reports">
                             Reports
                         </Link>
@@ -125,6 +172,15 @@ function Layout({ children }) {
                         <a style={navLink} href="/kg-calc.html">
                             Calc
                         </a>
+                        {auth.loading ? null : auth.data?.authenticated ? (
+                            <button style={navBtn} onClick={logout} title="Logout Discord session">
+                                {auth.data?.user?.discord_username || "Discord"} Logout
+                            </button>
+                        ) : (
+                            <a style={navLink} href="/auth/discord/login">
+                                Discord Login
+                            </a>
+                        )}
                     </nav>
                 </header>
 
@@ -652,6 +708,225 @@ function Reports() {
 
 /* ---------------- Research ---------------- */
 
+function Settlements() {
+    const [refresh, setRefresh] = useState(0);
+    const [form, setForm] = useState({ account_id: "", kingdom_id: "", token: "" });
+    const [busy, setBusy] = useState(false);
+    const [msg, setMsg] = useState("");
+
+    const conn = useFetchJson(`${API_BASE}/api/kg/connection?r=${refresh}`, [refresh]);
+    const settlements = useFetchJson(`${API_BASE}/api/kg/settlements?r=${refresh}`, [refresh]);
+
+    async function connectKg() {
+        setBusy(true);
+        setMsg("");
+        try {
+            const r = await fetch(`${API_BASE}/api/kg/connect`, {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                credentials: "include",
+                body: JSON.stringify({
+                    account_id: Number(form.account_id),
+                    kingdom_id: Number(form.kingdom_id),
+                    token: form.token.trim(),
+                }),
+            });
+            const j = await r.json().catch(() => ({}));
+            if (!r.ok) throw new Error(j?.detail || `HTTP ${r.status}`);
+            setMsg("KG account connected.");
+            setForm((f) => ({ ...f, token: "" }));
+            setRefresh((x) => x + 1);
+        } catch (e) {
+            setMsg(String(e.message || e));
+        } finally {
+            setBusy(false);
+        }
+    }
+
+    async function disconnectKg() {
+        setBusy(true);
+        setMsg("");
+        try {
+            const r = await fetch(`${API_BASE}/api/kg/connection`, {
+                method: "DELETE",
+                credentials: "include",
+            });
+            const j = await r.json().catch(() => ({}));
+            if (!r.ok) throw new Error(j?.detail || `HTTP ${r.status}`);
+            setMsg("KG account disconnected.");
+            setRefresh((x) => x + 1);
+        } catch (e) {
+            setMsg(String(e.message || e));
+        } finally {
+            setBusy(false);
+        }
+    }
+
+    const connected = Boolean(conn.data?.connected);
+
+    return (
+        <Layout>
+            <div style={{ display: "grid", gap: 14 }}>
+                <Card
+                    title="Settlements"
+                    subtitle="Login with Discord, connect KG token, then load your settlements."
+                >
+                    {conn.err ? <div style={{ color: "#ff6b6b", marginBottom: 10 }}>{conn.err}</div> : null}
+                    {!connected ? (
+                        <div style={{ display: "grid", gap: 10, maxWidth: 560 }}>
+                            <a style={{ ...btn, textDecoration: "none", width: "fit-content" }} href="/auth/discord/login">
+                                Login with Discord
+                            </a>
+                            <input
+                                style={input}
+                                placeholder="KG accountId"
+                                value={form.account_id}
+                                onChange={(e) => setForm((f) => ({ ...f, account_id: e.target.value }))}
+                            />
+                            <input
+                                style={input}
+                                placeholder="KG kingdomId"
+                                value={form.kingdom_id}
+                                onChange={(e) => setForm((f) => ({ ...f, kingdom_id: e.target.value }))}
+                            />
+                            <input
+                                style={input}
+                                placeholder="KG token"
+                                value={form.token}
+                                onChange={(e) => setForm((f) => ({ ...f, token: e.target.value }))}
+                            />
+                            <div>
+                                <button
+                                    style={btn}
+                                    disabled={busy || !form.account_id || !form.kingdom_id || !form.token}
+                                    onClick={connectKg}
+                                >
+                                    {busy ? "Connecting..." : "Connect KG"}
+                                </button>
+                            </div>
+                        </div>
+                    ) : (
+                        <div style={{ display: "grid", gap: 10 }}>
+                            <div style={{ fontSize: 12, color: "rgba(231,236,255,.75)" }}>
+                                Connected KG account {conn.data?.connection?.account_id} / kingdom {conn.data?.connection?.kingdom_id}
+                            </div>
+                            <div>
+                                <button style={btnGhost} onClick={() => setRefresh((x) => x + 1)} disabled={busy}>
+                                    Refresh
+                                </button>
+                                <span style={{ marginRight: 8 }} />
+                                <button style={btnGhost} onClick={disconnectKg} disabled={busy}>
+                                    Disconnect KG
+                                </button>
+                            </div>
+                        </div>
+                    )}
+                    {msg ? (
+                        <div style={{ marginTop: 10, color: msg.includes("connected.") ? "#58d68d" : "#ff6b6b" }}>
+                            {msg}
+                        </div>
+                    ) : null}
+                </Card>
+
+                <Card title="Settlement List" subtitle="Live data fetched from KG using your connected token.">
+                    {settlements.loading ? <div>Loading settlements...</div> : null}
+                    {settlements.err ? <div style={{ color: "#ff6b6b" }}>{settlements.err}</div> : null}
+
+                    {Array.isArray(settlements.data?.settlements) && settlements.data.settlements.length > 0 ? (
+                        settlements.data.settlements.map((s) => (
+                            <div
+                                key={s.settlement_id}
+                                style={{
+                                    border: "1px solid rgba(255,255,255,.10)",
+                                    borderRadius: 12,
+                                    padding: 10,
+                                    marginBottom: 10,
+                                }}
+                            >
+                                <div style={{ fontWeight: 800 }}>
+                                    {s.name} #{s.settlement_id}
+                                </div>
+                                <div style={{ fontSize: 12, opacity: 0.8, margin: "6px 0" }}>
+                                    Buildings: {Array.isArray(s.buildings) ? s.buildings.length : 0}
+                                </div>
+                                <div style={{ overflowX: "auto" }}>
+                                    <table style={table}>
+                                        <thead>
+                                            <tr>
+                                                <th style={th}>Building Type</th>
+                                                <th style={th}>Level</th>
+                                                <th style={th}>Effect</th>
+                                            </tr>
+                                        </thead>
+                                        <tbody>
+                                            {(s.buildings || []).map((b, idx) => (
+                                                <tr key={`${s.settlement_id}:${idx}`}>
+                                                    <td style={td}>{b.building_type}</td>
+                                                    <td style={td}>{b.level}</td>
+                                                    <td style={td}>{b.effect_text || "-"}</td>
+                                                </tr>
+                                            ))}
+                                        </tbody>
+                                    </table>
+                                </div>
+                            </div>
+                        ))
+                    ) : (
+                        <div style={{ fontSize: 12, color: "rgba(231,236,255,.65)" }}>
+                            No settlements loaded yet.
+                        </div>
+                    )}
+                </Card>
+            </div>
+        </Layout>
+    );
+}
+
+function SettlementEffects() {
+    const effects = useFetchJson(`${API_BASE}/api/kg/settlement-effects`, []);
+
+    return (
+        <Layout>
+            <Card title="Settlement Effects" subtitle="Aggregated effects across all your settlements.">
+                {effects.loading ? <div>Loading effects...</div> : null}
+                {effects.err ? <div style={{ color: "#ff6b6b" }}>{effects.err}</div> : null}
+                {Array.isArray(effects.data?.effects) && effects.data.effects.length > 0 ? (
+                    <div style={{ overflowX: "auto" }}>
+                        <table style={table}>
+                            <thead>
+                                <tr>
+                                    <th style={th}>Effect</th>
+                                    <th style={th}>Total %</th>
+                                    <th style={th}>Cap %</th>
+                                    <th style={th}>Applied %</th>
+                                    <th style={th}>Cap Hit</th>
+                                    <th style={th}>Buildings</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                {effects.data.effects.map((e) => (
+                                    <tr key={e.effect_key}>
+                                        <td style={td}>{e.label}</td>
+                                        <td style={td}>{e.total_pct}</td>
+                                        <td style={td}>{e.cap_pct ?? "-"}</td>
+                                        <td style={td}>{e.applied_pct}</td>
+                                        <td style={td}>{e.cap_reached ? "Yes" : "No"}</td>
+                                        <td style={td}>{e.building_count}</td>
+                                    </tr>
+                                ))}
+                            </tbody>
+                        </table>
+                    </div>
+                ) : (
+                    <div style={{ fontSize: 12, color: "rgba(231,236,255,.65)" }}>
+                        No effects available yet. Connect KG first.
+                    </div>
+                )}
+            </Card>
+        </Layout>
+    );
+}
+
 function Research() {
     return (
         <Layout>
@@ -814,6 +1089,8 @@ export default function App() {
                 <Route path="/" element={<Dashboard />} />
                 <Route path="/kingdoms" element={<Kingdoms />} />
                 <Route path="/nwot" element={<NWOT />} />
+                <Route path="/settlements" element={<Settlements />} />
+                <Route path="/settlement-effects" element={<SettlementEffects />} />
                 <Route path="/kingdoms/:name" element={<KingdomDetail />} />
                 <Route path="/spy-reports/:id" element={<SpyReportView />} />
                 <Route path="/reports" element={<Reports />} />
@@ -883,6 +1160,11 @@ const linkBtn = {
     color: "#5aa0ff",
     cursor: "pointer",
     fontSize: 12,
+};
+
+const navBtn = {
+    ...navLink,
+    cursor: "pointer",
 };
 
 const pill = {
