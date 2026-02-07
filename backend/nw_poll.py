@@ -8,6 +8,7 @@ import psycopg
 from psycopg.rows import dict_row
 
 KG_TICK_DELAY_SECONDS = float(os.getenv("KG_TICK_DELAY_SECONDS", "45"))
+MAX_SOURCE_AGE_SECONDS = int(os.getenv("NW_MAX_SOURCE_AGE_SECONDS", "540"))
 
 
 # -------------------------
@@ -77,17 +78,17 @@ def _ensure_tables():
 Snapshot = List[Tuple[str, int, int]]
 
 
-def _fetch_from_kg_top() -> Snapshot:
+def _fetch_from_kg_top() -> Tuple[Snapshot, Optional[datetime]]:
     conn = _connect()
     try:
         with conn.cursor() as cur:
             cur.execute("SELECT to_regclass('public.kg_top_kingdoms') AS t;")
             reg = cur.fetchone()
             if not reg or not reg.get("t"):
-                return []
+                return ([], None)
 
             cur.execute("""
-                SELECT kingdom, COALESCE(ranking, 999999) AS rank, networth
+                SELECT kingdom, COALESCE(ranking, 999999) AS rank, networth, fetched_at
                 FROM public.kg_top_kingdoms
                 ORDER BY ranking ASC NULLS LAST
                 LIMIT 300;
@@ -95,21 +96,32 @@ def _fetch_from_kg_top() -> Snapshot:
             rows = cur.fetchall()
 
         out: Snapshot = []
+        latest_fetched_at: Optional[datetime] = None
         for r in rows:
             k = (r.get("kingdom") or "").strip()
             if not k or r.get("networth") is None:
                 continue
             out.append((k, int(r.get("rank") or 999999), int(r["networth"])))
-        return out
+            fa = r.get("fetched_at")
+            if isinstance(fa, datetime):
+                if latest_fetched_at is None or fa > latest_fetched_at:
+                    latest_fetched_at = fa
+        return (out, latest_fetched_at)
     finally:
         conn.close()
 
 
-def _fetch_top300_resilient() -> Tuple[str, Snapshot]:
-    rows = _fetch_from_kg_top()
+def _fetch_top300_resilient() -> Tuple[str, Snapshot, Optional[datetime]]:
+    rows, fetched_at = _fetch_from_kg_top()
     if rows:
-        return ("kg_top_kingdoms", rows)
-    return ("none", [])
+        return ("kg_top_kingdoms", rows, fetched_at)
+    return ("none", [], None)
+
+
+def _is_fresh(source_ts: Optional[datetime], now: datetime) -> bool:
+    if source_ts is None:
+        return False
+    return (now - source_ts).total_seconds() <= MAX_SOURCE_AGE_SECONDS
 
 
 def _upsert_history(points: List[Tuple[str, datetime, int]]):
@@ -181,12 +193,19 @@ def start_nw_poller(poll_seconds: int = 300):
                 if KG_TICK_DELAY_SECONDS > 0:
                     time.sleep(KG_TICK_DELAY_SECONDS)
 
-                source, snapshot = _fetch_top300_resilient()
+                source, snapshot, source_fetched_at = _fetch_top300_resilient()
 
                 if not snapshot:
                     print("[nw_poll] source=none no snapshot available")
                 else:
                     now = target  # <- align exactly to tick boundary
+                    if not _is_fresh(source_fetched_at, now):
+                        print(
+                            f"[nw_poll] stale source data: source={source} "
+                            f"fetched_at={source_fetched_at} tick={now.isoformat()} "
+                            f"(max_age={MAX_SOURCE_AGE_SECONDS}s)"
+                        )
+                        continue
 
                     _upsert_latest(snapshot, now)
 

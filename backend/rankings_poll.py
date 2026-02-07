@@ -197,15 +197,14 @@ def _kg_headers(world_id: str) -> Dict[str, str]:
 
 
 def _kg_base_payload() -> Dict[str, object]:
-    account_id = os.getenv("KG_ACCOUNT_ID", "").strip()
-    token = os.getenv("KG_TOKEN", "").strip()
-    kingdom_id = os.getenv("KG_KINGDOM_ID", "").strip()
+    creds = _resolve_rankings_creds()
 
     continent_id = int(os.getenv("KG_CONTINENT_ID", "-1"))
     start_number = int(os.getenv("KG_START_NUMBER", "-1"))
 
-    if not account_id or not token or not kingdom_id:
-        raise RuntimeError("Missing KG env vars: set KG_ACCOUNT_ID, KG_TOKEN, KG_KINGDOM_ID")
+    account_id = str(creds["account_id"])
+    token = str(creds["token"])
+    kingdom_id = str(creds["kingdom_id"])
 
     return {
         "accountId": str(account_id),
@@ -214,6 +213,57 @@ def _kg_base_payload() -> Dict[str, object]:
         "continentId": int(continent_id),
         "startNumber": int(start_number),
     }
+
+
+def _parse_int(v: object) -> Optional[int]:
+    try:
+        if v is None:
+            return None
+        return int(str(v).strip())
+    except Exception:
+        return None
+
+
+def _parse_cred(raw: Dict[str, object]) -> Optional[Dict[str, object]]:
+    account_id = _parse_int(raw.get("account_id"))
+    kingdom_id = _parse_int(raw.get("kingdom_id"))
+    token = str(raw.get("token") or "").strip()
+    if account_id is None or kingdom_id is None or not token:
+        return None
+    return {"account_id": account_id, "kingdom_id": kingdom_id, "token": token}
+
+
+def _resolve_rankings_creds() -> Dict[str, object]:
+    """
+    Credential order:
+    1) KG_POLLER_ACCOUNT_ID / KG_POLLER_TOKEN / KG_POLLER_KINGDOM_ID (recommended dedicated bot account)
+    2) KG_ACCOUNT_ID / KG_TOKEN / KG_KINGDOM_ID (legacy fallback)
+    """
+    preferred = _parse_cred(
+        {
+            "account_id": os.getenv("KG_POLLER_ACCOUNT_ID"),
+            "token": os.getenv("KG_POLLER_TOKEN"),
+            "kingdom_id": os.getenv("KG_POLLER_KINGDOM_ID"),
+        }
+    )
+    if preferred:
+        return preferred
+
+    legacy = _parse_cred(
+        {
+            "account_id": os.getenv("KG_ACCOUNT_ID"),
+            "token": os.getenv("KG_TOKEN"),
+            "kingdom_id": os.getenv("KG_KINGDOM_ID"),
+        }
+    )
+    if legacy:
+        return legacy
+
+    raise RuntimeError(
+        "Missing KG poller credentials. Set either "
+        "(KG_POLLER_ACCOUNT_ID, KG_POLLER_TOKEN, KG_POLLER_KINGDOM_ID) "
+        "or legacy (KG_ACCOUNT_ID, KG_TOKEN, KG_KINGDOM_ID)."
+    )
 
 
 # -------------------------

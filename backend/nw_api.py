@@ -128,3 +128,51 @@ def nw_history(kingdom: str, hours: int = 24):
         return points
     finally:
         conn.close()
+
+
+@router.get("/status")
+def nw_status():
+    """
+    Returns source freshness for rankings->nw pipeline.
+    """
+    now = datetime.now(timezone.utc)
+
+    conn = _connect()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT MAX(fetched_at) AS last_rankings_fetch
+                FROM public.kg_top_kingdoms
+                """
+            )
+            r1 = cur.fetchone() or {}
+
+            cur.execute(
+                """
+                SELECT MAX(tick_time) AS last_nw_tick
+                FROM public.nw_history
+                """
+            )
+            r2 = cur.fetchone() or {}
+
+        last_fetch = r1.get("last_rankings_fetch")
+        last_tick = r2.get("last_nw_tick")
+
+        fetch_age_s = None
+        tick_age_s = None
+        if last_fetch is not None:
+            fetch_age_s = int((now - last_fetch).total_seconds())
+        if last_tick is not None:
+            tick_age_s = int((now - last_tick).total_seconds())
+
+        return {
+            "ok": True,
+            "now": now.isoformat(),
+            "last_rankings_fetch": last_fetch.isoformat() if last_fetch else None,
+            "last_nw_tick": last_tick.isoformat() if last_tick else None,
+            "rankings_age_seconds": fetch_age_s,
+            "nw_tick_age_seconds": tick_age_s,
+        }
+    finally:
+        conn.close()
