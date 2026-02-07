@@ -169,7 +169,7 @@ def _kg_headers() -> Dict[str, str]:
         "Accept": "application/json, text/plain, */*",
         "Content-Type": "application/json",
         "Origin": "https://www.kingdomgame.net",
-        "Referer": "https://www.kingdomgame.net/kingdom",
+        "Referer": "https://www.kingdomgame.net/settlements",
         "World-Id": _kg_world_id(),
         "User-Agent": "recon-hub/1.0 (settlements)",
     }
@@ -241,10 +241,26 @@ def _require_user_kg_connection(discord_user_id: str) -> Dict[str, Any]:
 
 
 def _extract_list(payload: Dict[str, Any], keys: List[str]) -> List[Any]:
-    for k in keys:
-        v = payload.get(k)
-        if isinstance(v, list):
-            return v
+    keyset = {k.lower() for k in keys}
+    queue: List[Any] = [payload]
+    visited_ids = set()
+    while queue:
+        cur = queue.pop(0)
+        cid = id(cur)
+        if cid in visited_ids:
+            continue
+        visited_ids.add(cid)
+
+        if isinstance(cur, dict):
+            for k, v in cur.items():
+                if k.lower() in keyset and isinstance(v, list):
+                    return v
+                if isinstance(v, (dict, list)):
+                    queue.append(v)
+        elif isinstance(cur, list):
+            for item in cur:
+                if isinstance(item, (dict, list)):
+                    queue.append(item)
     return []
 
 
@@ -264,17 +280,18 @@ def _extract_settlements(payload: Dict[str, Any]) -> List[Dict[str, Any]]:
         ],
     )
     out: List[Dict[str, Any]] = []
-    for item in candidates:
+
+    def parse_item(item: Any):
         if not isinstance(item, dict):
-            continue
+            return
         sid = item.get("id") or item.get("settlementId") or item.get("cityId") or item.get("townId")
         name = item.get("name") or item.get("settlementName") or item.get("cityName") or item.get("townName")
         if sid is None:
-            continue
+            return
         try:
             sid_i = int(sid)
         except Exception:
-            continue
+            return
         out.append(
             {
                 "settlement_id": sid_i,
@@ -282,6 +299,32 @@ def _extract_settlements(payload: Dict[str, Any]) -> List[Dict[str, Any]]:
                 "raw": item,
             }
         )
+    
+    for item in candidates:
+        parse_item(item)
+
+    # Fallback: scan generic lists for objects that look like settlements.
+    if not out:
+        queue: List[Any] = [payload]
+        seen = set()
+        while queue:
+            cur = queue.pop(0)
+            cid = id(cur)
+            if cid in seen:
+                continue
+            seen.add(cid)
+            if isinstance(cur, dict):
+                for v in cur.values():
+                    if isinstance(v, (dict, list)):
+                        queue.append(v)
+            elif isinstance(cur, list):
+                for item in cur:
+                    if isinstance(item, dict):
+                        if any(k in item for k in ("settlementId", "cityId", "townId")):
+                            parse_item(item)
+                    if isinstance(item, (dict, list)):
+                        queue.append(item)
+
     return out
 
 
@@ -301,14 +344,15 @@ def _extract_buildings(payload: Dict[str, Any]) -> List[Dict[str, Any]]:
         ],
     )
     out: List[Dict[str, Any]] = []
-    for row in rows:
+
+    def parse_row(row: Any):
         if not isinstance(row, dict):
-            continue
+            return
         btype = row.get("buildingType") or row.get("type") or row.get("name") or row.get("buildingName")
         level = row.get("level") or row.get("lvl") or row.get("buildingLevel")
         effect = row.get("effect") or row.get("description") or row.get("text") or row.get("bonus")
         if not btype:
-            continue
+            return
         try:
             level_i = int(level) if level is not None else 0
         except Exception:
@@ -320,6 +364,30 @@ def _extract_buildings(payload: Dict[str, Any]) -> List[Dict[str, Any]]:
                 "effect_text": str(effect).strip() if effect is not None else "",
             }
         )
+    
+    for row in rows:
+        parse_row(row)
+
+    # Fallback: scan nested response for likely building objects.
+    if not out:
+        queue: List[Any] = [payload]
+        seen = set()
+        while queue:
+            cur = queue.pop(0)
+            cid = id(cur)
+            if cid in seen:
+                continue
+            seen.add(cid)
+            if isinstance(cur, dict):
+                parse_row(cur)
+                for v in cur.values():
+                    if isinstance(v, (dict, list)):
+                        queue.append(v)
+            elif isinstance(cur, list):
+                for item in cur:
+                    if isinstance(item, (dict, list)):
+                        queue.append(item)
+
     return out
 
 
@@ -327,6 +395,7 @@ def _fetch_settlements_live(conn_row: Dict[str, Any]) -> List[Dict[str, Any]]:
     base = _kg_base_payload(conn_row)
     settlements_urls = [
         os.getenv("KG_SETTLEMENTS_URL", "").strip(),
+        "https://www.kingdomgame.net/WebService/Settlement.asmx/GetSettlements",
         "https://www.kingdomgame.net/WebService/Kingdoms.asmx/GetSettlements",
         "https://www.kingdomgame.net/WebService/Kingdoms.asmx/GetKingdomSettlements",
         "https://www.kingdomgame.net/WebService/Kingdoms.asmx/GetKingdom",
@@ -378,6 +447,9 @@ def _fetch_settlements_live(conn_row: Dict[str, Any]) -> List[Dict[str, Any]]:
 
     details_urls = [
         os.getenv("KG_SETTLEMENT_DETAIL_URL", "").strip(),
+        "https://www.kingdomgame.net/WebService/Settlement.asmx/GetSettlement",
+        "https://www.kingdomgame.net/WebService/Settlement.asmx/GetSettlementInfo",
+        "https://www.kingdomgame.net/WebService/Settlement.asmx/GetSettlementBuildings",
         "https://www.kingdomgame.net/WebService/Kingdoms.asmx/GetSettlement",
         "https://www.kingdomgame.net/WebService/Kingdoms.asmx/GetSettlementInfo",
         "https://www.kingdomgame.net/WebService/Kingdoms.asmx/GetCity",
