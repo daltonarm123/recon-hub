@@ -18,6 +18,8 @@ KG_RANKINGS_URL = os.getenv(
 # How long to wait AFTER the tick boundary before hitting KG
 # (important because the game UI often lags a bit after :00/:05)
 KG_TICK_DELAY_SECONDS = float(os.getenv("KG_TICK_DELAY_SECONDS", "45"))
+KG_REQUEST_TIMEOUT_SECONDS = float(os.getenv("KG_REQUEST_TIMEOUT_SECONDS", "30"))
+KG_PAGE_RETRIES = max(1, int(os.getenv("KG_PAGE_RETRIES", "3")))
 
 
 # -------------------------
@@ -310,21 +312,62 @@ def _poll_rankings_once(*, world_id: str, creds: Dict[str, object]) -> Tuple[int
 
     all_rows: List[Dict] = []
     seen_ids = set()
-    start = 1
+    # Prefer configured startNumber first (often -1 works as "return top list").
+    starts_to_try: List[int] = []
+    configured_start = _parse_int(base_payload.get("startNumber"))
+    if configured_start is not None:
+        starts_to_try.append(configured_start)
+    if 1 not in starts_to_try:
+        starts_to_try.append(1)
+
     parsed_last: Dict = {}
 
-    with httpx.Client(timeout=30.0) as client:
+    def post_rankings_page(client: httpx.Client, start_number: int) -> Dict:
+        payload = dict(base_payload)
+        payload["startNumber"] = start_number
+        last_err: Optional[Exception] = None
+        for attempt in range(1, KG_PAGE_RETRIES + 1):
+            try:
+                r = client.post(KG_RANKINGS_URL, headers=headers, json=payload)
+                r.raise_for_status()
+                raw = r.json()
+                parsed = _parse_kg_d_json(raw) or raw
+                return parsed if isinstance(parsed, dict) else {}
+            except Exception as e:
+                last_err = e
+                if attempt < KG_PAGE_RETRIES:
+                    time.sleep(min(2 ** (attempt - 1), 4) + random.uniform(0.0, 0.5))
+        raise last_err or RuntimeError("rankings page request failed")
+
+    with httpx.Client(timeout=KG_REQUEST_TIMEOUT_SECONDS) as client:
+        for start in starts_to_try:
+            try:
+                parsed = post_rankings_page(client, start)
+                parsed_last = parsed
+                chunk = _extract_kingdoms(parsed)
+            except Exception:
+                chunk = []
+            if chunk:
+                for row in chunk:
+                    kid = row["kingdom_id"]
+                    if kid in seen_ids:
+                        continue
+                    seen_ids.add(kid)
+                    all_rows.append(row)
+                # If KG already returns the full top list, avoid extra paging requests.
+                if len(all_rows) >= 250:
+                    break
+                # Continue paging from current offset.
+                start = max(1, start) + max(1, len(chunk))
+                break
+
         while len(all_rows) < 300:
-            payload = dict(base_payload)
-            payload["startNumber"] = start
+            try:
+                parsed = post_rankings_page(client, start)
+            except Exception:
+                break
 
-            r = client.post(KG_RANKINGS_URL, headers=headers, json=payload)
-            r.raise_for_status()
-
-            raw = r.json()
-            parsed = _parse_kg_d_json(raw) or raw
             parsed_last = parsed if isinstance(parsed, dict) else {}
-
             chunk = _extract_kingdoms(parsed)
             if not chunk:
                 break
@@ -341,10 +384,8 @@ def _poll_rankings_once(*, world_id: str, creds: Dict[str, object]) -> Tuple[int
                     break
 
             start += max(1, len(chunk))
-
             if added_this_page == 0:
                 break
-
             time.sleep(0.12)
 
     if not all_rows:
