@@ -720,6 +720,7 @@ function Reports() {
 function Settlements() {
     const [refresh, setRefresh] = useState(0);
     const [form, setForm] = useState({ account_id: "", kingdom_id: "", token: "" });
+    const [snippet, setSnippet] = useState("");
     const [busy, setBusy] = useState(false);
     const [msg, setMsg] = useState("");
 
@@ -750,6 +751,49 @@ function Settlements() {
         } finally {
             setBusy(false);
         }
+    }
+
+    function parseKgSnippet(raw) {
+        const txt = String(raw || "");
+        const pick = (patterns) => {
+            for (const p of patterns) {
+                const m = txt.match(p);
+                if (m && m[1]) return String(m[1]).trim();
+            }
+            return "";
+        };
+
+        const accountId = pick([
+            /"accountId"\s*:\s*"?(\d+)"?/i,
+            /\baccountId\s*:\s*"?(\d+)"?/i,
+            /"account_id"\s*:\s*"?(\d+)"?/i,
+        ]);
+        const kingdomId = pick([
+            /"kingdomId"\s*:\s*"?(\d+)"?/i,
+            /\bkingdomId\s*:\s*"?(\d+)"?/i,
+            /"kingdom_id"\s*:\s*"?(\d+)"?/i,
+        ]);
+        const token = pick([
+            /"token"\s*:\s*"([A-Za-z0-9-]{16,})"/i,
+            /\btoken\s*:\s*"([A-Za-z0-9-]{16,})"/i,
+            /"token"\s*:\s*"?([A-Za-z0-9-]{16,})"?/i,
+        ]);
+
+        return { accountId, kingdomId, token };
+    }
+
+    function applySnippet() {
+        const parsed = parseKgSnippet(snippet);
+        if (!parsed.accountId || !parsed.kingdomId || !parsed.token) {
+            setMsg("Could not parse accountId/kingdomId/token from pasted text.");
+            return;
+        }
+        setForm({
+            account_id: parsed.accountId,
+            kingdom_id: parsed.kingdomId,
+            token: parsed.token,
+        });
+        setMsg("Detected account and token from pasted snippet.");
     }
 
     async function disconnectKg() {
@@ -786,6 +830,30 @@ function Settlements() {
                             <a style={{ ...btn, textDecoration: "none", width: "fit-content" }} href="/auth/discord/login">
                                 Login with Discord
                             </a>
+                            <div style={{ fontSize: 12, color: "rgba(231,236,255,.75)" }}>
+                                Easy connect: paste the KG request snippet (from `GetKingdomDetails` or `GetSettlements`) and click Detect.
+                            </div>
+                            <textarea
+                                style={{ ...input, minHeight: 100, resize: "vertical" }}
+                                placeholder='Paste text containing {"accountId":"...","token":"...","kingdomId":...}'
+                                value={snippet}
+                                onChange={(e) => setSnippet(e.target.value)}
+                            />
+                            <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
+                                <button style={btnGhost} onClick={applySnippet} disabled={busy || !snippet.trim()}>
+                                    Detect from Paste
+                                </button>
+                                <button
+                                    style={btn}
+                                    disabled={busy || !form.account_id || !form.kingdom_id || !form.token}
+                                    onClick={connectKg}
+                                >
+                                    {busy ? "Connecting..." : "Connect KG"}
+                                </button>
+                            </div>
+                            <div style={{ fontSize: 12, color: "rgba(231,236,255,.55)" }}>
+                                Manual fallback (only if auto-detect misses):
+                            </div>
                             <input
                                 style={input}
                                 placeholder="KG accountId"
@@ -804,15 +872,6 @@ function Settlements() {
                                 value={form.token}
                                 onChange={(e) => setForm((f) => ({ ...f, token: e.target.value }))}
                             />
-                            <div>
-                                <button
-                                    style={btn}
-                                    disabled={busy || !form.account_id || !form.kingdom_id || !form.token}
-                                    onClick={connectKg}
-                                >
-                                    {busy ? "Connecting..." : "Connect KG"}
-                                </button>
-                            </div>
                         </div>
                     ) : (
                         <div style={{ display: "grid", gap: 10 }}>
