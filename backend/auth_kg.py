@@ -10,7 +10,7 @@ import httpx
 import jwt
 import psycopg
 from cryptography.fernet import Fernet, InvalidToken
-from fastapi import APIRouter, HTTPException, Request, Response
+from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import RedirectResponse
 from psycopg.rows import dict_row
 from pydantic import BaseModel, Field
@@ -25,15 +25,6 @@ class KGConnectBody(BaseModel):
     account_id: int = Field(..., gt=0)
     kingdom_id: int = Field(..., gt=0)
     token: str = Field(..., min_length=8)
-
-
-class KGLoginBody(BaseModel):
-    email: str = Field(..., min_length=3)
-    password: str = Field(..., min_length=3)
-    kingdom_id: Optional[int] = Field(default=None, gt=0)
-
-
-_LOGIN_ATTEMPTS: Dict[str, List[float]] = {}
 
 
 def _get_dsn() -> str:
@@ -194,30 +185,6 @@ def _kg_headers() -> Dict[str, str]:
     }
 
 
-def _kg_login_headers() -> Dict[str, str]:
-    headers = {
-        "Accept": "application/json, text/plain, */*",
-        "Content-Type": "application/json",
-        "Origin": "https://www.kingdomgame.net",
-        "Referer": "https://www.kingdomgame.net/login",
-        "World-Id": _kg_world_id(),
-        "world-id": _kg_world_id(),
-        "User-Agent": os.getenv(
-            "KG_USER_AGENT",
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-            "(KHTML, like Gecko) Chrome/144.0.0.0 Safari/537.36 Edg/144.0.0.0",
-        ),
-        "Accept-Language": os.getenv("KG_ACCEPT_LANGUAGE", "en-US,en;q=0.9"),
-        "Sec-Fetch-Site": "same-origin",
-        "Sec-Fetch-Mode": "cors",
-        "Sec-Fetch-Dest": "empty",
-    }
-    cookie = os.getenv("KG_COOKIE", "").strip()
-    if cookie:
-        headers["Cookie"] = cookie
-    return headers
-
-
 def _kg_base_payload(conn_row: Dict[str, Any]) -> Dict[str, Any]:
     return {
         "accountId": str(conn_row["account_id"]),
@@ -256,109 +223,6 @@ def _kg_post_json(url: str, payload: Dict[str, Any]) -> Dict[str, Any]:
 
         j = r.json()
         return _parse_kg_resp_json(j)
-
-
-def _rate_limit_login(ip: str):
-    now = datetime.now(timezone.utc).timestamp()
-    bucket = _LOGIN_ATTEMPTS.get(ip, [])
-    bucket = [t for t in bucket if now - t <= 300.0]
-    if len(bucket) >= 12:
-        raise HTTPException(status_code=429, detail="Too many KG login attempts, please wait.")
-    bucket.append(now)
-    _LOGIN_ATTEMPTS[ip] = bucket
-
-
-def _kg_login(email: str, password: str) -> Dict[str, Any]:
-    url = os.getenv("KG_LOGIN_URL", "").strip() or "https://www.kingdomgame.net/WebService/User.asmx/Login"
-    payloads = [
-        {"email": email, "password": password},
-        {"Email": email, "Password": password},
-        {"username": email, "password": password},
-    ]
-    with httpx.Client(timeout=30.0) as client:
-        # Pre-warm session cookies like a browser hitting /login first.
-        try:
-            client.get(
-                "https://www.kingdomgame.net/login",
-                headers={
-                    "User-Agent": _kg_login_headers().get("User-Agent", ""),
-                    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-                },
-            )
-        except Exception:
-            pass
-
-        last_error = ""
-        raw = None
-        for payload in payloads:
-            try:
-                r = client.post(url, headers=_kg_login_headers(), json=payload)
-                r.raise_for_status()
-            except httpx.HTTPStatusError as e:
-                status = e.response.status_code if e.response is not None else 502
-                body = ""
-                try:
-                    body = (e.response.text or "").strip().replace("\n", " ")[:220]
-                except Exception:
-                    body = ""
-                last_error = f"KG login upstream HTTP {status}. body={body}"
-                continue
-            except Exception as e:
-                last_error = f"KG login request failed: {repr(e)}"
-                continue
-
-            try:
-                raw = r.json()
-                break
-            except Exception:
-                snippet = (r.text or "").strip().replace("\n", " ")[:220]
-                last_error = f"KG login returned non-JSON response. body={snippet}"
-                continue
-
-        if raw is None:
-            raise HTTPException(status_code=502, detail=last_error or "KG login failed")
-    parsed = _parse_kg_resp_json(raw) or raw
-    if not isinstance(parsed, dict):
-        raise HTTPException(status_code=502, detail="Invalid KG login response")
-    rv = parsed.get("ReturnValue")
-    if rv not in (None, 1, "1"):
-        msg = str(parsed.get("ReturnString") or "KG login failed")
-        raise HTTPException(status_code=401, detail=msg)
-    account_id = parsed.get("accountId")
-    token = parsed.get("token")
-    if account_id is None or not token:
-        raise HTTPException(status_code=502, detail="KG login response missing accountId/token")
-    return {"account_id": int(str(account_id)), "token": str(token).strip()}
-
-
-def _discover_kingdom_id(account_id: int, token: str) -> Optional[int]:
-    urls = [
-        os.getenv("KG_KINGDOM_DISCOVERY_URL", "").strip(),
-        "https://www.kingdomgame.net/WebService/Kingdoms.asmx/GetKingdomDetails",
-        "https://www.kingdomgame.net/WebService/Kingdoms.asmx/GetKingdoms",
-    ]
-    urls = [u for u in urls if u]
-    payload = {"accountId": str(account_id), "token": token}
-    for url in urls:
-        try:
-            parsed = _kg_post_json(url, payload)
-        except Exception:
-            continue
-        # GetKingdomDetails shape: {"id": 6045, ...}
-        if parsed.get("id") is not None:
-            try:
-                return int(parsed["id"])
-            except Exception:
-                pass
-        rows = parsed.get("kingdoms")
-        if isinstance(rows, list):
-            for row in rows:
-                if isinstance(row, dict) and row.get("id") is not None:
-                    try:
-                        return int(row["id"])
-                    except Exception:
-                        continue
-    return None
 
 
 def _upsert_user_kg_connection(discord_user_id: str, discord_username: str, account_id: int, kingdom_id: int, token: str):
@@ -965,62 +829,6 @@ def kg_connect(body: KGConnectBody, request: Request):
     )
 
     return {"ok": True, "connected": True}
-
-
-@router.post("/api/kg/login")
-def kg_login(body: KGLoginBody, request: Request, response: Response):
-    user = _get_current_user(request)
-    ip = request.client.host if request.client else "unknown"
-    _rate_limit_login(ip)
-    # Security policy: password is used one-time only for KG token exchange.
-    # It is not persisted to DB or logs.
-    response.headers["X-Password-Storage-Policy"] = "one-time-only-not-stored"
-
-    email = body.email.strip()
-    password = body.password
-    account_id: Optional[int] = None
-    token: Optional[str] = None
-    kingdom_id = body.kingdom_id
-    try:
-        login = _kg_login(email, password)
-        account_id = int(login["account_id"])
-        token = str(login["token"])
-
-        if kingdom_id is None:
-            kingdom_id = _discover_kingdom_id(account_id, token)
-        if kingdom_id is None:
-            raise HTTPException(
-                status_code=400,
-                detail="KG login succeeded but kingdomId was not discovered automatically. Please provide kingdomId once.",
-            )
-
-        _upsert_user_kg_connection(
-            user["discord_user_id"],
-            user["discord_username"],
-            account_id,
-            int(kingdom_id),
-            token,
-        )
-        print(
-            f"[kg_login] connected discord_user_id={user['discord_user_id']} "
-            f"account_id={account_id} kingdom_id={int(kingdom_id)} "
-            "password_not_stored=true",
-            flush=True,
-        )
-        return {
-            "ok": True,
-            "connected": True,
-            "password_policy": "one-time-only-not-stored",
-            "connection": {
-                "account_id": account_id,
-                "kingdom_id": int(kingdom_id),
-            },
-        }
-    finally:
-        # Defensive scrubbing of sensitive variables after exchange.
-        password = None
-        email = None
-        token = None
 
 
 @router.delete("/api/kg/connection")
