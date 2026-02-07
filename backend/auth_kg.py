@@ -268,9 +268,28 @@ def _kg_login(email: str, password: str) -> Dict[str, Any]:
     url = os.getenv("KG_LOGIN_URL", "").strip() or "https://www.kingdomgame.net/WebService/User.asmx/Login"
     payload = {"email": email, "password": password}
     with httpx.Client(timeout=30.0) as client:
-        r = client.post(url, headers=_kg_login_headers(), json=payload)
-        r.raise_for_status()
-        raw = r.json()
+        try:
+            r = client.post(url, headers=_kg_login_headers(), json=payload)
+            r.raise_for_status()
+        except httpx.HTTPStatusError as e:
+            status = e.response.status_code if e.response is not None else 502
+            body = ""
+            try:
+                body = (e.response.text or "").strip().replace("\n", " ")[:220]
+            except Exception:
+                body = ""
+            raise HTTPException(
+                status_code=502,
+                detail=f"KG login upstream HTTP {status}. body={body}",
+            )
+        except Exception as e:
+            raise HTTPException(status_code=502, detail=f"KG login request failed: {repr(e)}")
+
+        try:
+            raw = r.json()
+        except Exception:
+            snippet = (r.text or "").strip().replace("\n", " ")[:220]
+            raise HTTPException(status_code=502, detail=f"KG login returned non-JSON response. body={snippet}")
     parsed = _parse_kg_resp_json(raw) or raw
     if not isinstance(parsed, dict):
         raise HTTPException(status_code=502, detail="Invalid KG login response")
@@ -288,6 +307,7 @@ def _kg_login(email: str, password: str) -> Dict[str, Any]:
 def _discover_kingdom_id(account_id: int, token: str) -> Optional[int]:
     urls = [
         os.getenv("KG_KINGDOM_DISCOVERY_URL", "").strip(),
+        "https://www.kingdomgame.net/WebService/Kingdoms.asmx/GetKingdomDetails",
         "https://www.kingdomgame.net/WebService/Kingdoms.asmx/GetKingdoms",
     ]
     urls = [u for u in urls if u]
@@ -297,6 +317,12 @@ def _discover_kingdom_id(account_id: int, token: str) -> Optional[int]:
             parsed = _kg_post_json(url, payload)
         except Exception:
             continue
+        # GetKingdomDetails shape: {"id": 6045, ...}
+        if parsed.get("id") is not None:
+            try:
+                return int(parsed["id"])
+            except Exception:
+                pass
         rows = parsed.get("kingdoms")
         if isinstance(rows, list):
             for row in rows:
