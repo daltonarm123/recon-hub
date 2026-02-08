@@ -1,6 +1,7 @@
 import os
 import re
 import gzip
+import json
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -12,6 +13,7 @@ from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, RedirectResponse, PlainTextResponse
 from fastapi.staticfiles import StaticFiles
+from pydantic import BaseModel, Field
 
 from nw_api import router as nw_router
 from nw_poll import start_nw_poller
@@ -93,6 +95,62 @@ def _get_dsn() -> str:
 
 def _connect() -> psycopg.Connection:
     return psycopg.connect(_get_dsn(), row_factory=dict_row)
+
+
+class RawReportBody(BaseModel):
+    raw_text: str = Field(..., min_length=1, max_length=250000)
+
+
+def ensure_recon_tables():
+    conn = _connect()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                CREATE TABLE IF NOT EXISTS public.attack_reports (
+                    id BIGSERIAL PRIMARY KEY,
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+                    observed_at TIMESTAMPTZ,
+                    target_kingdom TEXT NOT NULL,
+                    target_networth BIGINT,
+                    attack_result TEXT,
+                    gains_json JSONB NOT NULL DEFAULT '{}'::jsonb,
+                    casualties_json JSONB NOT NULL DEFAULT '{}'::jsonb,
+                    raw_text TEXT NOT NULL
+                );
+                """
+            )
+            cur.execute(
+                """
+                CREATE TABLE IF NOT EXISTS public.settlement_observations (
+                    id BIGSERIAL PRIMARY KEY,
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+                    source_type TEXT NOT NULL,
+                    source_report_id BIGINT,
+                    kingdom TEXT NOT NULL,
+                    settlement_name TEXT NOT NULL,
+                    settlement_level INT,
+                    settlement_tier TEXT,
+                    event_type TEXT NOT NULL,
+                    event_detail TEXT
+                );
+                """
+            )
+            cur.execute(
+                """
+                CREATE INDEX IF NOT EXISTS settlement_observations_kingdom_idx
+                ON public.settlement_observations (kingdom, created_at DESC);
+                """
+            )
+            cur.execute(
+                """
+                CREATE INDEX IF NOT EXISTS settlement_observations_settlement_idx
+                ON public.settlement_observations (settlement_name, created_at DESC);
+                """
+            )
+        conn.commit()
+    finally:
+        conn.close()
 
 
 # -------------------------
@@ -217,6 +275,169 @@ def parse_spy_report(text: str) -> Dict[str, Any]:
         "defender_dp": defender_dp,
         "resources": resources,
         "troops": troops,
+    }
+
+
+def _parse_received_at(text: str) -> Optional[datetime]:
+    m = re.search(r"^\s*Received\s*:\s*(.+?)\s*$", text, flags=re.I | re.M)
+    if not m:
+        return None
+    raw = m.group(1).strip()
+    for fmt in ("%b %d, %Y, %I:%M:%S %p", "%B %d, %Y, %I:%M:%S %p"):
+        try:
+            return datetime.strptime(raw, fmt)
+        except Exception:
+            continue
+    return None
+
+
+def _parse_gain_list(chunk: str) -> Dict[str, int]:
+    out: Dict[str, int] = {}
+    for part in chunk.split(","):
+        p = part.strip()
+        if not p:
+            continue
+        m = re.match(r"^([0-9][0-9,\s]*)\s+(.+?)$", p)
+        if not m:
+            continue
+        n = _num(m.group(1))
+        if n is None:
+            continue
+        out[m.group(2).strip()] = n
+    return out
+
+
+def _parse_casualty_list(chunk: str) -> Dict[str, Dict[str, int]]:
+    out: Dict[str, Dict[str, int]] = {}
+    for part in chunk.split(","):
+        p = part.strip()
+        if not p:
+            continue
+        m = re.match(r"^([0-9][0-9,\s]*)\s*/\s*([0-9][0-9,\s]*)\s+(.+?)$", p)
+        if not m:
+            continue
+        lost = _num(m.group(1))
+        sent = _num(m.group(2))
+        if lost is None or sent is None:
+            continue
+        unit = m.group(3).strip()
+        out[unit] = {"lost": lost, "sent": sent}
+    return out
+
+
+def _parse_settlement_mentions(text: str) -> List[Dict[str, Any]]:
+    found: List[Dict[str, Any]] = []
+
+    p1 = re.compile(
+        r"(?i)the\s+(small|medium|large)\s+(?:town|city)\s+(.+?)\s+\(level\s+(\d+)\s+settlement\)"
+    )
+    p2 = re.compile(
+        r"(?i)\b(.+?)\s+\(level\s+(\d+)\s+settlement\)"
+    )
+    for m in p1.finditer(text):
+        tier = m.group(1).strip().lower()
+        name = m.group(2).strip()
+        lvl = _num(m.group(3))
+        if not name or lvl is None:
+            continue
+        found.append(
+            {
+                "settlement_name": name,
+                "settlement_level": lvl,
+                "settlement_tier": tier,
+            }
+        )
+
+    if not found:
+        for line in text.splitlines():
+            if "level" not in line.lower() or "settlement" not in line.lower():
+                continue
+            m = p2.search(line.strip())
+            if not m:
+                continue
+            name = m.group(1).strip().lstrip("the ").strip()
+            lvl = _num(m.group(2))
+            if not name or lvl is None:
+                continue
+            found.append(
+                {
+                    "settlement_name": name,
+                    "settlement_level": lvl,
+                    "settlement_tier": None,
+                }
+            )
+            break
+
+    dedup = set()
+    out: List[Dict[str, Any]] = []
+    for r in found:
+        key = (r["settlement_name"].lower(), r["settlement_level"], r["settlement_tier"] or "")
+        if key in dedup:
+            continue
+        dedup.add(key)
+        out.append(r)
+    return out
+
+
+def parse_attack_report(text: str) -> Dict[str, Any]:
+    received_at = _parse_received_at(text)
+
+    target = None
+    target_networth = None
+    m = re.search(r"^\s*Attack Report:\s*(.+?)\s*\(NW:\s*\+?\s*([0-9,]+)\)\s*$", text, flags=re.I | re.M)
+    if m:
+        target = m.group(1).strip()
+        target_networth = _num(m.group(2))
+    else:
+        m2 = re.search(r"^\s*Subject:\s*Attack Report:\s*(.+?)\s*$", text, flags=re.I | re.M)
+        if m2:
+            target = m2.group(1).strip()
+
+    result = _grab_line(text, "Attack Result")
+
+    gains: Dict[str, int] = {}
+    gm = re.search(
+        r"You have gained the following during the attack:\s*(.+?)\s*$",
+        text,
+        flags=re.I | re.M,
+    )
+    if gm:
+        gains = _parse_gain_list(gm.group(1))
+
+    casualties: Dict[str, Dict[str, int]] = {}
+    cm = re.search(
+        r"We regret to inform you of the following casualties during the attack:\s*(.+?)\s*$",
+        text,
+        flags=re.I | re.M,
+    )
+    if cm:
+        casualties = _parse_casualty_list(cm.group(1))
+
+    settlement_mentions = _parse_settlement_mentions(text)
+    settlement_event_type = "seen"
+    line = ""
+    for ln in text.splitlines():
+        if "settlement" in ln.lower() and ("battle" in ln.lower() or "take the town" in ln.lower()):
+            line = ln.strip()
+            break
+    low_line = line.lower()
+    if "unable to take" in low_line:
+        settlement_event_type = "take_attempt_failed"
+    elif "captured" in low_line or "took the town" in low_line:
+        settlement_event_type = "captured"
+    elif "breach" in low_line:
+        settlement_event_type = "breached"
+
+    return {
+        "target": target,
+        "target_networth": target_networth,
+        "attack_result": result,
+        "gains": gains,
+        "casualties": casualties,
+        "received_at": received_at,
+        "settlement_mentions": settlement_mentions,
+        "settlement_event_type": settlement_event_type,
+        "settlement_event_detail": line or None,
     }
 
 
@@ -396,6 +617,200 @@ def get_spy_report(report_id: int):
         conn.close()
 
 
+def _insert_settlement_observation(
+    cur,
+    *,
+    source_type: str,
+    source_report_id: Optional[int],
+    kingdom: str,
+    settlement_name: str,
+    settlement_level: Optional[int],
+    settlement_tier: Optional[str],
+    event_type: str,
+    event_detail: Optional[str],
+):
+    cur.execute(
+        """
+        INSERT INTO public.settlement_observations
+          (source_type, source_report_id, kingdom, settlement_name, settlement_level, settlement_tier, event_type, event_detail, created_at)
+        VALUES
+          (%s, %s, %s, %s, %s, %s, %s, %s, now())
+        """,
+        (
+            source_type,
+            source_report_id,
+            kingdom,
+            settlement_name,
+            settlement_level,
+            settlement_tier,
+            event_type,
+            event_detail,
+        ),
+    )
+
+
+@app.post("/api/reports/spy")
+def ingest_report(body: RawReportBody):
+    raw_text = body.raw_text.strip()
+    if not raw_text:
+        raise HTTPException(status_code=400, detail="raw_text is empty")
+
+    is_attack = bool(re.search(r"^\s*Attack Report:\s*", raw_text, flags=re.I | re.M))
+
+    conn = _connect()
+    try:
+        with conn.cursor() as cur:
+            if is_attack:
+                parsed = parse_attack_report(raw_text)
+                target = str(parsed.get("target") or "").strip()
+                if not target:
+                    raise HTTPException(status_code=400, detail="Could not parse attack target kingdom")
+
+                cur.execute(
+                    """
+                    INSERT INTO public.attack_reports
+                      (observed_at, target_kingdom, target_networth, attack_result, gains_json, casualties_json, raw_text, created_at)
+                    VALUES
+                      (%s, %s, %s, %s, %s::jsonb, %s::jsonb, %s, now())
+                    RETURNING id, created_at
+                    """,
+                    (
+                        parsed.get("received_at"),
+                        target,
+                        parsed.get("target_networth"),
+                        parsed.get("attack_result"),
+                        json.dumps(parsed.get("gains") or {}),
+                        json.dumps(parsed.get("casualties") or {}),
+                        raw_text,
+                    ),
+                )
+                stored = cur.fetchone()
+
+                events = 0
+                for s in parsed.get("settlement_mentions") or []:
+                    _insert_settlement_observation(
+                        cur,
+                        source_type="attack",
+                        source_report_id=stored["id"] if stored else None,
+                        kingdom=target,
+                        settlement_name=str(s.get("settlement_name") or "").strip(),
+                        settlement_level=s.get("settlement_level"),
+                        settlement_tier=s.get("settlement_tier"),
+                        event_type=str(parsed.get("settlement_event_type") or "seen"),
+                        event_detail=parsed.get("settlement_event_detail"),
+                    )
+                    events += 1
+
+                conn.commit()
+                return {
+                    "ok": True,
+                    "report_type": "attack",
+                    "stored": stored,
+                    "parsed": parsed,
+                    "settlement_events": events,
+                }
+
+            parsed = parse_spy_report(raw_text)
+            kingdom = str(parsed.get("target") or "").strip()
+            if not kingdom:
+                raise HTTPException(status_code=400, detail="Could not parse spy report target kingdom")
+
+            cur.execute(
+                """
+                INSERT INTO public.spy_reports
+                  (created_at, kingdom, alliance, defense_power, castles, raw)
+                VALUES
+                  (now(), %s, %s, %s, %s, %s)
+                RETURNING id, created_at
+                """,
+                (
+                    kingdom,
+                    parsed.get("alliance"),
+                    parsed.get("defender_dp"),
+                    parsed.get("castles"),
+                    raw_text,
+                ),
+            )
+            stored = cur.fetchone()
+
+            events = 0
+            for s in _parse_settlement_mentions(raw_text):
+                _insert_settlement_observation(
+                    cur,
+                    source_type="spy",
+                    source_report_id=stored["id"] if stored else None,
+                    kingdom=kingdom,
+                    settlement_name=str(s.get("settlement_name") or "").strip(),
+                    settlement_level=s.get("settlement_level"),
+                    settlement_tier=s.get("settlement_tier"),
+                    event_type="seen",
+                    event_detail=None,
+                )
+                events += 1
+
+        conn.commit()
+        return {
+            "ok": True,
+            "report_type": "spy",
+            "stored": stored,
+            "parsed": parsed,
+            "settlement_events": events,
+        }
+    finally:
+        conn.close()
+
+
+@app.get("/api/settlements/tracked")
+def tracked_settlements(kingdom: str = "", limit: int = 500):
+    s = kingdom.strip()
+    lim = max(1, min(int(limit), 1000))
+
+    conn = _connect()
+    try:
+        with conn.cursor() as cur:
+            if s:
+                cur.execute(
+                    """
+                    SELECT
+                        kingdom,
+                        settlement_name,
+                        MAX(settlement_level) AS latest_level,
+                        MAX(created_at) AS last_seen_at,
+                        COUNT(*)::int AS sightings,
+                        COUNT(*) FILTER (WHERE event_type = 'take_attempt_failed')::int AS failed_take_attempts,
+                        COUNT(*) FILTER (WHERE event_type = 'captured')::int AS captures
+                    FROM public.settlement_observations
+                    WHERE kingdom ILIKE %s
+                    GROUP BY kingdom, settlement_name
+                    ORDER BY last_seen_at DESC
+                    LIMIT %s
+                    """,
+                    (f"%{s}%", lim),
+                )
+            else:
+                cur.execute(
+                    """
+                    SELECT
+                        kingdom,
+                        settlement_name,
+                        MAX(settlement_level) AS latest_level,
+                        MAX(created_at) AS last_seen_at,
+                        COUNT(*)::int AS sightings,
+                        COUNT(*) FILTER (WHERE event_type = 'take_attempt_failed')::int AS failed_take_attempts,
+                        COUNT(*) FILTER (WHERE event_type = 'captured')::int AS captures
+                    FROM public.settlement_observations
+                    GROUP BY kingdom, settlement_name
+                    ORDER BY last_seen_at DESC
+                    LIMIT %s
+                    """,
+                    (lim,),
+                )
+            rows = cur.fetchall()
+        return {"ok": True, "items": rows}
+    finally:
+        conn.close()
+
+
 # -------------------------
 # Mount NW API
 # -------------------------
@@ -416,6 +831,7 @@ def _startup():
 
     ensure_auth_tables()
     ensure_admin_tables()
+    ensure_recon_tables()
     start_rankings_poller(poll_seconds=rankings_seconds, world_id=world_id)
     start_nw_poller(poll_seconds=nw_seconds)
 

@@ -653,7 +653,10 @@ function Reports() {
             });
             const j = await r.json().catch(() => ({}));
             if (!r.ok) throw new Error(j?.detail || `HTTP ${r.status}`);
-            setMsg(`Stored report #${j?.stored?.id} for ${j?.parsed?.target || "?"}`);
+            const kind = j?.report_type || "report";
+            const target = j?.parsed?.target || "?";
+            const ev = Number(j?.settlement_events || 0);
+            setMsg(`Stored ${kind} report #${j?.stored?.id} for ${target} (${ev} settlement event${ev === 1 ? "" : "s"})`);
             setRaw("");
         } catch (e) {
             setMsg(String(e.message || e));
@@ -667,7 +670,7 @@ function Reports() {
             <div style={{ display: "grid", gap: 14 }}>
                 <Card
                     title="Reports"
-                    subtitle="Paste a KG spy report to store + index it (Postgres rh_* tables)"
+                    subtitle="Paste a KG spy report or attack report to store + track settlements."
                 >
                     <textarea
                         value={raw}
@@ -707,7 +710,8 @@ function Reports() {
                     </div>
 
                     <div style={{ marginTop: 10, fontSize: 12, color: "rgba(231,236,255,.65)" }}>
-                        Tip: After saving, go to <b>Kingdoms</b> to see it listed by alliance.
+                        Tip: Spy reports show in <b>Kingdoms</b>. Settlement observations are at{" "}
+                        <code>/api/settlements/tracked</code>.
                     </div>
                 </Card>
             </div>
