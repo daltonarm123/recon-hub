@@ -4,6 +4,12 @@ export default function AdminHealth() {
   const [overview, setOverview] = useState(null);
   const [err, setErr] = useState("");
   const [loading, setLoading] = useState(true);
+  const [notes, setNotes] = useState([]);
+  const [notesErr, setNotesErr] = useState("");
+  const [notesLoading, setNotesLoading] = useState(true);
+  const [noteText, setNoteText] = useState("");
+  const [savingNote, setSavingNote] = useState(false);
+  const [noteMsg, setNoteMsg] = useState("");
 
   async function load() {
     setLoading(true);
@@ -24,8 +30,58 @@ export default function AdminHealth() {
     }
   }
 
+  async function loadNotes() {
+    setNotesLoading(true);
+    setNotesErr("");
+    try {
+      const r = await fetch("/api/admin/notes?limit=200", {
+        cache: "no-store",
+        credentials: "include",
+      });
+      const j = await r.json().catch(() => ({}));
+      if (!r.ok) throw new Error(j?.detail || `HTTP ${r.status}`);
+      setNotes(Array.isArray(j?.notes) ? j.notes : []);
+    } catch (e) {
+      setNotes([]);
+      setNotesErr(e?.message || "Failed to load notes");
+    } finally {
+      setNotesLoading(false);
+    }
+  }
+
+  async function saveNote() {
+    const clean = noteText.trim();
+    if (!clean || savingNote) return;
+
+    setSavingNote(true);
+    setNoteMsg("");
+    try {
+      const r = await fetch("/api/admin/notes", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify({ note: clean }),
+      });
+      const j = await r.json().catch(() => ({}));
+      if (!r.ok) throw new Error(j?.detail || `HTTP ${r.status}`);
+
+      if (j?.note) {
+        setNotes((prev) => [j.note, ...prev]);
+      } else {
+        await loadNotes();
+      }
+      setNoteText("");
+      setNoteMsg("Note saved.");
+    } catch (e) {
+      setNoteMsg(e?.message || "Failed to save note");
+    } finally {
+      setSavingNote(false);
+    }
+  }
+
   useEffect(() => {
     load();
+    loadNotes();
   }, []);
 
   function Metric({ label, value }) {
@@ -93,6 +149,45 @@ export default function AdminHealth() {
               </table>
             </div>
           </div>
+
+          <div style={panel}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8, flexWrap: "wrap", marginBottom: 8 }}>
+              <div style={{ fontWeight: 700 }}>Admin Feedback Notes</div>
+              <button onClick={loadNotes} disabled={notesLoading || savingNote} style={btn}>
+                {notesLoading ? "Refreshing..." : "Refresh Notes"}
+              </button>
+            </div>
+
+            <textarea
+              style={textarea}
+              placeholder="Write bug reports, follow-up tasks, or fixes for later..."
+              value={noteText}
+              onChange={(e) => setNoteText(e.target.value)}
+            />
+
+            <div style={{ display: "flex", gap: 8, marginTop: 8, alignItems: "center", flexWrap: "wrap" }}>
+              <button onClick={saveNote} disabled={!noteText.trim() || savingNote} style={btn}>
+                {savingNote ? "Saving..." : "Save Note"}
+              </button>
+              {noteMsg ? <div style={{ fontSize: 12, color: noteMsg === "Note saved." ? "#8be28b" : "#ff8b8b" }}>{noteMsg}</div> : null}
+              {notesErr ? <div style={{ fontSize: 12, color: "#ff8b8b" }}>Error: {notesErr}</div> : null}
+            </div>
+
+            <div style={{ marginTop: 12, display: "grid", gap: 8 }}>
+              {notesLoading ? <div style={{ fontSize: 12, opacity: 0.8 }}>Loading notes...</div> : null}
+              {!notesLoading && notes.length === 0 ? (
+                <div style={{ fontSize: 12, opacity: 0.75 }}>No notes yet.</div>
+              ) : null}
+              {notes.map((n) => (
+                <div key={n.id} style={noteItem}>
+                  <div style={{ fontSize: 11, opacity: 0.72, marginBottom: 4 }}>
+                    {n.created_at ? new Date(n.created_at).toLocaleString() : "-"} • {n.created_by_discord_username || n.created_by_discord_user_id}
+                  </div>
+                  <div style={{ fontSize: 13, whiteSpace: "pre-wrap" }}>{n.note_text}</div>
+                </div>
+              ))}
+            </div>
+          </div>
         </>
       ) : null}
     </div>
@@ -134,6 +229,27 @@ const panel = {
   borderRadius: 12,
   padding: 12,
   background: "rgba(255,255,255,.03)",
+};
+
+const textarea = {
+  width: "100%",
+  minHeight: 88,
+  resize: "vertical",
+  background: "rgba(0,0,0,.22)",
+  border: "1px solid rgba(255,255,255,.14)",
+  borderRadius: 10,
+  color: "#e7ecff",
+  padding: "10px 12px",
+  fontSize: 13,
+  outline: "none",
+  boxSizing: "border-box",
+};
+
+const noteItem = {
+  border: "1px solid rgba(255,255,255,.10)",
+  borderRadius: 10,
+  background: "rgba(0,0,0,.18)",
+  padding: "10px 12px",
 };
 
 const line = {

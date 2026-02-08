@@ -17,7 +17,7 @@ from nw_api import router as nw_router
 from nw_poll import start_nw_poller
 from rankings_poll import start_rankings_poller
 from auth_kg import router as auth_kg_router, ensure_auth_tables
-from admin_api import router as admin_router
+from admin_api import router as admin_router, ensure_admin_tables
 
 BASE_DIR = Path(__file__).resolve().parent
 STATIC_DIR = BASE_DIR / "static"
@@ -415,6 +415,7 @@ def _startup():
     nw_seconds = int(os.getenv("NW_POLL_SECONDS", "240"))
 
     ensure_auth_tables()
+    ensure_admin_tables()
     start_rankings_poller(poll_seconds=rankings_seconds, world_id=world_id)
     start_nw_poller(poll_seconds=nw_seconds)
 

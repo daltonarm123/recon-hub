@@ -6,6 +6,7 @@ import jwt
 import psycopg
 from fastapi import APIRouter, HTTPException, Request
 from psycopg.rows import dict_row
+from pydantic import BaseModel, Field
 
 router = APIRouter()
 
@@ -92,6 +93,30 @@ def _as_utc_aware(ts: Optional[datetime]) -> Optional[datetime]:
     return ts.astimezone(timezone.utc)
 
 
+class AdminNoteBody(BaseModel):
+    note: str = Field(..., min_length=1, max_length=4000)
+
+
+def ensure_admin_tables():
+    conn = _connect()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                CREATE TABLE IF NOT EXISTS public.admin_feedback_notes (
+                    id BIGSERIAL PRIMARY KEY,
+                    note_text TEXT NOT NULL,
+                    created_by_discord_user_id TEXT NOT NULL,
+                    created_by_discord_username TEXT NOT NULL,
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+                );
+                """
+            )
+        conn.commit()
+    finally:
+        conn.close()
+
+
 @router.get("/api/admin/overview")
 def admin_overview(request: Request):
     user = _require_admin(request)
@@ -157,5 +182,60 @@ def admin_overview(request: Request):
                 "Use rankings_age_seconds/nw_tick_age_seconds to monitor poll freshness.",
             ],
         }
+    finally:
+        conn.close()
+
+
+@router.get("/api/admin/notes")
+def list_admin_notes(request: Request, limit: int = 200):
+    _require_admin(request)
+    safe_limit = max(1, min(int(limit), 500))
+
+    conn = _connect()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT id, note_text, created_by_discord_user_id, created_by_discord_username, created_at
+                FROM public.admin_feedback_notes
+                ORDER BY created_at DESC, id DESC
+                LIMIT %s
+                """,
+                (safe_limit,),
+            )
+            rows = cur.fetchall()
+
+        return {"ok": True, "notes": rows}
+    finally:
+        conn.close()
+
+
+@router.post("/api/admin/notes")
+def create_admin_note(body: AdminNoteBody, request: Request):
+    user = _require_admin(request)
+    note_text = body.note.strip()
+    if not note_text:
+        raise HTTPException(status_code=400, detail="Note cannot be empty")
+
+    conn = _connect()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO public.admin_feedback_notes
+                  (note_text, created_by_discord_user_id, created_by_discord_username, created_at)
+                VALUES
+                  (%s, %s, %s, now())
+                RETURNING id, note_text, created_by_discord_user_id, created_by_discord_username, created_at
+                """,
+                (
+                    note_text,
+                    user["discord_user_id"],
+                    user["discord_username"],
+                ),
+            )
+            created = cur.fetchone()
+        conn.commit()
+        return {"ok": True, "note": created}
     finally:
         conn.close()
