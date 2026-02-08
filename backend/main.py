@@ -2,6 +2,8 @@ import os
 import re
 import gzip
 import json
+import time
+import threading
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -659,6 +661,123 @@ def _insert_settlement_observation(
     return cur.rowcount > 0
 
 
+def _sync_settlement_observations_from_spy_reports(from_id: int, limit: int) -> Dict[str, int]:
+    start_id = max(0, int(from_id))
+    lim = max(1, min(int(limit), 1_000_000))
+
+    conn = _connect()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT id, kingdom, raw, raw_gz
+                FROM public.spy_reports
+                WHERE id > %s
+                ORDER BY id ASC
+                LIMIT %s
+                """,
+                (start_id, lim),
+            )
+            rows = cur.fetchall()
+
+            scanned = 0
+            reports_with_settlements = 0
+            inserted_events = 0
+            last_id = start_id
+
+            for r in rows:
+                scanned += 1
+                rid = int(r.get("id"))
+                last_id = max(last_id, rid)
+                kingdom = str(r.get("kingdom") or "").strip()
+                if not kingdom:
+                    continue
+
+                raw_text = _load_raw_text(r)
+                if not raw_text:
+                    continue
+
+                mentions = _parse_settlement_mentions(raw_text)
+                if not mentions:
+                    continue
+
+                reports_with_settlements += 1
+                for s in mentions:
+                    inserted = _insert_settlement_observation(
+                        cur,
+                        source_type="spy",
+                        source_report_id=rid,
+                        kingdom=kingdom,
+                        settlement_name=str(s.get("settlement_name") or "").strip(),
+                        settlement_level=s.get("settlement_level"),
+                        settlement_tier=s.get("settlement_tier"),
+                        event_type="seen",
+                        event_detail=None,
+                    )
+                    if inserted:
+                        inserted_events += 1
+
+        conn.commit()
+        return {
+            "scanned": scanned,
+            "reports_with_settlements": reports_with_settlements,
+            "inserted_events": inserted_events,
+            "last_id": last_id,
+        }
+    finally:
+        conn.close()
+
+
+def _initial_settlement_observer_last_id() -> int:
+    conn = _connect()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT COALESCE(MAX(source_report_id), 0) AS max_id
+                FROM public.settlement_observations
+                WHERE source_type = 'spy' AND source_report_id IS NOT NULL
+                """
+            )
+            row = cur.fetchone() or {}
+            max_obs = int(row.get("max_id") or 0)
+            if max_obs > 0:
+                return max_obs
+
+            # No prior observation state: start from current head of spy_reports.
+            cur.execute("SELECT COALESCE(MAX(id), 0) AS max_id FROM public.spy_reports")
+            row2 = cur.fetchone() or {}
+            return int(row2.get("max_id") or 0)
+    finally:
+        conn.close()
+
+
+_settlement_observer_started = False
+
+
+def start_settlement_observer():
+    global _settlement_observer_started
+    if _settlement_observer_started:
+        return
+    _settlement_observer_started = True
+
+    poll_seconds = max(3, int(os.getenv("SETTLEMENT_OBS_POLL_SECONDS", "15")))
+    batch_size = max(100, min(int(os.getenv("SETTLEMENT_OBS_BATCH_SIZE", "2000")), 100_000))
+    state = {"last_id": _initial_settlement_observer_last_id()}
+
+    def _loop():
+        while True:
+            try:
+                r = _sync_settlement_observations_from_spy_reports(state["last_id"], batch_size)
+                state["last_id"] = max(state["last_id"], int(r.get("last_id") or state["last_id"]))
+            except Exception as e:
+                print(f"[settlement-observer] error: {repr(e)}")
+            time.sleep(poll_seconds)
+
+    t = threading.Thread(target=_loop, daemon=True, name="settlement-observer")
+    t.start()
+
+
 @app.post("/api/reports/spy")
 def ingest_report(body: RawReportBody):
     raw_text = body.raw_text.strip()
@@ -838,69 +957,16 @@ def backfill_settlement_observations(
     lim = max(1, min(int(limit), 1_000_000))
     start_id = max(0, int(from_id))
 
-    conn = _connect()
-    try:
-        with conn.cursor() as cur:
-            cur.execute(
-                """
-                SELECT id, kingdom, raw, raw_gz
-                FROM public.spy_reports
-                WHERE id > %s
-                ORDER BY id ASC
-                LIMIT %s
-                """,
-                (start_id, lim),
-            )
-            rows = cur.fetchall()
-
-            scanned = 0
-            reports_with_settlements = 0
-            inserted_events = 0
-            last_id = start_id
-
-            for r in rows:
-                scanned += 1
-                rid = int(r.get("id"))
-                last_id = max(last_id, rid)
-                kingdom = str(r.get("kingdom") or "").strip()
-                if not kingdom:
-                    continue
-
-                raw_text = _load_raw_text(r)
-                if not raw_text:
-                    continue
-
-                mentions = _parse_settlement_mentions(raw_text)
-                if not mentions:
-                    continue
-
-                reports_with_settlements += 1
-                for s in mentions:
-                    inserted = _insert_settlement_observation(
-                        cur,
-                        source_type="spy",
-                        source_report_id=rid,
-                        kingdom=kingdom,
-                        settlement_name=str(s.get("settlement_name") or "").strip(),
-                        settlement_level=s.get("settlement_level"),
-                        settlement_tier=s.get("settlement_tier"),
-                        event_type="seen",
-                        event_detail="backfill",
-                    )
-                    if inserted:
-                        inserted_events += 1
-
-        conn.commit()
-        return {
-            "ok": True,
-            "scanned_spy_reports": scanned,
-            "reports_with_settlements": reports_with_settlements,
-            "inserted_settlement_events": inserted_events,
-            "next_from_id": last_id,
-            "done": scanned < lim,
-        }
-    finally:
-        conn.close()
+    r = _sync_settlement_observations_from_spy_reports(start_id, lim)
+    scanned = int(r.get("scanned") or 0)
+    return {
+        "ok": True,
+        "scanned_spy_reports": scanned,
+        "reports_with_settlements": int(r.get("reports_with_settlements") or 0),
+        "inserted_settlement_events": int(r.get("inserted_events") or 0),
+        "next_from_id": int(r.get("last_id") or start_id),
+        "done": scanned < lim,
+    }
 
 
 # -------------------------
@@ -926,6 +992,7 @@ def _startup():
     ensure_recon_tables()
     start_rankings_poller(poll_seconds=rankings_seconds, world_id=world_id)
     start_nw_poller(poll_seconds=nw_seconds)
+    start_settlement_observer()
 
 
 # -------------------------

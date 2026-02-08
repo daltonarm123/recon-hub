@@ -164,6 +164,9 @@ function Layout({ children }) {
                         <Link style={navLink} to="/settlements">
                             Settlements
                         </Link>
+                        <Link style={navLink} to="/tracked-settlements">
+                            Tracked Settlements
+                        </Link>
                         <Link style={navLink} to="/settlement-effects">
                             Settlement Effects
                         </Link>
@@ -999,6 +1002,84 @@ function SettlementEffects() {
     );
 }
 
+function TrackedSettlements() {
+    const [search, setSearch] = useState("");
+    const [tick, setTick] = useState(0);
+
+    useEffect(() => {
+        const id = setInterval(() => setTick((x) => x + 1), 10000);
+        return () => clearInterval(id);
+    }, []);
+
+    const url = useMemo(
+        () =>
+            `${API_BASE}/api/settlements/tracked?kingdom=${encodeURIComponent(
+                search
+            )}&limit=1000&r=${tick}`,
+        [search, tick]
+    );
+    const tracked = useFetchJson(url, [url]);
+
+    return (
+        <Layout>
+            <div style={{ display: "grid", gap: 14 }}>
+                <Card
+                    title="Tracked Settlements"
+                    subtitle="Auto-refreshes every 10 seconds as new reports are ingested."
+                    right={
+                        <input
+                            value={search}
+                            onChange={(e) => setSearch(e.target.value)}
+                            placeholder="Filter by kingdom…"
+                            style={input}
+                        />
+                    }
+                >
+                    {tracked.loading ? <div>Loading…</div> : null}
+                    {tracked.err ? <div style={{ color: "#ff6b6b" }}>{tracked.err}</div> : null}
+
+                    <div style={{ overflowX: "auto" }}>
+                        <table style={table}>
+                            <thead>
+                                <tr>
+                                    <th style={th}>Kingdom</th>
+                                    <th style={th}>Settlement</th>
+                                    <th style={th}>Latest Lvl</th>
+                                    <th style={th}>Sightings</th>
+                                    <th style={th}>Failed Takes</th>
+                                    <th style={th}>Captures</th>
+                                    <th style={th}>Last Seen</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                {(tracked.data?.items || []).map((r) => (
+                                    <tr key={`${r.kingdom}:${r.settlement_name}`}>
+                                        <td style={td}>{r.kingdom}</td>
+                                        <td style={td}>{r.settlement_name}</td>
+                                        <td style={td}>{r.latest_level ?? "—"}</td>
+                                        <td style={td}>{r.sightings ?? 0}</td>
+                                        <td style={td}>{r.failed_take_attempts ?? 0}</td>
+                                        <td style={td}>{r.captures ?? 0}</td>
+                                        <td style={td}>
+                                            {r.last_seen_at ? new Date(r.last_seen_at).toLocaleString() : "—"}
+                                        </td>
+                                    </tr>
+                                ))}
+                            </tbody>
+                        </table>
+                    </div>
+
+                    {(tracked.data?.items || []).length === 0 && !tracked.loading ? (
+                        <div style={{ fontSize: 12, color: "rgba(231,236,255,.65)" }}>
+                            No tracked settlements yet.
+                        </div>
+                    ) : null}
+                </Card>
+            </div>
+        </Layout>
+    );
+}
+
 function Research() {
     return (
         <Layout>
@@ -1203,6 +1284,7 @@ export default function App() {
                 <Route path="/kingdoms" element={<Kingdoms />} />
                 <Route path="/nwot" element={<NWOT />} />
                 <Route path="/settlements" element={<Settlements />} />
+                <Route path="/tracked-settlements" element={<TrackedSettlements />} />
                 <Route path="/settlement-effects" element={<SettlementEffects />} />
                 <Route path="/kingdoms/:name" element={<KingdomDetail />} />
                 <Route path="/spy-reports/:id" element={<SpyReportView />} />
