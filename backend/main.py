@@ -341,6 +341,12 @@ def _parse_settlement_mentions(text: str) -> List[Dict[str, Any]]:
     p1 = re.compile(
         r"(?i)the\s+(small|medium|large)\s+(?:town|city)\s+(.+?)\s+\(level\s+(\d+)\s+settlement\)"
     )
+    p1b = re.compile(
+        r"(?i)about\s+the\s+(small|medium|large)\s+(?:town|city)\s+(.+?)\s+\(level\s+(\d+)\s+settlement\)"
+    )
+    p1c = re.compile(
+        r"(?i)about\s+the\s+(small|medium|large)\s+(?:town|city)\s+(.+?)\s*:"
+    )
     p2 = re.compile(
         r"(?i)\b(.+?)\s+\(level\s+(\d+)\s+settlement\)"
     )
@@ -354,6 +360,33 @@ def _parse_settlement_mentions(text: str) -> List[Dict[str, Any]]:
             {
                 "settlement_name": name,
                 "settlement_level": lvl,
+                "settlement_tier": tier,
+            }
+        )
+
+    for m in p1b.finditer(text):
+        tier = m.group(1).strip().lower()
+        name = m.group(2).strip()
+        lvl = _num(m.group(3))
+        if not name or lvl is None:
+            continue
+        found.append(
+            {
+                "settlement_name": name,
+                "settlement_level": lvl,
+                "settlement_tier": tier,
+            }
+        )
+
+    for m in p1c.finditer(text):
+        tier = m.group(1).strip().lower()
+        name = m.group(2).strip()
+        if not name:
+            continue
+        found.append(
+            {
+                "settlement_name": name,
+                "settlement_level": None,
                 "settlement_tier": tier,
             }
         )
@@ -381,7 +414,7 @@ def _parse_settlement_mentions(text: str) -> List[Dict[str, Any]]:
     dedup = set()
     out: List[Dict[str, Any]] = []
     for r in found:
-        key = (r["settlement_name"].lower(), r["settlement_level"], r["settlement_tier"] or "")
+        key = (r["settlement_name"].lower(), r["settlement_level"] if r["settlement_level"] is not None else -1, r["settlement_tier"] or "")
         if key in dedup:
             continue
         dedup.add(key)
@@ -728,6 +761,74 @@ def _sync_settlement_observations_from_spy_reports(from_id: int, limit: int) -> 
         conn.close()
 
 
+def _sync_settlement_observations_from_attack_reports(from_id: int, limit: int) -> Dict[str, int]:
+    start_id = max(0, int(from_id))
+    lim = max(1, min(int(limit), 1_000_000))
+
+    conn = _connect()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT id, target_kingdom, raw_text, attack_result
+                FROM public.attack_reports
+                WHERE id > %s
+                ORDER BY id ASC
+                LIMIT %s
+                """,
+                (start_id, lim),
+            )
+            rows = cur.fetchall()
+
+            scanned = 0
+            reports_with_settlements = 0
+            inserted_events = 0
+            last_id = start_id
+
+            for r in rows:
+                scanned += 1
+                rid = int(r.get("id"))
+                last_id = max(last_id, rid)
+                kingdom = str(r.get("target_kingdom") or "").strip()
+                if not kingdom:
+                    continue
+
+                raw_text = str(r.get("raw_text") or "").strip()
+                if not raw_text:
+                    continue
+
+                parsed = parse_attack_report(raw_text)
+                mentions = parsed.get("settlement_mentions") or []
+                if not mentions:
+                    continue
+
+                reports_with_settlements += 1
+                for s in mentions:
+                    inserted = _insert_settlement_observation(
+                        cur,
+                        source_type="attack",
+                        source_report_id=rid,
+                        kingdom=kingdom,
+                        settlement_name=str(s.get("settlement_name") or "").strip(),
+                        settlement_level=s.get("settlement_level"),
+                        settlement_tier=s.get("settlement_tier"),
+                        event_type=str(parsed.get("settlement_event_type") or "seen"),
+                        event_detail=parsed.get("settlement_event_detail"),
+                    )
+                    if inserted:
+                        inserted_events += 1
+
+        conn.commit()
+        return {
+            "scanned": scanned,
+            "reports_with_settlements": reports_with_settlements,
+            "inserted_events": inserted_events,
+            "last_id": last_id,
+        }
+    finally:
+        conn.close()
+
+
 def _initial_settlement_observer_last_id() -> int:
     conn = _connect()
     try:
@@ -947,6 +1048,7 @@ def backfill_settlement_observations(
     token: str = "",
     from_id: int = 0,
     limit: int = 250000,
+    include_attack_reports: bool = True,
 ):
     expected = (os.getenv("SETTLEMENT_BACKFILL_TOKEN", "") or "").strip()
     if not expected:
@@ -959,6 +1061,10 @@ def backfill_settlement_observations(
 
     r = _sync_settlement_observations_from_spy_reports(start_id, lim)
     scanned = int(r.get("scanned") or 0)
+    attack = {"scanned": 0, "reports_with_settlements": 0, "inserted_events": 0, "last_id": 0}
+    if include_attack_reports:
+        attack = _sync_settlement_observations_from_attack_reports(start_id, lim)
+
     return {
         "ok": True,
         "scanned_spy_reports": scanned,
@@ -966,6 +1072,10 @@ def backfill_settlement_observations(
         "inserted_settlement_events": int(r.get("inserted_events") or 0),
         "next_from_id": int(r.get("last_id") or start_id),
         "done": scanned < lim,
+        "scanned_attack_reports": int(attack.get("scanned") or 0),
+        "attack_reports_with_settlements": int(attack.get("reports_with_settlements") or 0),
+        "inserted_attack_settlement_events": int(attack.get("inserted_events") or 0),
+        "next_attack_from_id": int(attack.get("last_id") or 0),
     }
 
 
