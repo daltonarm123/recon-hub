@@ -148,6 +148,14 @@ def ensure_recon_tables():
                 ON public.settlement_observations (settlement_name, created_at DESC);
                 """
             )
+            cur.execute(
+                """
+                CREATE UNIQUE INDEX IF NOT EXISTS settlement_observations_source_unique_idx
+                ON public.settlement_observations
+                (source_type, source_report_id, kingdom, settlement_name, COALESCE(settlement_level, -1), event_type)
+                WHERE source_report_id IS NOT NULL;
+                """
+            )
         conn.commit()
     finally:
         conn.close()
@@ -628,13 +636,14 @@ def _insert_settlement_observation(
     settlement_tier: Optional[str],
     event_type: str,
     event_detail: Optional[str],
-):
+)-> bool:
     cur.execute(
         """
         INSERT INTO public.settlement_observations
           (source_type, source_report_id, kingdom, settlement_name, settlement_level, settlement_tier, event_type, event_detail, created_at)
         VALUES
           (%s, %s, %s, %s, %s, %s, %s, %s, now())
+        ON CONFLICT DO NOTHING
         """,
         (
             source_type,
@@ -647,6 +656,7 @@ def _insert_settlement_observation(
             event_detail,
         ),
     )
+    return cur.rowcount > 0
 
 
 @app.post("/api/reports/spy")
@@ -688,7 +698,7 @@ def ingest_report(body: RawReportBody):
 
                 events = 0
                 for s in parsed.get("settlement_mentions") or []:
-                    _insert_settlement_observation(
+                    inserted = _insert_settlement_observation(
                         cur,
                         source_type="attack",
                         source_report_id=stored["id"] if stored else None,
@@ -699,7 +709,8 @@ def ingest_report(body: RawReportBody):
                         event_type=str(parsed.get("settlement_event_type") or "seen"),
                         event_detail=parsed.get("settlement_event_detail"),
                     )
-                    events += 1
+                    if inserted:
+                        events += 1
 
                 conn.commit()
                 return {
@@ -735,7 +746,7 @@ def ingest_report(body: RawReportBody):
 
             events = 0
             for s in _parse_settlement_mentions(raw_text):
-                _insert_settlement_observation(
+                inserted = _insert_settlement_observation(
                     cur,
                     source_type="spy",
                     source_report_id=stored["id"] if stored else None,
@@ -746,7 +757,8 @@ def ingest_report(body: RawReportBody):
                     event_type="seen",
                     event_detail=None,
                 )
-                events += 1
+                if inserted:
+                    events += 1
 
         conn.commit()
         return {
@@ -807,6 +819,86 @@ def tracked_settlements(kingdom: str = "", limit: int = 500):
                 )
             rows = cur.fetchall()
         return {"ok": True, "items": rows}
+    finally:
+        conn.close()
+
+
+@app.post("/api/settlements/backfill")
+def backfill_settlement_observations(
+    token: str = "",
+    from_id: int = 0,
+    limit: int = 250000,
+):
+    expected = (os.getenv("SETTLEMENT_BACKFILL_TOKEN", "") or "").strip()
+    if not expected:
+        raise HTTPException(status_code=500, detail="SETTLEMENT_BACKFILL_TOKEN is not set")
+    if token != expected:
+        raise HTTPException(status_code=403, detail="Invalid backfill token")
+
+    lim = max(1, min(int(limit), 1_000_000))
+    start_id = max(0, int(from_id))
+
+    conn = _connect()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT id, kingdom, raw, raw_gz
+                FROM public.spy_reports
+                WHERE id > %s
+                ORDER BY id ASC
+                LIMIT %s
+                """,
+                (start_id, lim),
+            )
+            rows = cur.fetchall()
+
+            scanned = 0
+            reports_with_settlements = 0
+            inserted_events = 0
+            last_id = start_id
+
+            for r in rows:
+                scanned += 1
+                rid = int(r.get("id"))
+                last_id = max(last_id, rid)
+                kingdom = str(r.get("kingdom") or "").strip()
+                if not kingdom:
+                    continue
+
+                raw_text = _load_raw_text(r)
+                if not raw_text:
+                    continue
+
+                mentions = _parse_settlement_mentions(raw_text)
+                if not mentions:
+                    continue
+
+                reports_with_settlements += 1
+                for s in mentions:
+                    inserted = _insert_settlement_observation(
+                        cur,
+                        source_type="spy",
+                        source_report_id=rid,
+                        kingdom=kingdom,
+                        settlement_name=str(s.get("settlement_name") or "").strip(),
+                        settlement_level=s.get("settlement_level"),
+                        settlement_tier=s.get("settlement_tier"),
+                        event_type="seen",
+                        event_detail="backfill",
+                    )
+                    if inserted:
+                        inserted_events += 1
+
+        conn.commit()
+        return {
+            "ok": True,
+            "scanned_spy_reports": scanned,
+            "reports_with_settlements": reports_with_settlements,
+            "inserted_settlement_events": inserted_events,
+            "next_from_id": last_id,
+            "done": scanned < lim,
+        }
     finally:
         conn.close()
 
