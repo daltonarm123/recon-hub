@@ -184,6 +184,89 @@ class RawReportBody(BaseModel):
     raw_text: str = Field(..., min_length=1, max_length=250000)
 
 
+DEFAULT_ALLIANCES: List[tuple[str, str]] = [
+    ("nwo-1", "[NWO-1] NWO-1"),
+    ("a-taem", "[A_TAEM] THE A-TEAM"),
+    ("mk", "[MK] Mom's Knights"),
+    ("myrmr", "[MYRMR] MYRM Reborn"),
+    ("kga", "[KGA] Kingdom Game Addicts"),
+    ("nnwo", "[NNWO] The Iron Veil"),
+    ("tc", "[TC] The Continental"),
+    ("kotf", "[KOTF] Knights of the Fire"),
+    ("mg", "[MG] Maiden Gully"),
+    ("vlhla", "[VLHLA] Valhalla"),
+    ("kotf2", "[kOTF2] Knights of the Flame"),
+    ("cru", "[CRU] Crusaders"),
+    ("given", "[Given] The Unforgiven"),
+    ("tgl", "[TGL] The Grand Library"),
+    ("wr", "[WR] Whiskyrides"),
+    ("wtfc", "[WTFC] Home For The Bewildered"),
+    ("tdk", "[TDK] THE DARK KNIGHTS"),
+    ("lmj", "[LMJ] LeRoyMfnJenkins"),
+    ("omo", "[OMO] Odd Men Out"),
+    ("hsh", "[HSH] 1|o01|O00Ol"),
+    ("rlx", "[RLX] Break"),
+    ("horosha", "[HOROSHA] Spy Killer"),
+    ("301", "[301] 301"),
+    ("kayam", "[KAYAM] Bhayamgak"),
+    ("ihd", "[Ihd] I hate dave"),
+    ("kotc", "[KotC] Knights of the Cross"),
+    ("oss", "[OSS] The Ossuary"),
+    ("h", "[H] BUSHIDO"),
+    ("zero", "[Zero] Nobody"),
+    ("og", "[OG] Oldies but Goldies"),
+    ("moon", "[Moon] Halve Maen"),
+    ("kgsmn", "[KGSMN] The Kingsman"),
+    ("dh", "[DH] Dawg House"),
+    ("608", "[6o8] Six of Eight"),
+    ("27-4", "[27/4] Warriors -24/7"),
+    ("tct", "[TCT] Continental Tea Room"),
+    ("uka", "[UKA] United Kingdom's of Alluvia"),
+    ("valor", "[Valor] The Midnight Aristocracy"),
+    ("res", "[Res] Resistance"),
+    ("spqr", "[SPQR] Roman Empire"),
+    ("tk", "[TK] The Knights"),
+    ("pjb", "[PJB] Phuck Joe Biden"),
+    ("twrp", "[TWRP] The Winter Rose Pact"),
+    ("rome", "[ROME] Rulers of Middle Earth"),
+    ("ferda", "[FERDA] FER DA BOYS"),
+    ("tcs", "[TCS] The Continental Saloon"),
+    ("kog", "[KOG] The Kingdom Of Granthall"),
+    ("bigns", "[Bigns] Biggin's"),
+    ("earth", "[Earth] Earth Royalty"),
+    ("dark", "[DARK] DARKNESS"),
+    ("bob", "[B.o.B] Band of Brothers"),
+    ("war", "[War] Black knights"),
+    ("imi", "[IMI] Ignatius Martis Invictus"),
+    ("cars", "[CARS] Cars"),
+    ("dad", "[DAD] DAD"),
+    ("a-a", "[A-A] Achaemenids"),
+    ("fire", "[Fire] Atlantis"),
+    ("netc", "[NETC] Noble Exotics Trading Co."),
+    ("lnc", "[LNC] Lioncry"),
+    ("koa", "[KOA] Kingz of All"),
+]
+
+
+def seed_default_alliances():
+    conn = _connect()
+    try:
+        with conn.cursor() as cur:
+            for slug, name in DEFAULT_ALLIANCES:
+                cur.execute(
+                    """
+                    INSERT INTO public.alliances (slug, name, created_at)
+                    VALUES (%s, %s, now())
+                    ON CONFLICT (slug) DO UPDATE
+                    SET name = EXCLUDED.name
+                    """,
+                    (slug, name),
+                )
+        conn.commit()
+    finally:
+        conn.close()
+
+
 def ensure_recon_tables():
     conn = _connect()
     try:
@@ -1351,6 +1434,7 @@ def _startup():
     ensure_auth_tables()
     ensure_admin_tables()
     ensure_recon_tables()
+    seed_default_alliances()
     start_rankings_poller(poll_seconds=rankings_seconds, world_id=world_id)
     start_nw_poller(poll_seconds=nw_seconds)
     start_settlement_observer()
