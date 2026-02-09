@@ -8,10 +8,11 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+import jwt
 import psycopg
 from psycopg.rows import dict_row
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, RedirectResponse, PlainTextResponse
 from fastapi.staticfiles import StaticFiles
@@ -99,6 +100,86 @@ def _connect() -> psycopg.Connection:
     return psycopg.connect(_get_dsn(), row_factory=dict_row)
 
 
+JWT_COOKIE_NAME = "rh_session"
+
+
+def _jwt_secret() -> str:
+    secret = os.getenv("JWT_SECRET", "").strip()
+    if not secret:
+        raise HTTPException(status_code=500, detail="JWT_SECRET is not set")
+    return secret
+
+
+def _decode_session_jwt(token: str) -> Dict[str, Any]:
+    try:
+        return jwt.decode(token, _jwt_secret(), algorithms=["HS256"])
+    except jwt.InvalidTokenError:
+        raise HTTPException(status_code=401, detail="Invalid session")
+
+
+def _admin_user_ids() -> set[str]:
+    raw = os.getenv("DEV_USER_IDS", "").strip()
+    if not raw:
+        return set()
+    return {x.strip() for x in raw.split(",") if x.strip()}
+
+
+def _enforce_alliance_scoping() -> bool:
+    return (os.getenv("ENFORCE_ALLIANCE_SCOPING", "false").strip().lower() in {"1", "true", "yes", "on"})
+
+
+def _get_scope_from_request(request: Request) -> Optional[Dict[str, Any]]:
+    if not _enforce_alliance_scoping():
+        return None
+
+    token = request.cookies.get(JWT_COOKIE_NAME, "")
+    if not token:
+        raise HTTPException(status_code=401, detail="Login required")
+    claims = _decode_session_jwt(token)
+    uid = str(claims.get("sub") or "").strip()
+    if not uid:
+        raise HTTPException(status_code=401, detail="Invalid session")
+
+    if uid in _admin_user_ids():
+        return None
+
+    conn = _connect()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT a.id, a.name
+                FROM public.alliance_memberships m
+                JOIN public.alliances a ON a.id = m.alliance_id
+                WHERE m.discord_user_id = %s AND m.status = 'active'
+                ORDER BY a.name
+                """,
+                (uid,),
+            )
+            rows = cur.fetchall()
+            if not rows:
+                raise HTTPException(status_code=403, detail="No active alliance memberships")
+
+            cur.execute(
+                """
+                SELECT a.name
+                FROM public.user_active_alliance ua
+                JOIN public.alliances a ON a.id = ua.alliance_id
+                WHERE ua.discord_user_id = %s
+                """,
+                (uid,),
+            )
+            active_row = cur.fetchone() or {}
+
+        names = [str(r.get("name") or "").strip() for r in rows if str(r.get("name") or "").strip()]
+        active_name = str(active_row.get("name") or "").strip()
+        if active_name and active_name in names:
+            names = [active_name]
+        return {"discord_user_id": uid, "alliance_names": names}
+    finally:
+        conn.close()
+
+
 class RawReportBody(BaseModel):
     raw_text: str = Field(..., min_length=1, max_length=250000)
 
@@ -119,6 +200,48 @@ def ensure_recon_tables():
                     gains_json JSONB NOT NULL DEFAULT '{}'::jsonb,
                     casualties_json JSONB NOT NULL DEFAULT '{}'::jsonb,
                     raw_text TEXT NOT NULL
+                );
+                """
+            )
+            cur.execute(
+                """
+                CREATE TABLE IF NOT EXISTS public.alliances (
+                    id BIGSERIAL PRIMARY KEY,
+                    slug TEXT UNIQUE NOT NULL,
+                    name TEXT UNIQUE NOT NULL,
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+                );
+                """
+            )
+            cur.execute(
+                """
+                CREATE TABLE IF NOT EXISTS public.app_users (
+                    discord_user_id TEXT PRIMARY KEY,
+                    discord_username TEXT,
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+                    updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+                );
+                """
+            )
+            cur.execute(
+                """
+                CREATE TABLE IF NOT EXISTS public.alliance_memberships (
+                    id BIGSERIAL PRIMARY KEY,
+                    alliance_id BIGINT NOT NULL REFERENCES public.alliances(id) ON DELETE CASCADE,
+                    discord_user_id TEXT NOT NULL REFERENCES public.app_users(discord_user_id) ON DELETE CASCADE,
+                    role TEXT NOT NULL DEFAULT 'member',
+                    status TEXT NOT NULL DEFAULT 'active',
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+                    UNIQUE (alliance_id, discord_user_id)
+                );
+                """
+            )
+            cur.execute(
+                """
+                CREATE TABLE IF NOT EXISTS public.user_active_alliance (
+                    discord_user_id TEXT PRIMARY KEY REFERENCES public.app_users(discord_user_id) ON DELETE CASCADE,
+                    alliance_id BIGINT NOT NULL REFERENCES public.alliances(id) ON DELETE CASCADE,
+                    updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
                 );
                 """
             )
@@ -503,13 +626,33 @@ def _load_raw_text(row: Dict[str, Any]) -> str:
 # API: Kingdom list
 # -------------------------
 @app.get("/api/kingdoms")
-def list_kingdoms(search: str = "", limit: int = 500):
+def list_kingdoms(request: Request, search: str = "", limit: int = 500):
     s = search.strip()
+    scope = _get_scope_from_request(request)
+    scoped_alliances = (scope or {}).get("alliance_names") or []
 
     conn = _connect()
     try:
         with conn.cursor() as cur:
-            if s:
+            if s and scoped_alliances:
+                like = f"%{s}%"
+                cur.execute(
+                    """
+                    SELECT
+                        kingdom,
+                        COALESCE(alliance, '') AS alliance,
+                        COUNT(*)::int AS report_count,
+                        MAX(created_at) AS latest_report_at
+                    FROM public.spy_reports
+                    WHERE (kingdom ILIKE %s OR COALESCE(alliance,'') ILIKE %s)
+                      AND COALESCE(alliance,'') = ANY(%s)
+                    GROUP BY kingdom, COALESCE(alliance,'')
+                    ORDER BY latest_report_at DESC
+                    LIMIT %s
+                    """,
+                    (like, like, scoped_alliances, limit),
+                )
+            elif s:
                 like = f"%{s}%"
                 cur.execute(
                     """
@@ -525,6 +668,22 @@ def list_kingdoms(search: str = "", limit: int = 500):
                     LIMIT %s
                     """,
                     (like, like, limit),
+                )
+            elif scoped_alliances:
+                cur.execute(
+                    """
+                    SELECT
+                        kingdom,
+                        COALESCE(alliance, '') AS alliance,
+                        COUNT(*)::int AS report_count,
+                        MAX(created_at) AS latest_report_at
+                    FROM public.spy_reports
+                    WHERE COALESCE(alliance,'') = ANY(%s)
+                    GROUP BY kingdom, COALESCE(alliance,'')
+                    ORDER BY latest_report_at DESC
+                    LIMIT %s
+                    """,
+                    (scoped_alliances, limit),
                 )
             else:
                 cur.execute(
@@ -563,20 +722,35 @@ def list_kingdoms(search: str = "", limit: int = 500):
 # API: Spy reports for kingdom
 # -------------------------
 @app.get("/api/kingdoms/{kingdom}/spy-reports")
-def list_spy_reports(kingdom: str, limit: int = 50):
+def list_spy_reports(request: Request, kingdom: str, limit: int = 50):
+    scope = _get_scope_from_request(request)
+    scoped_alliances = (scope or {}).get("alliance_names") or []
     conn = _connect()
     try:
         with conn.cursor() as cur:
-            cur.execute(
-                """
-                SELECT id, created_at, kingdom, alliance, defense_power, castles, raw, raw_gz
-                FROM public.spy_reports
-                WHERE kingdom = %s
-                ORDER BY created_at DESC, id DESC
-                LIMIT %s
-                """,
-                (kingdom, limit),
-            )
+            if scoped_alliances:
+                cur.execute(
+                    """
+                    SELECT id, created_at, kingdom, alliance, defense_power, castles, raw, raw_gz
+                    FROM public.spy_reports
+                    WHERE kingdom = %s
+                      AND COALESCE(alliance,'') = ANY(%s)
+                    ORDER BY created_at DESC, id DESC
+                    LIMIT %s
+                    """,
+                    (kingdom, scoped_alliances, limit),
+                )
+            else:
+                cur.execute(
+                    """
+                    SELECT id, created_at, kingdom, alliance, defense_power, castles, raw, raw_gz
+                    FROM public.spy_reports
+                    WHERE kingdom = %s
+                    ORDER BY created_at DESC, id DESC
+                    LIMIT %s
+                    """,
+                    (kingdom, limit),
+                )
             rows = cur.fetchall()
 
         reports = []
@@ -606,11 +780,24 @@ def list_spy_reports(kingdom: str, limit: int = 50):
 # API: Raw report
 # -------------------------
 @app.get("/api/spy-reports/{report_id}/raw", response_class=PlainTextResponse)
-def get_spy_report_raw(report_id: int):
+def get_spy_report_raw(request: Request, report_id: int):
+    scope = _get_scope_from_request(request)
+    scoped_alliances = (scope or {}).get("alliance_names") or []
     conn = _connect()
     try:
         with conn.cursor() as cur:
-            cur.execute("SELECT raw, raw_gz FROM public.spy_reports WHERE id = %s", (report_id,))
+            if scoped_alliances:
+                cur.execute(
+                    """
+                    SELECT raw, raw_gz
+                    FROM public.spy_reports
+                    WHERE id = %s
+                      AND COALESCE(alliance,'') = ANY(%s)
+                    """,
+                    (report_id, scoped_alliances),
+                )
+            else:
+                cur.execute("SELECT raw, raw_gz FROM public.spy_reports WHERE id = %s", (report_id,))
             row = cur.fetchone()
         if not row:
             raise HTTPException(status_code=404, detail="Raw report not found")
@@ -625,18 +812,31 @@ def get_spy_report_raw(report_id: int):
 
 
 @app.get("/api/spy-reports/{report_id}")
-def get_spy_report(report_id: int):
+def get_spy_report(request: Request, report_id: int):
+    scope = _get_scope_from_request(request)
+    scoped_alliances = (scope or {}).get("alliance_names") or []
     conn = _connect()
     try:
         with conn.cursor() as cur:
-            cur.execute(
-                """
-                SELECT id, created_at, kingdom, alliance, defense_power, castles, raw, raw_gz
-                FROM public.spy_reports
-                WHERE id = %s
-                """,
-                (report_id,),
-            )
+            if scoped_alliances:
+                cur.execute(
+                    """
+                    SELECT id, created_at, kingdom, alliance, defense_power, castles, raw, raw_gz
+                    FROM public.spy_reports
+                    WHERE id = %s
+                      AND COALESCE(alliance,'') = ANY(%s)
+                    """,
+                    (report_id, scoped_alliances),
+                )
+            else:
+                cur.execute(
+                    """
+                    SELECT id, created_at, kingdom, alliance, defense_power, castles, raw, raw_gz
+                    FROM public.spy_reports
+                    WHERE id = %s
+                    """,
+                    (report_id,),
+                )
             row = cur.fetchone()
         if not row:
             raise HTTPException(status_code=404, detail="Report not found")
@@ -993,14 +1193,41 @@ def ingest_report(body: RawReportBody):
 
 
 @app.get("/api/settlements/tracked")
-def tracked_settlements(kingdom: str = "", limit: int = 500):
+def tracked_settlements(request: Request, kingdom: str = "", limit: int = 500):
     s = kingdom.strip()
     lim = max(1, min(int(limit), 1000))
+    scope = _get_scope_from_request(request)
+    scoped_alliances = (scope or {}).get("alliance_names") or []
 
     conn = _connect()
     try:
         with conn.cursor() as cur:
-            if s:
+            if s and scoped_alliances:
+                cur.execute(
+                    """
+                    SELECT
+                        o.kingdom,
+                        o.settlement_name,
+                        MAX(o.settlement_level) AS latest_level,
+                        MAX(o.created_at) AS last_seen_at,
+                        COUNT(*)::int AS sightings,
+                        COUNT(*) FILTER (WHERE o.event_type = 'take_attempt_failed')::int AS failed_take_attempts,
+                        COUNT(*) FILTER (WHERE o.event_type = 'captured')::int AS captures
+                    FROM public.settlement_observations o
+                    WHERE o.kingdom ILIKE %s
+                      AND EXISTS (
+                        SELECT 1
+                        FROM public.spy_reports s
+                        WHERE s.kingdom = o.kingdom
+                          AND COALESCE(s.alliance,'') = ANY(%s)
+                      )
+                    GROUP BY o.kingdom, o.settlement_name
+                    ORDER BY last_seen_at DESC
+                    LIMIT %s
+                    """,
+                    (f"%{s}%", scoped_alliances, lim),
+                )
+            elif s:
                 cur.execute(
                     """
                     SELECT
@@ -1018,6 +1245,30 @@ def tracked_settlements(kingdom: str = "", limit: int = 500):
                     LIMIT %s
                     """,
                     (f"%{s}%", lim),
+                )
+            elif scoped_alliances:
+                cur.execute(
+                    """
+                    SELECT
+                        o.kingdom,
+                        o.settlement_name,
+                        MAX(o.settlement_level) AS latest_level,
+                        MAX(o.created_at) AS last_seen_at,
+                        COUNT(*)::int AS sightings,
+                        COUNT(*) FILTER (WHERE o.event_type = 'take_attempt_failed')::int AS failed_take_attempts,
+                        COUNT(*) FILTER (WHERE o.event_type = 'captured')::int AS captures
+                    FROM public.settlement_observations o
+                    WHERE EXISTS (
+                        SELECT 1
+                        FROM public.spy_reports s
+                        WHERE s.kingdom = o.kingdom
+                          AND COALESCE(s.alliance,'') = ANY(%s)
+                    )
+                    GROUP BY o.kingdom, o.settlement_name
+                    ORDER BY last_seen_at DESC
+                    LIMIT %s
+                    """,
+                    (scoped_alliances, lim),
                 )
             else:
                 cur.execute(

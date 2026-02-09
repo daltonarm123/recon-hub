@@ -4,6 +4,21 @@ export default function AdminHealth() {
   const [overview, setOverview] = useState(null);
   const [err, setErr] = useState("");
   const [loading, setLoading] = useState(true);
+  const [users, setUsers] = useState([]);
+  const [usersErr, setUsersErr] = useState("");
+  const [usersLoading, setUsersLoading] = useState(true);
+  const [userSearch, setUserSearch] = useState("");
+  const [alliances, setAlliances] = useState([]);
+  const [alliancesErr, setAlliancesErr] = useState("");
+  const [alliancesLoading, setAlliancesLoading] = useState(true);
+  const [assignForm, setAssignForm] = useState({
+    alliance_id: "",
+    discord_user_id: "",
+    discord_username: "",
+    role: "member",
+  });
+  const [assigning, setAssigning] = useState(false);
+  const [assignMsg, setAssignMsg] = useState("");
   const [notes, setNotes] = useState([]);
   const [notesErr, setNotesErr] = useState("");
   const [notesLoading, setNotesLoading] = useState(true);
@@ -49,6 +64,85 @@ export default function AdminHealth() {
     }
   }
 
+  async function loadAlliances() {
+    setAlliancesLoading(true);
+    setAlliancesErr("");
+    try {
+      const r = await fetch("/api/admin/alliances", {
+        cache: "no-store",
+        credentials: "include",
+      });
+      const j = await r.json().catch(() => ({}));
+      if (!r.ok) throw new Error(j?.detail || `HTTP ${r.status}`);
+      const rows = Array.isArray(j?.alliances) ? j.alliances : [];
+      setAlliances(rows);
+      setAssignForm((f) => ({
+        ...f,
+        alliance_id: f.alliance_id || (rows[0]?.id ? String(rows[0].id) : ""),
+      }));
+    } catch (e) {
+      setAlliances([]);
+      setAlliancesErr(e?.message || "Failed to load alliances");
+    } finally {
+      setAlliancesLoading(false);
+    }
+  }
+
+  async function loadUsers() {
+    setUsersLoading(true);
+    setUsersErr("");
+    try {
+      const r = await fetch(`/api/admin/users?limit=500&search=${encodeURIComponent(userSearch)}`, {
+        cache: "no-store",
+        credentials: "include",
+      });
+      const j = await r.json().catch(() => ({}));
+      if (!r.ok) throw new Error(j?.detail || `HTTP ${r.status}`);
+      setUsers(Array.isArray(j?.users) ? j.users : []);
+    } catch (e) {
+      setUsers([]);
+      setUsersErr(e?.message || "Failed to load users");
+    } finally {
+      setUsersLoading(false);
+    }
+  }
+
+  async function assignMembership() {
+    if (!assignForm.alliance_id || !assignForm.discord_user_id) return;
+    setAssigning(true);
+    setAssignMsg("");
+    try {
+      const r = await fetch("/api/admin/alliances/memberships", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify({
+          alliance_id: Number(assignForm.alliance_id),
+          discord_user_id: assignForm.discord_user_id.trim(),
+          discord_username: assignForm.discord_username.trim(),
+          role: assignForm.role,
+        }),
+      });
+      const j = await r.json().catch(() => ({}));
+      if (!r.ok) throw new Error(j?.detail || `HTTP ${r.status}`);
+      setAssignMsg("Membership updated.");
+      await loadUsers();
+      await loadAlliances();
+    } catch (e) {
+      setAssignMsg(e?.message || "Failed to assign membership");
+    } finally {
+      setAssigning(false);
+    }
+  }
+
+  function useUser(u) {
+    setAssignForm((f) => ({
+      ...f,
+      discord_user_id: u?.discord_user_id || "",
+      discord_username: u?.discord_username || "",
+    }));
+  }
+
   async function saveNote() {
     const clean = noteText.trim();
     if (!clean || savingNote) return;
@@ -82,6 +176,8 @@ export default function AdminHealth() {
   useEffect(() => {
     load();
     loadNotes();
+    loadAlliances();
+    loadUsers();
   }, []);
 
   function Metric({ label, value }) {
@@ -143,6 +239,111 @@ export default function AdminHealth() {
                       <td style={td}>{r.kingdom}</td>
                       <td style={td}>{Number(r.networth || 0).toLocaleString()}</td>
                       <td style={td}>{r.updated_at ? new Date(r.updated_at).toLocaleString() : "-"}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+
+          <div style={panel}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8, flexWrap: "wrap", marginBottom: 8 }}>
+              <div style={{ fontWeight: 700 }}>Alliance Access Control</div>
+              <button onClick={() => { loadUsers(); loadAlliances(); }} disabled={usersLoading || alliancesLoading || assigning} style={btn}>
+                {(usersLoading || alliancesLoading) ? "Refreshing..." : "Refresh Access Data"}
+              </button>
+            </div>
+
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))", gap: 8 }}>
+              <select
+                style={input}
+                value={assignForm.alliance_id}
+                onChange={(e) => setAssignForm((f) => ({ ...f, alliance_id: e.target.value }))}
+              >
+                <option value="">Select alliance...</option>
+                {(alliances || []).map((a) => (
+                  <option key={a.id} value={a.id}>
+                    {a.name} ({a.members ?? 0} members)
+                  </option>
+                ))}
+              </select>
+              <input
+                style={input}
+                value={assignForm.discord_user_id}
+                onChange={(e) => setAssignForm((f) => ({ ...f, discord_user_id: e.target.value }))}
+                placeholder="Discord user ID"
+              />
+              <input
+                style={input}
+                value={assignForm.discord_username}
+                onChange={(e) => setAssignForm((f) => ({ ...f, discord_username: e.target.value }))}
+                placeholder="Discord username (optional)"
+              />
+              <select
+                style={input}
+                value={assignForm.role}
+                onChange={(e) => setAssignForm((f) => ({ ...f, role: e.target.value }))}
+              >
+                <option value="owner">owner</option>
+                <option value="officer">officer</option>
+                <option value="member">member</option>
+              </select>
+            </div>
+
+            <div style={{ display: "flex", gap: 8, marginTop: 8, alignItems: "center", flexWrap: "wrap" }}>
+              <button
+                onClick={assignMembership}
+                disabled={!assignForm.alliance_id || !assignForm.discord_user_id || assigning}
+                style={btn}
+              >
+                {assigning ? "Saving..." : "Assign / Update Membership"}
+              </button>
+              {assignMsg ? <div style={{ fontSize: 12, color: assignMsg === "Membership updated." ? "#8be28b" : "#ff8b8b" }}>{assignMsg}</div> : null}
+              {alliancesErr ? <div style={{ fontSize: 12, color: "#ff8b8b" }}>Alliances: {alliancesErr}</div> : null}
+            </div>
+
+            <div style={{ marginTop: 12, display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+              <input
+                style={{ ...input, maxWidth: 340 }}
+                value={userSearch}
+                onChange={(e) => setUserSearch(e.target.value)}
+                placeholder="Search users by ID or username..."
+              />
+              <button onClick={loadUsers} disabled={usersLoading} style={btn}>
+                {usersLoading ? "Loading..." : "Search Users"}
+              </button>
+            </div>
+            {usersErr ? <div style={{ marginTop: 8, fontSize: 12, color: "#ff8b8b" }}>Users: {usersErr}</div> : null}
+
+            <div style={{ marginTop: 10, overflowX: "auto" }}>
+              <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
+                <thead>
+                  <tr>
+                    <th style={th}>Username</th>
+                    <th style={th}>Discord ID</th>
+                    <th style={th}>Active Alliance</th>
+                    <th style={th}>Memberships</th>
+                    <th style={th}>Last Seen</th>
+                    <th style={th}>Use</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {(users || []).map((u) => (
+                    <tr key={u.discord_user_id}>
+                      <td style={td}>{u.discord_username || "-"}</td>
+                      <td style={td}>{u.discord_user_id}</td>
+                      <td style={td}>
+                        {u.active_alliance_id || "-"}
+                      </td>
+                      <td style={td}>
+                        {(u.memberships || []).map((m) => `${m.alliance_name}:${m.role}`).join(", ") || "-"}
+                      </td>
+                      <td style={td}>{u.updated_at ? new Date(u.updated_at).toLocaleString() : "-"}</td>
+                      <td style={td}>
+                        <button style={btn} onClick={() => useUser(u)}>
+                          Use
+                        </button>
+                      </td>
                     </tr>
                   ))}
                 </tbody>
@@ -229,6 +430,17 @@ const panel = {
   borderRadius: 12,
   padding: 12,
   background: "rgba(255,255,255,.03)",
+};
+
+const input = {
+  width: "100%",
+  background: "rgba(0,0,0,.22)",
+  border: "1px solid rgba(255,255,255,.12)",
+  borderRadius: 10,
+  color: "#e7ecff",
+  padding: "8px 10px",
+  fontSize: 12,
+  boxSizing: "border-box",
 };
 
 const textarea = {

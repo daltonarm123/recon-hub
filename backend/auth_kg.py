@@ -27,6 +27,10 @@ class KGConnectBody(BaseModel):
     token: str = Field(..., min_length=8)
 
 
+class AllianceSwitchBody(BaseModel):
+    alliance_id: int = Field(..., gt=0)
+
+
 def _get_dsn() -> str:
     dsn = os.getenv("DATABASE_URL") or os.getenv("POSTGRES_URL") or ""
     if not dsn:
@@ -145,6 +149,62 @@ def _get_current_user(request: Request) -> Dict[str, Any]:
         "avatar": claims.get("avatar"),
         "is_admin": uid in _admin_user_ids(),
     }
+
+
+def _ensure_app_user(discord_user_id: str, discord_username: str):
+    conn = _connect()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO public.app_users
+                  (discord_user_id, discord_username, created_at, updated_at)
+                VALUES
+                  (%s, %s, now(), now())
+                ON CONFLICT (discord_user_id) DO UPDATE SET
+                  discord_username = EXCLUDED.discord_username,
+                  updated_at = now()
+                """,
+                (discord_user_id, discord_username),
+            )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def _load_alliance_context(discord_user_id: str) -> Dict[str, Any]:
+    conn = _connect()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT a.id, a.slug, a.name, m.role, m.status
+                FROM public.alliance_memberships m
+                JOIN public.alliances a ON a.id = m.alliance_id
+                WHERE m.discord_user_id = %s
+                ORDER BY a.name
+                """,
+                (discord_user_id,),
+            )
+            memberships = cur.fetchall() or []
+
+            cur.execute(
+                """
+                SELECT alliance_id
+                FROM public.user_active_alliance
+                WHERE discord_user_id = %s
+                """,
+                (discord_user_id,),
+            )
+            active_row = cur.fetchone() or {}
+
+        active_id = int(active_row.get("alliance_id") or 0) or None
+        return {
+            "memberships": memberships,
+            "active_alliance_id": active_id,
+        }
+    finally:
+        conn.close()
 
 
 def _get_fernet() -> Fernet:
@@ -785,18 +845,97 @@ def auth_me(request: Request):
     try:
         claims = _decode_session_jwt(token)
         uid = str(claims.get("sub") or "")
+        uname = str(claims.get("name") or "")
+        _ensure_app_user(uid, uname)
+        actx = _load_alliance_context(uid)
         return {
             "ok": True,
             "authenticated": True,
             "user": {
                 "discord_user_id": uid,
-                "discord_username": str(claims.get("name") or ""),
+                "discord_username": uname,
                 "avatar": claims.get("avatar"),
                 "is_admin": uid in _admin_user_ids(),
+                "active_alliance_id": actx.get("active_alliance_id"),
+                "alliances": [
+                    {
+                        "id": int(m["id"]),
+                        "slug": str(m["slug"]),
+                        "name": str(m["name"]),
+                        "role": str(m["role"] or "member"),
+                        "status": str(m["status"] or "active"),
+                    }
+                    for m in (actx.get("memberships") or [])
+                ],
             },
         }
     except HTTPException:
         return {"ok": True, "authenticated": False}
+
+
+@router.get("/api/alliance/me")
+def alliance_me(request: Request):
+    user = _get_current_user(request)
+    _ensure_app_user(user["discord_user_id"], user["discord_username"])
+    actx = _load_alliance_context(user["discord_user_id"])
+    return {
+        "ok": True,
+        "active_alliance_id": actx.get("active_alliance_id"),
+        "alliances": [
+            {
+                "id": int(m["id"]),
+                "slug": str(m["slug"]),
+                "name": str(m["name"]),
+                "role": str(m["role"] or "member"),
+                "status": str(m["status"] or "active"),
+            }
+            for m in (actx.get("memberships") or [])
+        ],
+    }
+
+
+@router.post("/api/alliance/switch")
+def alliance_switch(body: AllianceSwitchBody, request: Request):
+    user = _get_current_user(request)
+    _ensure_app_user(user["discord_user_id"], user["discord_username"])
+
+    conn = _connect()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT 1
+                FROM public.alliance_memberships
+                WHERE discord_user_id = %s
+                  AND alliance_id = %s
+                  AND status = 'active'
+                """,
+                (user["discord_user_id"], body.alliance_id),
+            )
+            if not cur.fetchone():
+                raise HTTPException(status_code=403, detail="Not a member of that alliance")
+
+            cur.execute(
+                """
+                INSERT INTO public.user_active_alliance
+                  (discord_user_id, alliance_id, updated_at)
+                VALUES
+                  (%s, %s, now())
+                ON CONFLICT (discord_user_id) DO UPDATE SET
+                  alliance_id = EXCLUDED.alliance_id,
+                  updated_at = now()
+                """,
+                (user["discord_user_id"], body.alliance_id),
+            )
+        conn.commit()
+    finally:
+        conn.close()
+
+    actx = _load_alliance_context(user["discord_user_id"])
+    return {
+        "ok": True,
+        "active_alliance_id": actx.get("active_alliance_id"),
+    }
 
 
 @router.get("/api/kg/connection")

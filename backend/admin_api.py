@@ -97,6 +97,18 @@ class AdminNoteBody(BaseModel):
     note: str = Field(..., min_length=1, max_length=4000)
 
 
+class AllianceCreateBody(BaseModel):
+    name: str = Field(..., min_length=2, max_length=80)
+    slug: str = Field(..., min_length=2, max_length=80)
+
+
+class AllianceMembershipAssignBody(BaseModel):
+    alliance_id: int = Field(..., gt=0)
+    discord_user_id: str = Field(..., min_length=3, max_length=64)
+    discord_username: str = Field(default="", max_length=128)
+    role: str = Field(default="member", min_length=3, max_length=24)
+
+
 def ensure_admin_tables():
     conn = _connect()
     try:
@@ -237,5 +249,199 @@ def create_admin_note(body: AdminNoteBody, request: Request):
             created = cur.fetchone()
         conn.commit()
         return {"ok": True, "note": created}
+    finally:
+        conn.close()
+
+
+@router.post("/api/admin/alliances")
+def create_alliance(body: AllianceCreateBody, request: Request):
+    _require_admin(request)
+    name = body.name.strip()
+    slug = body.slug.strip().lower()
+    if not name or not slug:
+        raise HTTPException(status_code=400, detail="name and slug are required")
+
+    conn = _connect()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO public.alliances (name, slug, created_at)
+                VALUES (%s, %s, now())
+                ON CONFLICT (slug) DO UPDATE SET name = EXCLUDED.name
+                RETURNING id, name, slug, created_at
+                """,
+                (name, slug),
+            )
+            row = cur.fetchone()
+        conn.commit()
+        return {"ok": True, "alliance": row}
+    finally:
+        conn.close()
+
+
+@router.get("/api/admin/alliances")
+def list_alliances(request: Request):
+    _require_admin(request)
+    conn = _connect()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT a.id, a.name, a.slug, a.created_at,
+                       COUNT(m.id)::int AS members
+                FROM public.alliances a
+                LEFT JOIN public.alliance_memberships m
+                  ON m.alliance_id = a.id AND m.status = 'active'
+                GROUP BY a.id, a.name, a.slug, a.created_at
+                ORDER BY a.name
+                """
+            )
+            rows = cur.fetchall()
+        return {"ok": True, "alliances": rows}
+    finally:
+        conn.close()
+
+
+@router.post("/api/admin/alliances/memberships")
+def assign_alliance_membership(body: AllianceMembershipAssignBody, request: Request):
+    _require_admin(request)
+    uid = body.discord_user_id.strip()
+    uname = body.discord_username.strip()
+    role = body.role.strip().lower() or "member"
+
+    conn = _connect()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO public.app_users (discord_user_id, discord_username, created_at, updated_at)
+                VALUES (%s, %s, now(), now())
+                ON CONFLICT (discord_user_id) DO UPDATE SET
+                  discord_username = CASE
+                    WHEN EXCLUDED.discord_username = '' THEN public.app_users.discord_username
+                    ELSE EXCLUDED.discord_username
+                  END,
+                  updated_at = now()
+                """,
+                (uid, uname),
+            )
+
+            cur.execute(
+                """
+                INSERT INTO public.alliance_memberships
+                  (alliance_id, discord_user_id, role, status, created_at)
+                VALUES
+                  (%s, %s, %s, 'active', now())
+                ON CONFLICT (alliance_id, discord_user_id) DO UPDATE SET
+                  role = EXCLUDED.role,
+                  status = 'active'
+                RETURNING id, alliance_id, discord_user_id, role, status, created_at
+                """,
+                (body.alliance_id, uid, role),
+            )
+            row = cur.fetchone()
+        conn.commit()
+        return {"ok": True, "membership": row}
+    finally:
+        conn.close()
+
+
+@router.get("/api/admin/users")
+def list_app_users(request: Request, limit: int = 500, search: str = ""):
+    _require_admin(request)
+    lim = max(1, min(int(limit), 2000))
+    s = search.strip()
+
+    conn = _connect()
+    try:
+        with conn.cursor() as cur:
+            if s:
+                like = f"%{s}%"
+                cur.execute(
+                    """
+                    SELECT discord_user_id, discord_username, created_at, updated_at
+                    FROM public.app_users
+                    WHERE discord_user_id ILIKE %s OR COALESCE(discord_username,'') ILIKE %s
+                    ORDER BY updated_at DESC
+                    LIMIT %s
+                    """,
+                    (like, like, lim),
+                )
+            else:
+                cur.execute(
+                    """
+                    SELECT discord_user_id, discord_username, created_at, updated_at
+                    FROM public.app_users
+                    ORDER BY updated_at DESC
+                    LIMIT %s
+                    """,
+                    (lim,),
+                )
+            users = cur.fetchall()
+
+            cur.execute(
+                """
+                SELECT
+                  m.discord_user_id,
+                  m.alliance_id,
+                  m.role,
+                  m.status,
+                  m.created_at,
+                  a.name AS alliance_name,
+                  a.slug AS alliance_slug
+                FROM public.alliance_memberships m
+                JOIN public.alliances a ON a.id = m.alliance_id
+                ORDER BY m.created_at DESC
+                """
+            )
+            memberships = cur.fetchall()
+
+            cur.execute(
+                """
+                SELECT discord_user_id, alliance_id
+                FROM public.user_active_alliance
+                """
+            )
+            active_rows = cur.fetchall()
+
+        active_map = {
+            str(r.get("discord_user_id") or ""): int(r.get("alliance_id") or 0)
+            for r in (active_rows or [])
+        }
+
+        m_map: Dict[str, List[Dict[str, Any]]] = {}
+        for m in memberships or []:
+            uid = str(m.get("discord_user_id") or "")
+            if not uid:
+                continue
+            if uid not in m_map:
+                m_map[uid] = []
+            m_map[uid].append(
+                {
+                    "alliance_id": int(m["alliance_id"]),
+                    "alliance_name": str(m["alliance_name"]),
+                    "alliance_slug": str(m["alliance_slug"]),
+                    "role": str(m.get("role") or "member"),
+                    "status": str(m.get("status") or "active"),
+                    "created_at": m.get("created_at"),
+                }
+            )
+
+        out = []
+        for u in users or []:
+            uid = str(u.get("discord_user_id") or "")
+            out.append(
+                {
+                    "discord_user_id": uid,
+                    "discord_username": str(u.get("discord_username") or ""),
+                    "created_at": u.get("created_at"),
+                    "updated_at": u.get("updated_at"),
+                    "active_alliance_id": active_map.get(uid),
+                    "memberships": m_map.get(uid, []),
+                }
+            )
+
+        return {"ok": True, "users": out}
     finally:
         conn.close()
