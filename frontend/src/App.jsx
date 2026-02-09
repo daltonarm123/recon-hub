@@ -4,9 +4,11 @@ import {
     Routes,
     Route,
     Link,
+    NavLink,
     Navigate,
     useNavigate,
     useParams,
+    useLocation,
 } from "react-router-dom";
 
 import BackendBadge from "./BackendBadge";
@@ -115,9 +117,32 @@ const navLink = {
     fontWeight: 700,
 };
 
+const navLinkActive = {
+    border: "1px solid rgba(90,160,255,.55)",
+    background: "linear-gradient(180deg, rgba(90,160,255,.26), rgba(90,160,255,.12))",
+};
+
+const navGroup = {
+    border: "1px solid rgba(255,255,255,.10)",
+    borderRadius: 10,
+    padding: 8,
+    background: "rgba(0,0,0,.15)",
+    minWidth: 210,
+};
+
+const navGroupLabel = {
+    fontSize: 10,
+    textTransform: "uppercase",
+    letterSpacing: 0.35,
+    color: "rgba(231,236,255,.62)",
+    marginBottom: 6,
+    fontWeight: 700,
+};
+
 function Layout({ children }) {
     const [authRefresh, setAuthRefresh] = useState(0);
     const auth = useAuthMe(authRefresh);
+    const location = useLocation();
 
     async function logout() {
         await fetch(`${API_BASE}/auth/logout`, {
@@ -125,6 +150,15 @@ function Layout({ children }) {
             credentials: "include",
         }).catch(() => null);
         setAuthRefresh((x) => x + 1);
+    }
+
+    function isActivePath(to) {
+        if (to === "/") return location.pathname === "/";
+        return location.pathname === to || location.pathname.startsWith(`${to}/`);
+    }
+
+    function navStyle(to) {
+        return isActivePath(to) ? { ...navLink, ...navLinkActive } : navLink;
     }
 
     return (
@@ -151,48 +185,57 @@ function Layout({ children }) {
                         </div>
                     </div>
 
-                    <nav style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
-                        <Link style={navLink} to="/">
-                            Dashboard
-                        </Link>
-                        <Link style={navLink} to="/kingdoms">
-                            Kingdoms
-                        </Link>
-                        <Link style={navLink} to="/nwot">
-                            NWOT
-                        </Link>
-                        <Link style={navLink} to="/settlements">
-                            Settlements
-                        </Link>
-                        <Link style={navLink} to="/tracked-settlements">
-                            Tracked Settlements
-                        </Link>
-                        <Link style={navLink} to="/settlement-effects">
-                            Settlement Effects
-                        </Link>
-                        <Link style={navLink} to="/reports">
-                            Reports
-                        </Link>
-                        <Link style={navLink} to="/research">
-                            Research
-                        </Link>
-                        {auth.data?.user?.is_admin ? (
-                            <Link style={navLink} to="/admin/health">
-                                Admin
-                            </Link>
-                        ) : null}
-                        <a style={navLink} href="/kg-calc.html">
-                            Calc
-                        </a>
-                        {auth.loading ? null : auth.data?.authenticated ? (
-                            <button style={navBtn} onClick={logout} title="Logout Discord session">
-                                {auth.data?.user?.discord_username || "Discord"} Logout
-                            </button>
-                        ) : (
-                            <a style={navLink} href="/auth/discord/login">
-                                Discord Login
-                            </a>
-                        )}
+                    <nav style={{ display: "grid", gap: 8 }}>
+                        <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                            <NavLink style={navStyle("/")} to="/">Dashboard</NavLink>
+                            <NavLink style={navStyle("/reports")} to="/reports">Reports</NavLink>
+                            <NavLink style={navStyle("/kingdoms")} to="/kingdoms">Kingdoms</NavLink>
+                            {auth.data?.user?.is_admin ? (
+                                <NavLink style={navStyle("/admin/health")} to="/admin/health">Admin</NavLink>
+                            ) : null}
+                            {auth.loading ? null : auth.data?.authenticated ? (
+                                <button style={navBtn} onClick={logout} title="Logout Discord session">
+                                    {auth.data?.user?.discord_username || "Discord"} Logout
+                                </button>
+                            ) : (
+                                <a style={navLink} href="/auth/discord/login">Discord Login</a>
+                            )}
+                        </div>
+
+                        <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                            <div style={navGroup}>
+                                <div style={navGroupLabel}>Intel</div>
+                                <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                                    <NavLink style={navStyle("/nwot")} to="/nwot">NWOT</NavLink>
+                                </div>
+                            </div>
+
+                            <div style={navGroup}>
+                                <div style={navGroupLabel}>Settlements</div>
+                                <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                                    <NavLink style={navStyle("/settlements")} to="/settlements">Overview</NavLink>
+                                    <NavLink style={navStyle("/tracked-settlements")} to="/tracked-settlements">Tracking</NavLink>
+                                    <NavLink style={navStyle("/settlement-effects")} to="/settlement-effects">Effects</NavLink>
+                                </div>
+                            </div>
+
+                            <div style={navGroup}>
+                                <div style={navGroupLabel}>Tools</div>
+                                <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                                    <NavLink style={navStyle("/research")} to="/research">Research</NavLink>
+                                    <a style={navLink} href="/kg-calc.html">Calc</a>
+                                </div>
+                            </div>
+
+                            {auth.data?.user?.is_admin ? (
+                                <div style={navGroup}>
+                                    <div style={navGroupLabel}>Alliance</div>
+                                    <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                                        <a style={navLink} href="/admin/health#alliance-access-control">Alliance Access</a>
+                                    </div>
+                                </div>
+                            ) : null}
+                        </div>
                     </nav>
                 </header>
 

@@ -220,7 +220,7 @@ export default function AdminHealth() {
             <div style={line}>Last NW Tick: {overview?.latest?.nw_tick_at || "-"}</div>
           </div>
 
-          <div style={panel}>
+          <div style={panel} id="alliance-access-control">
             <div style={{ fontWeight: 700, marginBottom: 8 }}>Top NW Snapshot</div>
             <div style={{ overflowX: "auto" }}>
               <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
