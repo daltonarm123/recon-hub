@@ -365,6 +365,23 @@ def _extract_list(payload: Dict[str, Any], keys: List[str]) -> List[Any]:
     return []
 
 
+def _ci_get(d: Dict[str, Any], *keys: str) -> Any:
+    """
+    Case-insensitive dict getter across multiple candidate keys.
+    """
+    if not isinstance(d, dict):
+        return None
+    for k in keys:
+        if k in d:
+            return d[k]
+    lower_map = {str(k).lower(): v for k, v in d.items()}
+    for k in keys:
+        lk = str(k).lower()
+        if lk in lower_map:
+            return lower_map[lk]
+    return None
+
+
 def _extract_settlements(payload: Dict[str, Any]) -> List[Dict[str, Any]]:
     candidates = _extract_list(
         payload,
@@ -385,8 +402,8 @@ def _extract_settlements(payload: Dict[str, Any]) -> List[Dict[str, Any]]:
     def parse_item(item: Any):
         if not isinstance(item, dict):
             return
-        sid = item.get("id") or item.get("settlementId") or item.get("cityId") or item.get("townId")
-        name = item.get("name") or item.get("settlementName") or item.get("cityName") or item.get("townName")
+        sid = _ci_get(item, "id", "settlementId", "settlementID", "cityId", "cityID", "townId", "townID")
+        name = _ci_get(item, "name", "settlementName", "cityName", "townName")
         if sid is None:
             return
         try:
@@ -421,7 +438,7 @@ def _extract_settlements(payload: Dict[str, Any]) -> List[Dict[str, Any]]:
             elif isinstance(cur, list):
                 for item in cur:
                     if isinstance(item, dict):
-                        if any(k in item for k in ("settlementId", "cityId", "townId")):
+                        if any(_ci_get(item, k) is not None for k in ("settlementId", "settlementID", "cityId", "cityID", "townId", "townID")):
                             parse_item(item)
                     if isinstance(item, (dict, list)):
                         queue.append(item)
@@ -449,15 +466,33 @@ def _extract_buildings(payload: Dict[str, Any]) -> List[Dict[str, Any]]:
     def parse_row(row: Any):
         if not isinstance(row, dict):
             return
-        btype = (
-            row.get("buildingType")
-            or row.get("typeName")
-            or row.get("type")
-            or row.get("name")
-            or row.get("buildingName")
+        btype = _ci_get(
+            row,
+            "buildingType",
+            "building_type",
+            "buildingtypename",
+            "typeName",
+            "type",
+            "name",
+            "buildingName",
         )
-        level = row.get("level") or row.get("lvl") or row.get("buildingLevel")
-        effect = row.get("effect") or row.get("description") or row.get("text") or row.get("bonus")
+        level = _ci_get(
+            row,
+            "level",
+            "lvl",
+            "buildingLevel",
+            "building_lvl",
+            "currentLevel",
+        )
+        effect = _ci_get(
+            row,
+            "effect",
+            "effectText",
+            "description",
+            "text",
+            "bonus",
+            "effectDescription",
+        )
         if not btype:
             return
         try:
@@ -594,29 +629,41 @@ def _fetch_settlements_live(conn_row: Dict[str, Any]) -> List[Dict[str, Any]]:
 
     def fetch_detail_for_settlement(s: Dict[str, Any]) -> Tuple[int, List[Dict[str, Any]]]:
         sid = int(s["settlement_id"])
-        payload = {
+        payload_base = {
             "accountId": base["accountId"],
             "token": base["token"],
             "kingdomId": int(base["kingdomId"]),
             "settlementId": sid,
         }
+        payload_variants = [
+            payload_base,
+            {**payload_base, "settlementID": sid},
+            {
+                "accountID": str(base["accountId"]),
+                "token": base["token"],
+                "kingdomID": int(base["kingdomId"]),
+                "settlementID": sid,
+            },
+        ]
 
-        try:
-            parsed = _kg_post_json(primary_detail_url, payload)
-            buildings = _extract_buildings(parsed)
-            if buildings and not _is_summary_only_buildings(buildings):
-                return (sid, buildings)
-        except Exception:
-            pass
-
-        for url in fallback_detail_urls:
+        for p in payload_variants:
             try:
-                parsed = _kg_post_json(url, payload)
+                parsed = _kg_post_json(primary_detail_url, p)
                 buildings = _extract_buildings(parsed)
                 if buildings and not _is_summary_only_buildings(buildings):
                     return (sid, buildings)
             except Exception:
-                continue
+                pass
+
+        for url in fallback_detail_urls:
+            for p in payload_variants:
+                try:
+                    parsed = _kg_post_json(url, p)
+                    buildings = _extract_buildings(parsed)
+                    if buildings and not _is_summary_only_buildings(buildings):
+                        return (sid, buildings)
+                except Exception:
+                    continue
 
         return (sid, [])
 
