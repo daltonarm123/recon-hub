@@ -172,8 +172,11 @@
       <div class="sub">Two-column layout + “Paste Spy Report” auto-fill for Defending Kingdom</div>
     </div>
     <div class="pillrow">
-      <label class="pill"><input id="tgUseResearch" type="checkbox" checked> Use Research</label>
-      <label class="pill"><input id="tgUseBonuses" type="checkbox" checked> Use Bonuses</label>
+      <label class="pill"><input id="tgUseResearch" type="checkbox" checked> Use Research (+10%)</label>
+      <label class="pill"><input id="tgUseWrath" type="checkbox"> Wrath (+5% all attack)</label>
+      <label class="pill"><input id="tgUseSteedsFury" type="checkbox"> Steed's Fury (+5% mounted attack)</label>
+      <label class="pill"><input id="tgUseCalibration" type="checkbox" checked> Use Known Hit Calibration</label>
+      <label class="pill"><input id="tgUseTargetProfiles" type="checkbox" checked> Prefer Target Profiles</label>
       <label class="pill"><input id="tgCompact" type="checkbox" checked> Compact Rows</label>
       <label class="pill"><input id="tgLockDef" type="checkbox"> Lock Defending (no autofill overwrite)</label>
     </div>
@@ -268,6 +271,64 @@
           </div>
 
           <div class="status" id="atkStatus"></div>
+
+          <div class="divider"></div>
+          <div class="sectionTitle">Known Hit Calibration</div>
+          <div class="twocol">
+            <div class="rows">
+              <div class="row compact">
+                <div class="lbl">Observed Outcome</div>
+                <select class="inp" id="khOutcome">
+                  <option value="">Select outcome...</option>
+                  <option value="FAIL / LOSS">Fail / Loss</option>
+                  <option value="STALEMATE">Stalemate</option>
+                  <option value="MINOR VICTORY">Minor Victory</option>
+                  <option value="VICTORY">Victory</option>
+                  <option value="MAJOR VICTORY">Major Victory</option>
+                  <option value="OVERWHELMING VICTORY">Overwhelming Victory</option>
+                </select>
+              </div>
+              <div class="row compact">
+                <div class="lbl">Land Taken (optional)</div>
+                <input class="inp" id="khLandTaken" type="number" min="0" step="1" />
+              </div>
+            </div>
+            <div class="rows">
+              <div class="row compact">
+                <div class="lbl">Hit Note (optional)</div>
+                <input class="inp" id="khNote" />
+              </div>
+              <div class="hint">Run Calculate first, then save the actual hit result. Calibration updates automatically.</div>
+            </div>
+          </div>
+          <div class="btnrow">
+            <button class="btn" id="btnAddKnownHit">Save Known Hit</button>
+            <button class="btn ghost" id="btnClearKnownHits">Clear Known Hits</button>
+            <button class="btn ghost" id="btnExportKnownHitsCsv">Export CSV</button>
+            <button class="btn ghost" id="btnImportKnownHitsCsv">Import CSV</button>
+            <input id="knownHitsCsvFile" type="file" accept=".csv,text/csv" style="display:none;" />
+          </div>
+          <div class="status" id="calStatus"></div>
+          <div class="btnrow">
+            <label class="pill"><input id="khShowCurrentOnly" type="checkbox"> Show current target only</label>
+          </div>
+          <div style="overflow:auto; border:1px solid var(--border); border-radius:10px; margin-top:8px;">
+            <table style="width:100%; border-collapse:collapse; font-size:12px;">
+              <thead>
+                <tr>
+                  <th style="text-align:left; padding:8px; border-bottom:1px solid var(--border); color:var(--muted);">Date</th>
+                  <th style="text-align:left; padding:8px; border-bottom:1px solid var(--border); color:var(--muted);">Target</th>
+                  <th style="text-align:left; padding:8px; border-bottom:1px solid var(--border); color:var(--muted);">Raw Ratio</th>
+                  <th style="text-align:left; padding:8px; border-bottom:1px solid var(--border); color:var(--muted);">Pred</th>
+                  <th style="text-align:left; padding:8px; border-bottom:1px solid var(--border); color:var(--muted);">Observed</th>
+                  <th style="text-align:left; padding:8px; border-bottom:1px solid var(--border); color:var(--muted);">Land</th>
+                  <th style="text-align:left; padding:8px; border-bottom:1px solid var(--border); color:var(--muted);">Note</th>
+                  <th style="text-align:left; padding:8px; border-bottom:1px solid var(--border); color:var(--muted);">Actions</th>
+                </tr>
+              </thead>
+              <tbody id="knownHitsBody"></tbody>
+            </table>
+          </div>
         </div>
       </div>
     </section>
@@ -539,14 +600,36 @@
   }
 
   // ---------- BATTLE MATH ----------
-  // Using AP values per your table.
-  const WEIGHTS = {
-    footmen: 2,
+  // Troop stats from KG guide + configurable RPS settings.
+  const ATTACK_WEIGHTS = {
+    footmen: 1,
     pikemen: 2,
+    elites: 10,
     archers: 1,
+    crossbowmen: 3,
     lightCav: 5,
     heavyCav: 7,
     knights: 15
+  };
+
+  const DEFENSE_WEIGHTS = {
+    peasants: 0.1,
+    footmen: 1,
+    pikemen: 2,
+    elites: 10,
+    archers: 4,
+    crossbowmen: 2,
+    lightCav: 4,
+    heavyCav: 5,
+    knights: 10
+  };
+
+  const RPS_CONFIG = {
+    pikeVsCavNeedRatio: 0.25,     // 25% pike can fully counter cav
+    cavVsArchNeedRatio: 1.0,      // 1:1
+    archVsInfNeedRatio: 1.0,      // 1:1
+    fullCounterReduction: 0.25,   // 25% reduction at full coverage
+    maxCounterReduction: 0.40     // hard cap for over-coverage
   };
 
   const OUTCOME_THRESHOLDS = [
@@ -558,22 +641,376 @@
     { name: "OVERWHELMING VICTORY", min: 2.20, max: Infinity },
   ];
 
-  function computeAttackPower(){
+  const CAL_STORAGE_KEY = "kg_calc_known_hits_v1";
+  let lastCalcSnapshot = null;
+
+  function median(nums){
+    const v = (nums || []).filter(n => Number.isFinite(n)).slice().sort((a,b) => a - b);
+    if (!v.length) return 1;
+    const m = Math.floor(v.length / 2);
+    return v.length % 2 ? v[m] : (v[m - 1] + v[m]) / 2;
+  }
+
+  function normalizeProfileTarget(name){
+    return String(name || "").trim().toLowerCase();
+  }
+
+  function sanitizeKnownHit(h){
+    const rawRatio = Number(h?.rawRatio || 0);
+    const actualOutcome = String(h?.actualOutcome || "").trim();
+    if (!(rawRatio > 0) || !actualOutcome) return null;
+    const target = String(h?.target || "").trim();
+    return {
+      id: String(h?.id || `${Date.now()}_${Math.random().toString(36).slice(2, 8)}`),
+      ts: String(h?.ts || new Date().toISOString()),
+      target: target,
+      targetNorm: normalizeProfileTarget(target),
+      rawRatio: rawRatio,
+      calibratedRatio: Number(h?.calibratedRatio || 0),
+      predictedOutcome: String(h?.predictedOutcome || ""),
+      actualOutcome: actualOutcome,
+      atkPower: Number(h?.atkPower || 0),
+      defDP: Number(h?.defDP || 0),
+      landTaken: h?.landTaken == null ? null : Number(h.landTaken),
+      note: h?.note == null ? null : String(h.note)
+    };
+  }
+
+  function loadKnownHits(){
+    try {
+      const raw = localStorage.getItem(CAL_STORAGE_KEY);
+      if (!raw) return [];
+      const parsed = JSON.parse(raw);
+      if (!Array.isArray(parsed)) return [];
+      return parsed.map(sanitizeKnownHit).filter(Boolean);
+    } catch {
+      return [];
+    }
+  }
+
+  function saveKnownHits(hits){
+    localStorage.setItem(CAL_STORAGE_KEY, JSON.stringify(hits || []));
+  }
+
+  function outcomeTargetRatio(name){
+    const n = String(name || "").toUpperCase().trim();
+    if (n === "FAIL / LOSS") return 0.85;
+    if (n === "STALEMATE") return 1.02;
+    if (n === "MINOR VICTORY") return 1.20;
+    if (n === "VICTORY") return 1.45;
+    if (n === "MAJOR VICTORY") return 1.90;
+    if (n === "OVERWHELMING VICTORY") return 2.40;
+    return null;
+  }
+
+  function extractFactors(knownHits){
+    const ratios = [];
+    for (const h of (knownHits || [])) {
+      const rawRatio = Number(h.rawRatio || 0);
+      const target = outcomeTargetRatio(h.actualOutcome);
+      if (!(rawRatio > 0) || !(target > 0)) continue;
+      const factor = target / rawRatio;
+      if (Number.isFinite(factor)) ratios.push(Math.max(0.60, Math.min(1.80, factor)));
+    }
+    return ratios;
+  }
+
+  function computeConfidencePct(sampleCount, factorMad){
+    const n = Number(sampleCount || 0);
+    const mad = Number(factorMad || 0);
+    const sampleScore = Math.min(1, n / 12);
+    const stabilityScore = Math.max(0, Math.min(1, 1 - (mad / 0.18)));
+    return Math.round((0.70 * sampleScore + 0.30 * stabilityScore) * 100);
+  }
+
+  function computeCalibrationStats(knownHits, currentTarget, useTargetProfiles){
+    const all = knownHits || [];
+    const targetNorm = normalizeProfileTarget(currentTarget);
+    const targetHits = targetNorm ? all.filter(h => h.targetNorm === targetNorm) : [];
+
+    let active = all;
+    let profile = "global";
+    if (useTargetProfiles && targetHits.length >= 3) {
+      active = targetHits;
+      profile = `target:${targetNorm || "unknown"}`;
+    }
+
+    const factors = extractFactors(active);
+    const factor = factors.length ? median(factors) : 1;
+    const absDevs = factors.map(v => Math.abs(v - factor));
+    const factorMad = absDevs.length ? median(absDevs) : 0;
+    const confidencePct = computeConfidencePct(factors.length, factorMad);
+
+    return {
+      factor,
+      confidencePct,
+      factorMad,
+      profile,
+      activeSamples: factors.length,
+      totalHits: all.length,
+      targetHits: targetHits.length,
+      targetNorm
+    };
+  }
+
+  function getKnownHits(){
+    return loadKnownHits();
+  }
+
+  function knownOutcomeOptions(selected){
+    const vals = ["FAIL / LOSS", "STALEMATE", "MINOR VICTORY", "VICTORY", "MAJOR VICTORY", "OVERWHELMING VICTORY"];
+    return vals.map(v => `<option value="${v}" ${v === selected ? "selected" : ""}>${v}</option>`).join("");
+  }
+
+  function escapeHtml(v){
+    return String(v ?? "")
+      .replaceAll("&", "&amp;")
+      .replaceAll("<", "&lt;")
+      .replaceAll(">", "&gt;")
+      .replaceAll('"', "&quot;")
+      .replaceAll("'", "&#39;");
+  }
+
+  function csvEscape(val){
+    const s = String(val ?? "");
+    if (/[",\r\n]/.test(s)) return `"${s.replaceAll('"', '""')}"`;
+    return s;
+  }
+
+  function knownHitsToCsv(hits){
+    const headers = ["id", "ts", "target", "rawRatio", "calibratedRatio", "predictedOutcome", "actualOutcome", "atkPower", "defDP", "landTaken", "note"];
+    const rows = [headers.join(",")];
+    for (const h of (hits || [])) {
+      const row = headers.map(k => csvEscape(h?.[k] ?? ""));
+      rows.push(row.join(","));
+    }
+    return rows.join("\n");
+  }
+
+  function parseCsvLine(line){
+    const out = [];
+    let cur = "";
+    let i = 0;
+    let inQ = false;
+    while (i < line.length) {
+      const ch = line[i];
+      if (inQ) {
+        if (ch === '"') {
+          if (line[i + 1] === '"') {
+            cur += '"';
+            i += 2;
+            continue;
+          }
+          inQ = false;
+          i += 1;
+          continue;
+        }
+        cur += ch;
+        i += 1;
+        continue;
+      }
+      if (ch === ",") {
+        out.push(cur);
+        cur = "";
+        i += 1;
+        continue;
+      }
+      if (ch === '"') {
+        inQ = true;
+        i += 1;
+        continue;
+      }
+      cur += ch;
+      i += 1;
+    }
+    out.push(cur);
+    return out;
+  }
+
+  function knownHitsFromCsv(csvText){
+    const txt = String(csvText || "").replace(/\r/g, "");
+    const lines = txt.split("\n").filter(l => l.trim().length > 0);
+    if (lines.length < 2) return [];
+    const headers = parseCsvLine(lines[0]).map(h => String(h || "").trim());
+    const idx = Object.fromEntries(headers.map((h, i) => [h, i]));
+    const required = ["rawRatio", "actualOutcome"];
+    for (const r of required) {
+      if (!(r in idx)) throw new Error(`CSV missing required column: ${r}`);
+    }
+
+    const out = [];
+    for (let li = 1; li < lines.length; li++) {
+      const cols = parseCsvLine(lines[li]);
+      const get = (k) => (idx[k] == null ? "" : String(cols[idx[k]] ?? "").trim());
+      const row = sanitizeKnownHit({
+        id: get("id"),
+        ts: get("ts"),
+        target: get("target"),
+        rawRatio: Number(get("rawRatio")),
+        calibratedRatio: Number(get("calibratedRatio")),
+        predictedOutcome: get("predictedOutcome"),
+        actualOutcome: get("actualOutcome"),
+        atkPower: Number(get("atkPower")),
+        defDP: Number(get("defDP")),
+        landTaken: get("landTaken") === "" ? null : Number(get("landTaken")),
+        note: get("note")
+      });
+      if (row) out.push(row);
+    }
+    return out;
+  }
+
+  function renderKnownHitsTable(){
+    const body = el("knownHitsBody");
+    if (!body) return;
+
+    const all = getKnownHits();
+    const showCurrentOnly = !!el("khShowCurrentOnly")?.checked;
+    const currentTarget = normalizeProfileTarget(el("defTarget")?.value || "");
+    let items = all.slice().sort((a, b) => String(b.ts).localeCompare(String(a.ts)));
+    if (showCurrentOnly && currentTarget) {
+      items = items.filter(h => h.targetNorm === currentTarget);
+    }
+
+    if (!items.length) {
+      body.innerHTML = `<tr><td colspan="8" style="padding:10px; color:var(--muted);">No known hits saved yet.</td></tr>`;
+      return;
+    }
+
+    body.innerHTML = items.map(h => `
+      <tr data-hit-id="${escapeHtml(h.id)}">
+        <td style="padding:8px; border-top:1px solid var(--border); white-space:nowrap;">${escapeHtml(String(h.ts).replace("T"," ").slice(0,19))}</td>
+        <td style="padding:8px; border-top:1px solid var(--border); min-width:120px;"><input class="inp" data-f="target" value="${escapeHtml(h.target || "")}" /></td>
+        <td style="padding:8px; border-top:1px solid var(--border); white-space:nowrap;">${Number(h.rawRatio || 0).toFixed(2)}</td>
+        <td style="padding:8px; border-top:1px solid var(--border); white-space:nowrap;">${escapeHtml(h.predictedOutcome || "—")}</td>
+        <td style="padding:8px; border-top:1px solid var(--border); min-width:170px;"><select class="inp" data-f="actualOutcome">${knownOutcomeOptions(h.actualOutcome)}</select></td>
+        <td style="padding:8px; border-top:1px solid var(--border); width:100px;"><input class="inp" data-f="landTaken" type="number" min="0" step="1" value="${h.landTaken == null ? "" : escapeHtml(h.landTaken)}" /></td>
+        <td style="padding:8px; border-top:1px solid var(--border); min-width:180px;"><input class="inp" data-f="note" value="${escapeHtml(h.note || "")}" /></td>
+        <td style="padding:8px; border-top:1px solid var(--border); white-space:nowrap;">
+          <button class="btn ghost" data-act="save">Save</button>
+          <button class="btn ghost" data-act="delete">Delete</button>
+        </td>
+      </tr>
+    `).join("");
+  }
+
+  function renderCalibrationStatus(){
+    const hits = getKnownHits();
+    const stats = computeCalibrationStats(hits, el("defTarget")?.value || "", !!el("tgUseTargetProfiles")?.checked);
+    setStatus(el("calStatus"), [
+      { k:"Known Hits", v: stats.totalHits.toString() },
+      { k:"Target Hits", v: stats.targetHits.toString() },
+      { k:"Profile", v: stats.profile },
+      { k:"Calibration Factor", v: stats.factor.toFixed(3) + "x" },
+      { k:"Model Confidence", v: `${stats.confidencePct}%` }
+    ]);
+    renderKnownHitsTable();
+  }
+
+  function castleBonusFromCount(castles){
+    const c = Number(castles || 0);
+    if (!Number.isFinite(c) || c <= 0) return 0;
+    return Math.sqrt(c) / 100;
+  }
+
+  function normalizeTroopName(name){
+    const n = String(name || "").toLowerCase().trim();
+    if (!n) return null;
+    if (n.includes("foot")) return "footmen";
+    if (n.includes("pike")) return "pikemen";
+    if (n.includes("elite")) return "elites";
+    if (n.includes("crossbow")) return "crossbowmen";
+    if (n.includes("archer")) return "archers";
+    if (n.includes("light") && n.includes("cav")) return "lightCav";
+    if (n.includes("heavy") && n.includes("cav")) return "heavyCav";
+    if (n.includes("knight")) return "knights";
+    if (n.includes("peasant")) return "peasants";
+    if (n.includes("cav")) return "lightCav";
+    return null;
+  }
+
+  function computeCounterReduction(counterCount, targetCount, needRatio){
+    const c = Number(counterCount || 0);
+    const t = Number(targetCount || 0);
+    if (!(c > 0) || !(t > 0) || !(needRatio > 0)) return 0;
+    const needed = t * needRatio;
+    if (!(needed > 0)) return 0;
+    const coverage = c / needed;
+    if (!(coverage > 0)) return 0;
+    const pct = RPS_CONFIG.fullCounterReduction * coverage;
+    return Math.max(0, Math.min(RPS_CONFIG.maxCounterReduction, pct));
+  }
+
+  function buildAttackerUnitBreakdown(){
     const foot = parseNumberLoose(el("atkFoot").value) ?? 0;
     const pike = parseNumberLoose(el("atkPike").value) ?? 0;
     const arc = parseNumberLoose(el("atkArc").value) ?? 0;
-
     const lcav = parseNumberLoose(el("atkLCav").value) ?? 0;
     const hcav = parseNumberLoose(el("atkHCav").value) ?? 0;
     const knights = parseNumberLoose(el("atkKnights").value) ?? 0;
+    return { footmen: foot, pikemen: pike, archers: arc, lightCav: lcav, heavyCav: hcav, knights: knights, elites: 0, crossbowmen: 0 };
+  }
 
-    let power =
-      foot * WEIGHTS.footmen +
-      pike * WEIGHTS.pikemen +
-      arc * WEIGHTS.archers +
-      lcav * WEIGHTS.lightCav +
-      hcav * WEIGHTS.heavyCav +
-      knights * WEIGHTS.knights;
+  function buildDefenderUnitBreakdownFromRows(){
+    const troops = readTroopsFromRows();
+    const out = {
+      peasants: 0,
+      footmen: 0,
+      pikemen: 0,
+      elites: 0,
+      archers: 0,
+      crossbowmen: 0,
+      lightCav: 0,
+      heavyCav: 0,
+      knights: 0
+    };
+    for (const [name, rawCount] of Object.entries(troops || {})) {
+      const key = normalizeTroopName(name);
+      if (!key) continue;
+      const count = Number(rawCount || 0);
+      if (!Number.isFinite(count) || count < 0) continue;
+      out[key] += count;
+    }
+    return out;
+  }
+
+  function groupedCounts(units){
+    return {
+      infantry: (units.footmen || 0) + (units.pikemen || 0) + (units.elites || 0),
+      archers: (units.archers || 0) + (units.crossbowmen || 0),
+      cavalry: (units.lightCav || 0) + (units.heavyCav || 0) + (units.knights || 0),
+      pike: (units.pikemen || 0)
+    };
+  }
+
+  function computeAttackPower(attackerUnits, defenderUnits){
+    const a = attackerUnits;
+    const d = defenderUnits;
+    const ag = groupedCounts(a);
+    const dg = groupedCounts(d);
+
+    let infantryAP =
+      (a.footmen || 0) * ATTACK_WEIGHTS.footmen +
+      (a.pikemen || 0) * ATTACK_WEIGHTS.pikemen +
+      (a.elites || 0) * ATTACK_WEIGHTS.elites;
+    let archerAP =
+      (a.archers || 0) * ATTACK_WEIGHTS.archers +
+      (a.crossbowmen || 0) * ATTACK_WEIGHTS.crossbowmen;
+    let cavAP =
+      (a.lightCav || 0) * ATTACK_WEIGHTS.lightCav +
+      (a.heavyCav || 0) * ATTACK_WEIGHTS.heavyCav +
+      (a.knights || 0) * ATTACK_WEIGHTS.knights;
+
+    // Defender counters attacker.
+    const defPikeVsAtkCav = computeCounterReduction(dg.pike, ag.cavalry, RPS_CONFIG.pikeVsCavNeedRatio);
+    const defCavVsAtkArch = computeCounterReduction(dg.cavalry, ag.archers, RPS_CONFIG.cavVsArchNeedRatio);
+    const defArchVsAtkInf = computeCounterReduction(dg.archers, ag.infantry, RPS_CONFIG.archVsInfNeedRatio);
+
+    cavAP *= (1 - defPikeVsAtkCav);
+    archerAP *= (1 - defCavVsAtkArch);
+    infantryAP *= (1 - defArchVsAtkInf);
+
+    let power = infantryAP + archerAP + cavAP;
 
     const bonusPct = parseNumberLoose(el("atkBonus").value) ?? 0;
     const moralePct = parseNumberLoose(el("atkMorale").value) ?? 0;
@@ -582,9 +1019,71 @@
     power *= (1 + moralePct / 100);
 
     if (el("tgUseResearch").checked) power *= 1.10;
-    if (el("tgUseBonuses").checked) power *= 1.05;
+    if (el("tgUseWrath").checked) power *= 1.05;
+    if (el("tgUseSteedsFury").checked) {
+      const mountedBaseAP =
+        (a.lightCav || 0) * ATTACK_WEIGHTS.lightCav +
+        (a.heavyCav || 0) * ATTACK_WEIGHTS.heavyCav +
+        (a.knights || 0) * ATTACK_WEIGHTS.knights;
+      const mountedRpsAdjusted = mountedBaseAP * (1 - defPikeVsAtkCav);
+      power += (mountedRpsAdjusted * 0.05);
+    }
 
-    return Math.max(0, power);
+    return {
+      power: Math.max(0, power),
+      rps: {
+        defPikeVsAtkCav,
+        defCavVsAtkArch,
+        defArchVsAtkInf
+      }
+    };
+  }
+
+  function computeDefenderPower(defenderUnits, attackerUnits, baseDpOverride){
+    const d = defenderUnits;
+    const a = attackerUnits;
+    const ag = groupedCounts(a);
+    const dg = groupedCounts(d);
+
+    // Attacker counters defender.
+    const atkPikeVsDefCav = computeCounterReduction(ag.pike, dg.cavalry, RPS_CONFIG.pikeVsCavNeedRatio);
+    const atkCavVsDefArch = computeCounterReduction(ag.cavalry, dg.archers, RPS_CONFIG.cavVsArchNeedRatio);
+    const atkArchVsDefInf = computeCounterReduction(ag.archers, dg.infantry, RPS_CONFIG.archVsInfNeedRatio);
+
+    let infantryDP =
+      (d.footmen || 0) * DEFENSE_WEIGHTS.footmen +
+      (d.pikemen || 0) * DEFENSE_WEIGHTS.pikemen +
+      (d.elites || 0) * DEFENSE_WEIGHTS.elites;
+    let archerDP =
+      (d.archers || 0) * DEFENSE_WEIGHTS.archers +
+      (d.crossbowmen || 0) * DEFENSE_WEIGHTS.crossbowmen;
+    let cavDP =
+      (d.lightCav || 0) * DEFENSE_WEIGHTS.lightCav +
+      (d.heavyCav || 0) * DEFENSE_WEIGHTS.heavyCav +
+      (d.knights || 0) * DEFENSE_WEIGHTS.knights;
+    let peasantDP = (d.peasants || 0) * DEFENSE_WEIGHTS.peasants;
+
+    infantryDP *= (1 - atkArchVsDefInf);
+    archerDP *= (1 - atkCavVsDefArch);
+    cavDP *= (1 - atkPikeVsDefCav);
+
+    const troopBasedDp = infantryDP + archerDP + cavDP + peasantDP;
+    const baseDP = (Number(baseDpOverride || 0) > 0) ? Number(baseDpOverride) : troopBasedDp;
+
+    const castles = parseNumberLoose(el("defCastles").value) ?? 0;
+    const castlesMult = 1 + castleBonusFromCount(castles);
+
+    return {
+      baseDP: Math.max(0, baseDP),
+      adjustedDP: Math.max(0, baseDP * castlesMult),
+      troopBasedDp: Math.max(0, troopBasedDp),
+      castlesMult,
+      rps: {
+        atkPikeVsDefCav,
+        atkCavVsDefArch,
+        atkArchVsDefInf
+      }
+    };
   }
 
   function pickOutcome(ratio){
@@ -592,6 +1091,18 @@
       if (ratio >= t.min && ratio < t.max) return t.name;
     }
     return "UNKNOWN";
+  }
+
+  function computeOutcomeConfidencePct(ratio, modelConfidencePct){
+    const r = Number(ratio || 0);
+    const model = Math.max(0, Math.min(100, Number(modelConfidencePct || 0)));
+    const boundaries = [0.95, 1.10, 1.30, 1.60, 2.20];
+    let minDist = Infinity;
+    for (const b of boundaries) {
+      minDist = Math.min(minDist, Math.abs(r - b));
+    }
+    const marginScore = Math.max(0, Math.min(100, (minDist / 0.20) * 100));
+    return Math.round((0.65 * model) + (0.35 * marginScore));
   }
 
   // ---------- WIRING ----------
@@ -719,39 +1230,218 @@
       },
       toggles: {
         useResearch: el("tgUseResearch").checked,
-        useBonuses: el("tgUseBonuses").checked
+        useWrath: el("tgUseWrath").checked,
+        useSteedsFury: el("tgUseSteedsFury").checked,
+        useCalibration: el("tgUseCalibration").checked,
+        useTargetProfiles: el("tgUseTargetProfiles").checked
       }
     };
     await navigator.clipboard.writeText(JSON.stringify(data, null, 2));
     setStatus(el("atkStatus"), [{ k:"Copied", v:"attack JSON to clipboard" }]);
   });
 
+  el("btnAddKnownHit").addEventListener("click", () => {
+    if (!lastCalcSnapshot) {
+      setStatus(el("calStatus"), [{ k:"Save Known Hit", v:"Run Calculate first." }]);
+      return;
+    }
+    const actualOutcome = String(el("khOutcome").value || "").trim();
+    if (!actualOutcome) {
+      setStatus(el("calStatus"), [{ k:"Save Known Hit", v:"Select Observed Outcome first." }]);
+      return;
+    }
+
+    const landTaken = parseNumberLoose(el("khLandTaken").value);
+    const note = String(el("khNote").value || "").trim();
+    const target = String(el("defTarget")?.value || "").trim();
+    const hits = getKnownHits();
+    hits.push({
+      id: `${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+      ts: new Date().toISOString(),
+      target: target,
+      targetNorm: normalizeProfileTarget(target),
+      rawRatio: Number(lastCalcSnapshot.rawRatio || 0),
+      calibratedRatio: Number(lastCalcSnapshot.calibratedRatio || 0),
+      predictedOutcome: String(lastCalcSnapshot.predictedOutcome || ""),
+      actualOutcome: actualOutcome,
+      atkPower: Number(lastCalcSnapshot.atkPower || 0),
+      defDP: Number(lastCalcSnapshot.defDP || 0),
+      landTaken: landTaken ?? null,
+      note: note || null
+    });
+    saveKnownHits(hits);
+    renderCalibrationStatus();
+    setStatus(el("atkStatus"), [
+      { k:"Known Hit", v:"saved" },
+      { k:"Predicted", v:lastCalcSnapshot.predictedOutcome || "—" },
+      { k:"Observed", v:actualOutcome },
+      { k:"Raw Ratio", v:Number(lastCalcSnapshot.rawRatio || 0).toFixed(2) }
+    ]);
+  });
+
+  el("knownHitsBody").addEventListener("click", (ev) => {
+    const btn = ev.target.closest("button[data-act]");
+    if (!btn) return;
+    const tr = ev.target.closest("tr[data-hit-id]");
+    if (!tr) return;
+    const id = String(tr.getAttribute("data-hit-id") || "");
+    if (!id) return;
+
+    const hits = getKnownHits();
+    const idx = hits.findIndex(h => String(h.id) === id);
+    if (idx < 0) return;
+
+    const act = btn.getAttribute("data-act");
+    if (act === "delete") {
+      hits.splice(idx, 1);
+      saveKnownHits(hits);
+      renderCalibrationStatus();
+      return;
+    }
+
+    if (act === "save") {
+      const target = String(tr.querySelector("[data-f='target']")?.value || "").trim();
+      const actualOutcome = String(tr.querySelector("[data-f='actualOutcome']")?.value || "").trim();
+      const landTaken = parseNumberLoose(tr.querySelector("[data-f='landTaken']")?.value);
+      const note = String(tr.querySelector("[data-f='note']")?.value || "").trim();
+      if (!actualOutcome) {
+        setStatus(el("calStatus"), [{ k:"Known Hit", v:"Observed outcome is required." }]);
+        return;
+      }
+      hits[idx] = sanitizeKnownHit({
+        ...hits[idx],
+        target,
+        targetNorm: normalizeProfileTarget(target),
+        actualOutcome,
+        landTaken: landTaken ?? null,
+        note: note || null
+      }) || hits[idx];
+      saveKnownHits(hits);
+      renderCalibrationStatus();
+      setStatus(el("calStatus"), [{ k:"Known Hit", v:"row updated" }]);
+    }
+  });
+
+  el("btnClearKnownHits").addEventListener("click", () => {
+    saveKnownHits([]);
+    renderCalibrationStatus();
+  });
+
+  el("btnExportKnownHitsCsv").addEventListener("click", () => {
+    const hits = getKnownHits();
+    const csv = knownHitsToCsv(hits);
+    const blob = new Blob([csv], { type: "text/csv;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    const dt = new Date().toISOString().replaceAll(":", "-").slice(0, 19);
+    a.href = url;
+    a.download = `kg-known-hits-${dt}.csv`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+    setStatus(el("calStatus"), [{ k:"CSV", v:`exported ${hits.length} row(s)` }]);
+  });
+
+  el("btnImportKnownHitsCsv").addEventListener("click", () => {
+    const f = el("knownHitsCsvFile");
+    if (f) f.click();
+  });
+
+  el("knownHitsCsvFile").addEventListener("change", async (ev) => {
+    const file = ev.target?.files?.[0];
+    if (!file) return;
+    try {
+      const text = await file.text();
+      const incoming = knownHitsFromCsv(text);
+      const existing = getKnownHits();
+      const byId = new Map(existing.map(h => [String(h.id), h]));
+      for (const h of incoming) byId.set(String(h.id), h);
+      const merged = Array.from(byId.values());
+      saveKnownHits(merged);
+      renderCalibrationStatus();
+      setStatus(el("calStatus"), [{ k:"CSV", v:`imported ${incoming.length} row(s), total ${merged.length}` }]);
+    } catch (e) {
+      setStatus(el("calStatus"), [{ k:"CSV Import", v:`failed: ${String(e?.message || e)}` }]);
+    } finally {
+      ev.target.value = "";
+    }
+  });
+
+  el("tgUseCalibration").addEventListener("change", () => {
+    renderCalibrationStatus();
+  });
+  el("tgUseTargetProfiles").addEventListener("change", () => renderCalibrationStatus());
+  el("khShowCurrentOnly").addEventListener("change", () => renderCalibrationStatus());
+  el("defTarget").addEventListener("input", () => renderCalibrationStatus());
+
   el("btnCalc").addEventListener("click", () => {
     const spyText = el("spyPaste").value || "";
     const manualDP = parseNumberLoose(el("defDP").value);
     const parsedDP = extractDefenderDPFromSpyText(spyText);
-    const defDP = manualDP && manualDP > 0 ? manualDP : parsedDP;
+    const baseDpOverride = manualDP && manualDP > 0 ? manualDP : parsedDP;
 
-    if (!defDP || !Number.isFinite(defDP) || defDP <= 0) {
+    const attackerUnits = buildAttackerUnitBreakdown();
+    const defenderUnits = buildDefenderUnitBreakdownFromRows();
+    const atk = computeAttackPower(attackerUnits, defenderUnits);
+    const def = computeDefenderPower(defenderUnits, attackerUnits, baseDpOverride);
+
+    if (!(def.adjustedDP > 0)) {
       setStatus(el("atkStatus"), [
         { k:"Calc", v:"failed" },
-        { k:"Reason", v:"Paste a full Spy Report with Approximate defensive power, or enter Defender DP override." }
+        { k:"Reason", v:"Need defender DP from spy/manual input, or defender troop rows to derive DP." }
       ]);
       return;
     }
 
-    const atkPower = computeAttackPower();
-    const ratio = atkPower / defDP;
+    const atkPower = atk.power;
+    const defDP = def.adjustedDP;
+    const rawRatio = atkPower / Math.max(1, defDP);
+    const knownHits = getKnownHits();
+    const calStats = computeCalibrationStats(
+      knownHits,
+      el("defTarget")?.value || "",
+      !!el("tgUseTargetProfiles")?.checked
+    );
+    const calFactor = el("tgUseCalibration").checked ? calStats.factor : 1;
+    const ratio = rawRatio * calFactor;
     const outcome = pickOutcome(ratio);
+    const outcomeConfidencePct = computeOutcomeConfidencePct(ratio, calStats.confidencePct);
+
+    lastCalcSnapshot = {
+      ts: new Date().toISOString(),
+      rawRatio,
+      calibratedRatio: ratio,
+      calibrationFactor: calFactor,
+      calibrationProfile: calStats.profile,
+      calibrationConfidencePct: calStats.confidencePct,
+      predictedOutcome: outcome,
+      atkPower,
+      defDP
+    };
 
     setStatus(el("atkStatus"), [
       { k:"Attack Power", v: Math.round(atkPower).toLocaleString() },
-      { k:"Defender DP", v: defDP.toLocaleString() },
-      { k:"Ratio (A/D)", v: ratio.toFixed(2) },
+      { k:"Defender DP (base)", v: Math.round(def.baseDP).toLocaleString() },
+      { k:"Defender DP (castles)", v: Math.round(defDP).toLocaleString() },
+      { k:"Raw Ratio (A/D)", v: rawRatio.toFixed(2) },
+      { k:"Calibrated Ratio", v: ratio.toFixed(2) },
       { k:"Predicted Result", v: outcome },
-      { k:"DP Source", v: manualDP && manualDP > 0 ? "manual override" : "spy report" }
+      { k:"Outcome Confidence", v: `${outcomeConfidencePct}%` },
+      { k:"DP Source", v: manualDP && manualDP > 0 ? "manual override" : (parsedDP && parsedDP > 0 ? "spy report" : "troop-derived") },
+      { k:"Calibration", v: `${calFactor.toFixed(3)}x (${calStats.profile}, ${calStats.activeSamples} sample${calStats.activeSamples === 1 ? "" : "s"})` },
+      { k:"Model Confidence", v: `${calStats.confidencePct}%` },
+      { k:"RPS Def Pike->Atk Cav", v: `${(atk.rps.defPikeVsAtkCav * 100).toFixed(1)}%` },
+      { k:"RPS Def Cav->Atk Arch", v: `${(atk.rps.defCavVsAtkArch * 100).toFixed(1)}%` },
+      { k:"RPS Def Arch->Atk Inf", v: `${(atk.rps.defArchVsAtkInf * 100).toFixed(1)}%` },
+      { k:"RPS Atk Pike->Def Cav", v: `${(def.rps.atkPikeVsDefCav * 100).toFixed(1)}%` },
+      { k:"RPS Atk Cav->Def Arch", v: `${(def.rps.atkCavVsDefArch * 100).toFixed(1)}%` },
+      { k:"RPS Atk Arch->Def Inf", v: `${(def.rps.atkArchVsDefInf * 100).toFixed(1)}%` },
+      { k:"Castle Bonus", v: `${((def.castlesMult - 1) * 100).toFixed(2)}%` }
     ]);
   });
+
+  renderCalibrationStatus();
 </script>
 </body>
 </html>
