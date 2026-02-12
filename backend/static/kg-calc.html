@@ -177,6 +177,7 @@
       <label class="pill"><input id="tgUseSteedsFury" type="checkbox"> Steed's Fury (+5% mounted attack)</label>
       <label class="pill"><input id="tgUseCalibration" type="checkbox" checked> Use Known Hit Calibration</label>
       <label class="pill"><input id="tgUseTargetProfiles" type="checkbox" checked> Prefer Target Profiles</label>
+      <label class="pill"><input id="tgUseTargetResearch" type="checkbox" checked> Use Target Research</label>
       <label class="pill"><input id="tgCompact" type="checkbox" checked> Compact Rows</label>
       <label class="pill"><input id="tgLockDef" type="checkbox"> Lock Defending (no autofill overwrite)</label>
     </div>
@@ -632,13 +633,43 @@
     maxCounterReduction: 0.40     // hard cap for over-coverage
   };
 
+  const TARGET_RESEARCH_RULES = [
+    { name: "Horse Breeding", affects: "cavalry", rate: 0.005, ap: true, dp: false },
+    { name: "War Horse", affects: "cavalry", rate: 0.005, ap: true, dp: false },
+    { name: "City Walls", affects: "all", rate: 0.0025, ap: false, dp: true },
+    { name: "Curtain Walls", affects: "castles", rate: 0.01, ap: false, dp: true },
+    { name: "Improved Castles (Mot and Bailey)", affects: "castles", rate: 0.01, ap: false, dp: true },
+    { name: "Improved Defences", affects: "castles", rate: 0.01, ap: false, dp: true },
+    { name: "Moats", affects: "castles", rate: 0.01, ap: false, dp: true },
+    { name: "Palisades", affects: "all", rate: 0.0025, ap: false, dp: true },
+    { name: "Roads", affects: "all", rate: 0.0025, ap: false, dp: false },
+    { name: "Good Medical Practice", affects: "all", rate: 0.005, ap: false, dp: false },
+    { name: "Herbalism", affects: "all", rate: 0.005, ap: false, dp: false },
+    { name: "Hospitals", affects: "all", rate: 0.005, ap: false, dp: false },
+    { name: "Medicine", affects: "all", rate: 0.005, ap: false, dp: false },
+    { name: "Advanced Weapon Design", affects: "all", rate: 0.0025, ap: true, dp: true },
+    { name: "Better Training Methods", affects: "all", rate: 0.0025, ap: true, dp: true },
+    { name: "Improved Weapon Design", affects: "all", rate: 0.0025, ap: true, dp: true },
+    { name: "Lance Formation", affects: "cavalry", rate: 0.01, ap: false, dp: true },
+    { name: "Leadership Training", affects: "all", rate: 0.0025, ap: false, dp: true },
+    { name: "Loose Order Formation", affects: "all", rate: 0.01, ap: false, dp: true },
+    { name: "Military Encampment", affects: "all", rate: 0.01, ap: true, dp: false },
+    { name: "Phlanx", affects: "infantry", rate: 0.01, ap: false, dp: true },
+    { name: "Sharpshooter", affects: "archers", rate: 0.01, ap: false, dp: true },
+    { name: "Tactics", affects: "all", rate: 0.0025, ap: true, dp: false },
+  ];
+
+  const TARGET_RESEARCH_CACHE = new Map();
+
   const OUTCOME_THRESHOLDS = [
-    { name: "FAIL / LOSS", min: 0.0, max: 0.95 },
-    { name: "STALEMATE", min: 0.95, max: 1.10 },
-    { name: "MINOR VICTORY", min: 1.10, max: 1.30 },
-    { name: "VICTORY", min: 1.30, max: 1.60 },
-    { name: "MAJOR VICTORY", min: 1.60, max: 2.20 },
-    { name: "OVERWHELMING VICTORY", min: 2.20, max: Infinity },
+    { name: "FLEE", min: 0.0, max: 0.25, landDown: null, landUp: null },
+    { name: "MAJOR LOSS", min: 0.25, max: 0.75, landDown: null, landUp: null },
+    { name: "MINOR LOSS", min: 0.75, max: 0.95, landDown: null, landUp: null },
+    { name: "STALEMATE", min: 0.95, max: 1.15, landDown: 0.5, landUp: 1.0 },
+    { name: "MINOR VICTORY", min: 1.15, max: 1.40, landDown: 1.0, landUp: 2.0 },
+    { name: "VICTORY", min: 1.40, max: 2.50, landDown: 1.75, landUp: 3.5 },
+    { name: "MAJOR VICTORY", min: 2.50, max: 5.0, landDown: 2.5, landUp: 5.0 },
+    { name: "OVERWHELMING VICTORY", min: 5.0, max: Infinity, landDown: 3.5, landUp: 7.0 },
   ];
 
   const CAL_STORAGE_KEY = "kg_calc_known_hits_v1";
@@ -907,6 +938,80 @@
     renderKnownHitsTable();
   }
 
+  function normalizeResearchName(name){
+    return String(name || "")
+      .toLowerCase()
+      .replace(/[\(\)\[\]\{\}\.,:'"`]/g, " ")
+      .replace(/\s+/g, " ")
+      .trim();
+  }
+
+  function computeTargetResearchBonuses(levels){
+    const bonuses = {
+      allPct: 0,
+      infantryPct: 0,
+      archersPct: 0,
+      cavalryPct: 0,
+      castlesPct: 0,
+      matched: []
+    };
+    const rules = TARGET_RESEARCH_RULES.map(r => ({ ...r, norm: normalizeResearchName(r.name) }));
+
+    for (const [rawName, rawLvl] of Object.entries(levels || {})) {
+      const lvl = Number(rawLvl || 0);
+      if (!(lvl > 0)) continue;
+      const n = normalizeResearchName(rawName);
+      const rule = rules.find(r => n === r.norm || n.includes(r.norm) || r.norm.includes(n));
+      if (!rule) continue;
+
+      const pct = rule.rate * lvl;
+      bonuses.matched.push({ name: rule.name, level: lvl, pct, dp: rule.dp, ap: rule.ap, affects: rule.affects });
+
+      if (!rule.dp) continue;
+      if (rule.affects === "all") bonuses.allPct += pct;
+      else if (rule.affects === "infantry") bonuses.infantryPct += pct;
+      else if (rule.affects === "archers") bonuses.archersPct += pct;
+      else if (rule.affects === "cavalry") bonuses.cavalryPct += pct;
+      else if (rule.affects === "castles") bonuses.castlesPct += pct;
+    }
+    return bonuses;
+  }
+
+  async function fetchTargetResearchProfile(target){
+    const t = String(target || "").trim();
+    const norm = normalizeProfileTarget(t);
+    if (!norm) return { target: t, levels: {}, bonuses: computeTargetResearchBonuses({}), reportsScanned: 0 };
+    if (TARGET_RESEARCH_CACHE.has(norm)) return TARGET_RESEARCH_CACHE.get(norm);
+
+    const profile = { target: t, levels: {}, bonuses: computeTargetResearchBonuses({}), reportsScanned: 0 };
+    try {
+      const res = await fetch(`/api/kingdoms/${encodeURIComponent(t)}/spy-reports?limit=30`, { credentials: "include" });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || !Array.isArray(data?.reports)) {
+        TARGET_RESEARCH_CACHE.set(norm, profile);
+        return profile;
+      }
+
+      const merged = {};
+      for (const r of data.reports) {
+        const rl = r?.parsed?.research_levels || {};
+        for (const [k, v] of Object.entries(rl)) {
+          const lvl = Number(v || 0);
+          if (!(lvl > 0)) continue;
+          merged[k] = Math.max(Number(merged[k] || 0), lvl);
+        }
+      }
+      profile.levels = merged;
+      profile.bonuses = computeTargetResearchBonuses(merged);
+      profile.reportsScanned = data.reports.length;
+    } catch {
+      // keep empty profile
+    }
+
+    TARGET_RESEARCH_CACHE.set(norm, profile);
+    return profile;
+  }
+
   function castleBonusFromCount(castles){
     const c = Number(castles || 0);
     if (!Number.isFinite(c) || c <= 0) return 0;
@@ -1039,11 +1144,12 @@
     };
   }
 
-  function computeDefenderPower(defenderUnits, attackerUnits, baseDpOverride){
+  function computeDefenderPower(defenderUnits, attackerUnits, baseDpOverride, targetResearchBonuses){
     const d = defenderUnits;
     const a = attackerUnits;
     const ag = groupedCounts(a);
     const dg = groupedCounts(d);
+    const rb = targetResearchBonuses || { allPct: 0, infantryPct: 0, archersPct: 0, cavalryPct: 0, castlesPct: 0, matched: [] };
 
     // Attacker counters defender.
     const atkPikeVsDefCav = computeCounterReduction(ag.pike, dg.cavalry, RPS_CONFIG.pikeVsCavNeedRatio);
@@ -1067,17 +1173,39 @@
     archerDP *= (1 - atkCavVsDefArch);
     cavDP *= (1 - atkPikeVsDefCav);
 
-    const troopBasedDp = infantryDP + archerDP + cavDP + peasantDP;
-    const baseDP = (Number(baseDpOverride || 0) > 0) ? Number(baseDpOverride) : troopBasedDp;
+    const troopBasedDpNoResearch = infantryDP + archerDP + cavDP + peasantDP;
+
+    const infantryResearchMult = 1 + rb.allPct + rb.infantryPct;
+    const archerResearchMult = 1 + rb.allPct + rb.archersPct;
+    const cavResearchMult = 1 + rb.allPct + rb.cavalryPct;
+    const peasantResearchMult = 1 + rb.allPct;
+
+    const infantryDpWithResearch = infantryDP * infantryResearchMult;
+    const archerDpWithResearch = archerDP * archerResearchMult;
+    const cavDpWithResearch = cavDP * cavResearchMult;
+    const peasantDpWithResearch = peasantDP * peasantResearchMult;
+
+    const troopBasedDp = infantryDpWithResearch + archerDpWithResearch + cavDpWithResearch + peasantDpWithResearch;
+    const troopResearchMult = troopBasedDpNoResearch > 0 ? (troopBasedDp / troopBasedDpNoResearch) : (1 + rb.allPct);
+
+    const baseDP = (Number(baseDpOverride || 0) > 0)
+      ? (Number(baseDpOverride) * troopResearchMult)
+      : troopBasedDp;
 
     const castles = parseNumberLoose(el("defCastles").value) ?? 0;
-    const castlesMult = 1 + castleBonusFromCount(castles);
+    const castleBaseBonusPct = castleBonusFromCount(castles);
+    const castlesMult = 1 + (castleBaseBonusPct * (1 + rb.castlesPct));
 
     return {
       baseDP: Math.max(0, baseDP),
       adjustedDP: Math.max(0, baseDP * castlesMult),
       troopBasedDp: Math.max(0, troopBasedDp),
+      troopBasedDpNoResearch: Math.max(0, troopBasedDpNoResearch),
+      troopResearchMult: Math.max(0, troopResearchMult),
       castlesMult,
+      castleBaseBonusPct: Math.max(0, castleBaseBonusPct),
+      castleResearchPct: Math.max(0, rb.castlesPct || 0),
+      targetResearchBonuses: rb,
       rps: {
         atkPikeVsDefCav,
         atkCavVsDefArch,
@@ -1088,15 +1216,17 @@
 
   function pickOutcome(ratio){
     for (const t of OUTCOME_THRESHOLDS) {
-      if (ratio >= t.min && ratio < t.max) return t.name;
+      if (ratio >= t.min && ratio < t.max) return t;
     }
-    return "UNKNOWN";
+    return { name: "UNKNOWN", min: 0, max: Infinity, landDown: null, landUp: null };
   }
 
   function computeOutcomeConfidencePct(ratio, modelConfidencePct){
     const r = Number(ratio || 0);
     const model = Math.max(0, Math.min(100, Number(modelConfidencePct || 0)));
-    const boundaries = [0.95, 1.10, 1.30, 1.60, 2.20];
+    const boundaries = OUTCOME_THRESHOLDS
+      .map(t => Number(t.min))
+      .filter(v => Number.isFinite(v) && v > 0);
     let minDist = Infinity;
     for (const b of boundaries) {
       minDist = Math.min(minDist, Math.abs(r - b));
@@ -1233,7 +1363,8 @@
         useWrath: el("tgUseWrath").checked,
         useSteedsFury: el("tgUseSteedsFury").checked,
         useCalibration: el("tgUseCalibration").checked,
-        useTargetProfiles: el("tgUseTargetProfiles").checked
+        useTargetProfiles: el("tgUseTargetProfiles").checked,
+        useTargetResearch: el("tgUseTargetResearch").checked
       }
     };
     await navigator.clipboard.writeText(JSON.stringify(data, null, 2));
@@ -1375,16 +1506,23 @@
   el("khShowCurrentOnly").addEventListener("change", () => renderCalibrationStatus());
   el("defTarget").addEventListener("input", () => renderCalibrationStatus());
 
-  el("btnCalc").addEventListener("click", () => {
+  el("btnCalc").addEventListener("click", async () => {
     const spyText = el("spyPaste").value || "";
     const manualDP = parseNumberLoose(el("defDP").value);
     const parsedDP = extractDefenderDPFromSpyText(spyText);
     const baseDpOverride = manualDP && manualDP > 0 ? manualDP : parsedDP;
+    const targetName = String(el("defTarget")?.value || "").trim();
+    const useTargetResearch = !!el("tgUseTargetResearch")?.checked;
+
+    let targetResearchProfile = { target: targetName, levels: {}, bonuses: computeTargetResearchBonuses({}), reportsScanned: 0 };
+    if (useTargetResearch && targetName) {
+      targetResearchProfile = await fetchTargetResearchProfile(targetName);
+    }
 
     const attackerUnits = buildAttackerUnitBreakdown();
     const defenderUnits = buildDefenderUnitBreakdownFromRows();
     const atk = computeAttackPower(attackerUnits, defenderUnits);
-    const def = computeDefenderPower(defenderUnits, attackerUnits, baseDpOverride);
+    const def = computeDefenderPower(defenderUnits, attackerUnits, baseDpOverride, targetResearchProfile.bonuses);
 
     if (!(def.adjustedDP > 0)) {
       setStatus(el("atkStatus"), [
@@ -1415,10 +1553,16 @@
       calibrationFactor: calFactor,
       calibrationProfile: calStats.profile,
       calibrationConfidencePct: calStats.confidencePct,
-      predictedOutcome: outcome,
+      predictedOutcome: outcome.name,
       atkPower,
       defDP
     };
+
+    const matchedResearch = (targetResearchProfile.bonuses?.matched || []).slice().sort((a, b) => Number(b.pct || 0) - Number(a.pct || 0));
+    const topResearch = matchedResearch.slice(0, 3).map(x => `${x.name} L${x.level}`).join(", ");
+    const landRange = (outcome.landDown != null && outcome.landUp != null)
+      ? `${outcome.landDown.toFixed(2)}%-${outcome.landUp.toFixed(2)}%`
+      : "N/A";
 
     setStatus(el("atkStatus"), [
       { k:"Attack Power", v: Math.round(atkPower).toLocaleString() },
@@ -1426,11 +1570,15 @@
       { k:"Defender DP (castles)", v: Math.round(defDP).toLocaleString() },
       { k:"Raw Ratio (A/D)", v: rawRatio.toFixed(2) },
       { k:"Calibrated Ratio", v: ratio.toFixed(2) },
-      { k:"Predicted Result", v: outcome },
+      { k:"Predicted Result", v: outcome.name },
+      { k:"Land Take Range", v: landRange },
       { k:"Outcome Confidence", v: `${outcomeConfidencePct}%` },
       { k:"DP Source", v: manualDP && manualDP > 0 ? "manual override" : (parsedDP && parsedDP > 0 ? "spy report" : "troop-derived") },
       { k:"Calibration", v: `${calFactor.toFixed(3)}x (${calStats.profile}, ${calStats.activeSamples} sample${calStats.activeSamples === 1 ? "" : "s"})` },
       { k:"Model Confidence", v: `${calStats.confidencePct}%` },
+      { k:"Target Research", v: useTargetResearch ? `${matchedResearch.length} matched / ${targetResearchProfile.reportsScanned} report(s)` : "disabled" },
+      { k:"Research DP Bonus", v: useTargetResearch ? `${((def.troopResearchMult - 1) * 100).toFixed(2)}% troops, ${(def.castleResearchPct * 100).toFixed(2)}% castles` : "0.00%" },
+      { k:"Research Top", v: useTargetResearch ? (topResearch || "None matched") : "disabled" },
       { k:"RPS Def Pike->Atk Cav", v: `${(atk.rps.defPikeVsAtkCav * 100).toFixed(1)}%` },
       { k:"RPS Def Cav->Atk Arch", v: `${(atk.rps.defCavVsAtkArch * 100).toFixed(1)}%` },
       { k:"RPS Def Arch->Atk Inf", v: `${(atk.rps.defArchVsAtkInf * 100).toFixed(1)}%` },

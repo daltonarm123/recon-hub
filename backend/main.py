@@ -429,6 +429,50 @@ def _parse_kv_lines(chunk: str) -> Dict[str, int]:
     return out
 
 
+def _parse_research_levels(text: str) -> Dict[str, int]:
+    chunk = _section(
+        text,
+        "The following technology information was also discovered:",
+        [
+            "The following recent market transactions were also discovered:",
+            "Our spies also found the following information about the",
+            "The following information was found regarding troop movements",
+        ],
+    )
+    if not chunk:
+        return {}
+
+    out: Dict[str, int] = {}
+    for raw_line in chunk.splitlines():
+        line = raw_line.strip().lstrip("-*• ").strip()
+        if not line:
+            continue
+
+        # Common forms:
+        #   Horse Breeding Lv 10
+        #   Horse Breeding level 10
+        #   Horse Breeding: 10
+        m = re.match(r"^(.+?)\s+(?:lv\.?|lvl\.?|level)\s*([0-9]{1,3})\s*$", line, flags=re.I)
+        if not m:
+            m = re.match(r"^([^:]{2,80}?)\s*:\s*([0-9]{1,3})\s*$", line, flags=re.I)
+        if not m:
+            continue
+
+        name = str(m.group(1) or "").strip()
+        try:
+            lvl = int(m.group(2))
+        except Exception:
+            continue
+        if not name or lvl <= 0:
+            continue
+
+        prev = out.get(name, 0)
+        if lvl > prev:
+            out[name] = lvl
+
+    return out
+
+
 def parse_spy_report(text: str) -> Dict[str, Any]:
     target = _grab_line(text, "Target")
     alliance = _grab_line(text, "Alliance")
@@ -478,6 +522,8 @@ def parse_spy_report(text: str) -> Dict[str, Any]:
             continue
         troops[k] = v
 
+    research_levels = _parse_research_levels(text)
+
     return {
         "target": target,
         "alliance": alliance,
@@ -491,6 +537,7 @@ def parse_spy_report(text: str) -> Dict[str, Any]:
         "defender_dp": defender_dp,
         "resources": resources,
         "troops": troops,
+        "research_levels": research_levels,
     }
 
 
@@ -851,6 +898,7 @@ def list_spy_reports(request: Request, kingdom: str, limit: int = 50):
                     "parsed": parsed,
                     "troop_keys": sorted(list((parsed.get("troops") or {}).keys()))[:50],
                     "resource_keys": sorted(list((parsed.get("resources") or {}).keys()))[:50],
+                    "research_keys": sorted(list((parsed.get("research_levels") or {}).keys()))[:100],
                 }
             )
 
