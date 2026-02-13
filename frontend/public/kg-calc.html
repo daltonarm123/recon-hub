@@ -546,6 +546,23 @@
           </div>
 
           <div class="divider"></div>
+          <div class="sectionTitle">Saved Reports</div>
+          <div class="twocol">
+            <div class="rows">
+              <div class="row compact">
+                <div class="lbl">Report Selector</div>
+                <select class="inp" id="defReportSelect"></select>
+              </div>
+            </div>
+            <div class="rows">
+              <div class="btnrow">
+                <button class="btn ghost" id="btnLoadReports">Load Reports For Target</button>
+                <button class="btn ghost" id="btnLoadSelectedReport">Load Selected Report</button>
+              </div>
+            </div>
+          </div>
+
+          <div class="divider"></div>
           <div class="sectionTitle">Defender Troops</div>
 
           <div class="troopList" id="troopList"></div>
@@ -748,6 +765,133 @@
     const m = String(text || "").match(/Approximate defensive power\*?\s*:\s*([0-9,]+)/i);
     if (!m) return null;
     return Number(m[1].replace(/,/g, ""));
+  }
+
+  function formatTs(ts){
+    try{
+      const d = new Date(ts);
+      if (Number.isNaN(d.getTime())) return String(ts || "");
+      const y = d.getUTCFullYear();
+      const m = String(d.getUTCMonth()+1).padStart(2,"0");
+      const dd = String(d.getUTCDate()).padStart(2,"0");
+      const hh = String(d.getUTCHours()).padStart(2,"0");
+      const mm = String(d.getUTCMinutes()).padStart(2,"0");
+      return `${y}-${m}-${dd} ${hh}:${mm} UTC`;
+    } catch {
+      return String(ts || "");
+    }
+  }
+
+  function setReportSelectPlaceholder(msg){
+    const sel = el("defReportSelect");
+    if (!sel) return;
+    sel.innerHTML = `<option value="">${msg}</option>`;
+  }
+
+  function applyParsedSpyToForm(parsed, rawText, lockDef){
+    if (!parsed) return;
+    if (!lockDef) {
+      if (parsed.target != null) el("defTarget").value = parsed.target;
+      if (parsed.alliance != null) el("defAlliance").value = parsed.alliance;
+      if (parsed.ranking != null) el("defRank").value = parsed.ranking;
+      if (parsed.networth != null) el("defNetworth").value = parsed.networth;
+      if (parsed.honour != null) el("defHonour").value = parsed.honour;
+      if (parsed.castles != null) el("defCastles").value = parsed.castles;
+      const parsedDP = extractDefenderDPFromSpyText(rawText || "");
+      if (parsedDP != null) el("defDP").value = parsedDP;
+
+      if (parsed.resources?.gold != null) el("resGold").value = parsed.resources.gold;
+      if (parsed.resources?.food != null) el("resFood").value = parsed.resources.food;
+      if (parsed.resources?.wood != null) el("resWood").value = parsed.resources.wood;
+      if (parsed.resources?.stone != null) el("resStone").value = parsed.resources.stone;
+      if (parsed.resources?.horses != null) el("resHorses").value = parsed.resources.horses;
+
+      const blue = parsed.resources?.blueGems;
+      const green = parsed.resources?.greenGems;
+      if (blue != null || green != null) el("resGems").value = `${blue ?? ""} / ${green ?? ""}`.trim();
+
+      clearTroopRows();
+      const troopEntries = Object.entries(parsed.troops || {});
+      if (troopEntries.length) {
+        for (const [name, count] of troopEntries) addTroopRow(name, count);
+      } else {
+        addTroopRow("", 0);
+        addTroopRow("", 0);
+      }
+    }
+
+    const dp = extractDefenderDPFromSpyText(rawText || "");
+    setStatus(el("defStatus"), [
+      { k:"Target", v: parsed.target ?? "—" },
+      { k:"Castles", v: parsed.castles ?? "—" },
+      { k:"Defender DP", v: dp != null ? dp.toLocaleString() : "—" },
+      { k:"Troop lines", v: Object.keys(parsed.troops || {}).length || "0" },
+      { k:"Autofill", v: lockDef ? "LOCKED" : "applied" }
+    ]);
+  }
+
+  async function loadReportsForTarget(limit=20){
+    const target = String(el("defTarget")?.value || "").trim();
+    if (!target) {
+      setReportSelectPlaceholder("Enter target first");
+      return [];
+    }
+    try {
+      const res = await fetch(`/api/kingdoms/${encodeURIComponent(target)}/spy-reports?limit=${encodeURIComponent(String(limit))}`, { credentials: "include" });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || !Array.isArray(data?.reports)) {
+        setReportSelectPlaceholder("No reports found");
+        return [];
+      }
+      const reports = data.reports;
+      const sel = el("defReportSelect");
+      const options = reports.map(r => {
+        const id = Number(r?.id || 0);
+        const ts = formatTs(r?.created_at);
+        const dp = Number(r?.parsed?.defender_dp || r?.defense_power || 0);
+        const castles = Number(r?.parsed?.castles || r?.castles || 0);
+        const result = String(r?.parsed?.result_level || "").trim();
+        const lbl = `#${id} • ${ts} • DP ${dp ? dp.toLocaleString() : "N/A"} • C ${castles || 0}${result ? ` • ${result}` : ""}`;
+        return `<option value="${id}">${lbl}</option>`;
+      });
+      if (!options.length) {
+        setReportSelectPlaceholder("No reports found");
+        return [];
+      }
+      sel.innerHTML = options.join("");
+      setStatus(el("defStatus"), [{ k:"Saved Reports", v:`Loaded ${reports.length} for ${target}` }]);
+      return reports;
+    } catch (e) {
+      setReportSelectPlaceholder("Failed to load reports");
+      setStatus(el("defStatus"), [{ k:"Saved Reports", v:`Load failed: ${String(e?.message || e)}` }]);
+      return [];
+    }
+  }
+
+  async function loadSpyReportById(reportId){
+    const id = Number(reportId || 0);
+    if (!(id > 0)) return null;
+    const res = await fetch(`/api/spy-reports/${id}`, { credentials: "include" });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok || !data?.report) throw new Error(String(data?.detail || `HTTP ${res.status}`));
+    const rep = data.report;
+    const raw = String(rep.raw_text || "");
+    const parsed = raw ? parseKgSpyReport(raw) : (rep.parsed || {});
+    if (raw) el("spyPaste").value = raw;
+    const lock = !!el("tgLockDef")?.checked;
+    applyParsedSpyToForm(parsed, raw, lock);
+    if (parsed?.target && !lock) {
+      el("defTarget").value = parsed.target;
+      await loadReportsForTarget();
+      const sel = el("defReportSelect");
+      if (sel) sel.value = String(id);
+    }
+    setStatus(el("defStatus"), [
+      { k:"Loaded Report", v:`#${id}` },
+      { k:"Target", v: parsed?.target || "—" },
+      { k:"Captured", v: formatTs(rep.created_at) }
+    ]);
+    return rep;
   }
 
   // ---------- BATTLE MATH ----------
@@ -1749,6 +1893,7 @@
     clearTroopRows();
     addTroopRow("", 0);
     addTroopRow("", 0);
+    setReportSelectPlaceholder("Load reports for target...");
     setStatus(el("defStatus"), [{ k:"Defender", v:"cleared" }]);
   });
 
@@ -1767,48 +1912,25 @@
 
     const parsed = parseKgSpyReport(txt);
     const lock = el("tgLockDef").checked;
-
-    if (!lock) {
-      if (parsed.target != null) el("defTarget").value = parsed.target;
-      if (parsed.alliance != null) el("defAlliance").value = parsed.alliance;
-      if (parsed.ranking != null) el("defRank").value = parsed.ranking;
-      if (parsed.networth != null) el("defNetworth").value = parsed.networth;
-      if (parsed.honour != null) el("defHonour").value = parsed.honour;
-      if (parsed.castles != null) el("defCastles").value = parsed.castles;
-      const parsedDP = extractDefenderDPFromSpyText(txt);
-      if (parsedDP != null) el("defDP").value = parsedDP;
-
-      if (parsed.resources.gold != null) el("resGold").value = parsed.resources.gold;
-      if (parsed.resources.food != null) el("resFood").value = parsed.resources.food;
-      if (parsed.resources.wood != null) el("resWood").value = parsed.resources.wood;
-      if (parsed.resources.stone != null) el("resStone").value = parsed.resources.stone;
-      if (parsed.resources.horses != null) el("resHorses").value = parsed.resources.horses;
-
-      const blue = parsed.resources.blueGems;
-      const green = parsed.resources.greenGems;
-      if (blue != null || green != null) el("resGems").value = `${blue ?? ""} / ${green ?? ""}`.trim();
-
-      clearTroopRows();
-      const troopEntries = Object.entries(parsed.troops || {});
-      if (troopEntries.length) {
-        for (const [name, count] of troopEntries) addTroopRow(name, count);
-      } else {
-        addTroopRow("", 0);
-        addTroopRow("", 0);
-      }
-    }
-
-    const dp = extractDefenderDPFromSpyText(txt);
-
-    setStatus(el("defStatus"), [
-      { k:"Target", v: parsed.target ?? "—" },
-      { k:"Castles", v: parsed.castles ?? "—" },
-      { k:"Defender DP", v: dp != null ? dp.toLocaleString() : "—" },
-      { k:"Troop lines", v: Object.keys(parsed.troops || {}).length || "0" },
-      { k:"Autofill", v: lock ? "LOCKED" : "applied" }
-    ]);
+    applyParsedSpyToForm(parsed, txt, lock);
   });
 
+  el("btnLoadReports").addEventListener("click", async () => {
+    await loadReportsForTarget();
+  });
+
+  el("btnLoadSelectedReport").addEventListener("click", async () => {
+    const id = Number(el("defReportSelect")?.value || 0);
+    if (!(id > 0)) {
+      setStatus(el("defStatus"), [{ k:"Saved Reports", v:"Select a report first." }]);
+      return;
+    }
+    try {
+      await loadSpyReportById(id);
+    } catch (e) {
+      setStatus(el("defStatus"), [{ k:"Saved Reports", v:`Load failed: ${String(e?.message || e)}` }]);
+    }
+  });
   el("btnCopyDef").addEventListener("click", async () => {
     const data = {
       target: el("defTarget").value.trim(),
@@ -2260,6 +2382,7 @@
 
   (async () => {
     populateTemplateDropdown();
+    setReportSelectPlaceholder("Load reports for target...");
     await pullKnownHitsFromServer();
     try {
       await loadUserResearch();
@@ -2276,7 +2399,24 @@
     } catch {}
     renderUserResearchTable();
     renderCalibrationStatus();
+
+    const qp = new URLSearchParams(window.location.search || "");
+    const qKingdom = String(qp.get("kingdom") || "").trim();
+    const qReportId = Number(qp.get("report_id") || 0);
+    if (qKingdom) {
+      el("defTarget").value = qKingdom;
+    }
+    try {
+      if (qReportId > 0) {
+        await loadSpyReportById(qReportId);
+      } else if (qKingdom) {
+        await loadReportsForTarget();
+      }
+    } catch (e) {
+      setStatus(el("defStatus"), [{ k:"Deep Link", v:`Load failed: ${String(e?.message || e)}` }]);
+    }
   })();
 </script>
 </body>
 </html>
+
