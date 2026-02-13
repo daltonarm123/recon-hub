@@ -5,37 +5,69 @@
   <meta name="viewport" content="width=device-width,initial-scale=1" />
   <title>KG Battle Calculator (UI v2)</title>
   <style>
+    @import url('https://fonts.googleapis.com/css2?family=Cinzel:wght@500;700&family=Crimson+Text:wght@400;600&display=swap');
     :root{
-      --bg:#0b1020;
-      --panel:#0f1730;
-      --panel2:#0c1328;
-      --text:#e7ecff;
-      --muted:#9aa6d6;
-      --border:rgba(255,255,255,.10);
-      --accent:#5aa0ff;
-      --danger:#ff6b6b;
-      --ok:#58d68d;
-      --radius:14px;
+      --bg:#1b1711;
+      --panel:#2b2319;
+      --panel2:#231d15;
+      --text:#efe2ca;
+      --muted:#bea87d;
+      --border:rgba(207,179,122,.28);
+      --accent:#c59a52;
+      --danger:#b3573f;
+      --ok:#7ea264;
+      --radius:12px;
       --pad:14px;
       --rowH:34px;
-      --font:ui-sans-serif,system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial;
+      --font:'Crimson Text', Georgia, serif;
+      --font-head:'Cinzel', 'Times New Roman', serif;
     }
     *{ box-sizing:border-box }
     body{
       margin:0;
       font-family:var(--font);
-      background:radial-gradient(1200px 600px at 20% 0%, #101b44 0%, var(--bg) 55%);
+      background:
+        radial-gradient(1400px 700px at 20% -10%, rgba(147,111,58,.22) 0%, rgba(27,23,17,0) 60%),
+        radial-gradient(1000px 500px at 85% 8%, rgba(85,65,38,.16) 0%, rgba(27,23,17,0) 65%),
+        linear-gradient(180deg, #1f1912 0%, #15110d 100%);
       color:var(--text);
+      position:relative;
+      min-height:100vh;
     }
-    .wrap{ max-width:1200px; margin:20px auto; padding:0 14px 28px; }
+    body::before{
+      content:"";
+      position:fixed;
+      inset:0;
+      pointer-events:none;
+      opacity:.22;
+      background:
+        repeating-linear-gradient(
+          45deg,
+          rgba(255,235,193,.10) 0px,
+          rgba(255,235,193,.10) 1px,
+          transparent 1px,
+          transparent 9px
+        );
+    }
+    body::after{
+      content:"";
+      position:fixed;
+      inset:0;
+      pointer-events:none;
+      opacity:.35;
+      background:
+        linear-gradient(90deg, rgba(0,0,0,.45) 0%, rgba(0,0,0,0) 8%, rgba(0,0,0,0) 92%, rgba(0,0,0,.45) 100%),
+        linear-gradient(180deg, rgba(0,0,0,.35) 0%, rgba(0,0,0,0) 12%, rgba(0,0,0,0) 88%, rgba(0,0,0,.4) 100%);
+    }
+    .wrap{ max-width:1200px; margin:20px auto; padding:0 14px 28px; position:relative; z-index:1; }
     .topbar{ display:flex; gap:12px; align-items:flex-start; justify-content:space-between; margin-bottom:12px; }
     .title{ display:flex; flex-direction:column; gap:2px; }
-    .title h1{ margin:0; font-size:18px; letter-spacing:.2px; }
-    .title .sub{ color:var(--muted); font-size:12px; }
+    .title h1{ margin:0; font-size:21px; letter-spacing:.6px; font-family:var(--font-head); text-transform:uppercase; }
+    .title .sub{ color:var(--muted); font-size:13px; }
 
     .pillrow{ display:flex; flex-wrap:wrap; gap:8px; align-items:center; justify-content:flex-end; }
     .pill{
-      background:rgba(255,255,255,.06);
+      background:rgba(116,90,53,.25);
       border:1px solid var(--border);
       padding:6px 10px;
       border-radius:999px;
@@ -51,15 +83,17 @@
     @media (max-width: 980px){ .grid{ grid-template-columns:1fr; } }
 
     .card{
-      background:linear-gradient(180deg, rgba(255,255,255,.04), rgba(255,255,255,.02));
+      background:
+        linear-gradient(180deg, rgba(255,239,206,.06), rgba(255,239,206,.03)),
+        linear-gradient(180deg, rgba(0,0,0,.22), rgba(0,0,0,.22));
       border:1px solid var(--border);
       border-radius:var(--radius);
       overflow:hidden;
-      box-shadow:0 10px 30px rgba(0,0,0,.25);
+      box-shadow:0 12px 34px rgba(0,0,0,.42), inset 0 1px 0 rgba(255,235,190,.12);
     }
     .cardHeader{
       padding:12px 14px;
-      background:rgba(255,255,255,.03);
+      background:linear-gradient(180deg, rgba(145,110,60,.30), rgba(90,68,39,.24));
       border-bottom:1px solid var(--border);
       display:flex;
       align-items:center;
@@ -67,7 +101,7 @@
       gap:10px;
     }
     .cardHeader .h{ display:flex; flex-direction:column; gap:2px; }
-    .cardHeader .h .t{ font-weight:700; font-size:13px; }
+    .cardHeader .h .t{ font-weight:700; font-size:13px; font-family:var(--font-head); letter-spacing:.4px; }
     .cardHeader .h .d{ font-size:12px; color:var(--muted); }
 
     .cardBody{ padding:12px 14px; }
@@ -90,7 +124,7 @@
     }
     .inp,.ta{
       width:100%;
-      background:rgba(0,0,0,.25);
+      background:rgba(18,14,10,.72);
       border:1px solid var(--border);
       border-radius:10px;
       padding:8px 10px;
@@ -108,17 +142,17 @@
 
     .btnrow{ display:flex; gap:10px; flex-wrap:wrap; margin-top:10px; }
     .btn{
-      background:rgba(90,160,255,.16);
-      border:1px solid rgba(90,160,255,.35);
-      color:var(--text);
+      background:linear-gradient(180deg, rgba(167,126,67,.34), rgba(117,84,42,.24));
+      border:1px solid rgba(216,175,108,.50);
+      color:#f9e9c8;
       padding:8px 10px;
       border-radius:10px;
       cursor:pointer;
       font-size:12px;
     }
-    .btn:hover{ border-color:rgba(90,160,255,.6); }
+    .btn:hover{ border-color:rgba(231,193,132,.75); }
     .btn.ghost{
-      background:rgba(255,255,255,.06);
+      background:rgba(122,95,56,.20);
       border:1px solid var(--border);
       color:var(--muted);
     }
@@ -135,7 +169,7 @@
       padding:6px 10px;
       border-radius:999px;
       border:1px solid var(--border);
-      background:rgba(255,255,255,.04);
+      background:rgba(86,64,36,.34);
     }
     .kv b{ color:var(--text); font-weight:700; }
 
@@ -143,9 +177,10 @@
     .sectionTitle{
       margin:0 0 8px;
       font-size:12px;
-      color:var(--muted);
-      letter-spacing:.2px;
+      color:#d5ba89;
+      letter-spacing:.6px;
       text-transform:uppercase;
+      font-family:var(--font-head);
     }
 
     .twocol{ display:grid; grid-template-columns:1fr 1fr; gap:10px; }
@@ -154,7 +189,7 @@
     .troopList{ display:flex; flex-direction:column; gap:6px; margin-top:6px; }
     .troopItem{ display:grid; grid-template-columns:1.3fr 1fr; gap:10px; align-items:center; }
 
-    .hint{ font-size:11px; color:rgba(231,236,255,.65); }
+    .hint{ font-size:12px; color:rgba(232,208,163,.82); }
 
     /* SAFETY: FORCE DESKTOP SIDE-BY-SIDE */
     @media (min-width: 1100px){

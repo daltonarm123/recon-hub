@@ -1,13 +1,17 @@
-@import url("https://fonts.googleapis.com/css2?family=Manrope:wght@400;600;700;800&display=swap");
+@import url("https://fonts.googleapis.com/css2?family=Cinzel:wght@500;700;800&family=Crimson+Text:wght@400;600;700&display=swap");
 
 :root {
-  --rh-bg-a: #081229;
-  --rh-bg-b: #0d1a35;
-  --rh-bg-c: #070d1c;
-  --rh-text: #e7ecff;
-  --rh-muted: rgba(231, 236, 255, 0.72);
-  --rh-border: rgba(255, 255, 255, 0.12);
-  --rh-glow: rgba(66, 154, 255, 0.16);
+  --rh-bg-a: #201912;
+  --rh-bg-b: #17110c;
+  --rh-bg-c: #100c08;
+  --rh-text: #efe2ca;
+  --rh-muted: rgba(214, 191, 149, 0.82);
+  --rh-border: rgba(205, 172, 111, 0.30);
+  --rh-glow: rgba(189, 143, 70, 0.20);
+  --rh-accent: #c59a52;
+  --rh-accent-soft: rgba(197, 154, 82, 0.24);
+  --rh-head: "Cinzel", "Times New Roman", serif;
+  --rh-body: "Crimson Text", Georgia, serif;
 }
 
 * {
@@ -22,12 +26,40 @@ body,
 
 body {
   margin: 0;
-  font-family: "Manrope", ui-sans-serif, system-ui, sans-serif;
+  font-family: var(--rh-body);
   color: var(--rh-text);
   background:
-    radial-gradient(1300px 700px at -15% -15%, #143a71 0%, transparent 55%),
-    radial-gradient(1000px 600px at 120% 10%, #1a2a57 0%, transparent 50%),
+    radial-gradient(1300px 700px at -15% -15%, rgba(123, 92, 49, .40) 0%, transparent 55%),
+    radial-gradient(1000px 600px at 120% 10%, rgba(87, 66, 38, .32) 0%, transparent 50%),
     linear-gradient(180deg, var(--rh-bg-a), var(--rh-bg-b) 45%, var(--rh-bg-c));
+  position: relative;
+}
+
+body::before {
+  content: "";
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  opacity: .18;
+  background:
+    repeating-linear-gradient(
+      45deg,
+      rgba(255, 230, 185, .10) 0,
+      rgba(255, 230, 185, .10) 1px,
+      transparent 1px,
+      transparent 8px
+    );
+}
+
+body::after {
+  content: "";
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  opacity: .32;
+  background:
+    linear-gradient(90deg, rgba(0,0,0,.48) 0%, rgba(0,0,0,0) 8%, rgba(0,0,0,0) 92%, rgba(0,0,0,.48) 100%),
+    linear-gradient(180deg, rgba(0,0,0,.36) 0%, rgba(0,0,0,0) 12%, rgba(0,0,0,0) 88%, rgba(0,0,0,.42) 100%);
 }
 
 a,

@@ -107,36 +107,38 @@ function useAuthMe(refreshKey = 0) {
 }
 
 const navLink = {
-    color: "#e7ecff",
+    color: "var(--rh-text)",
     textDecoration: "none",
     padding: "8px 12px",
     borderRadius: 10,
-    border: "1px solid rgba(255,255,255,.14)",
-    background: "linear-gradient(180deg, rgba(255,255,255,.09), rgba(255,255,255,.04))",
+    border: "1px solid var(--rh-border)",
+    background: "linear-gradient(180deg, rgba(173,132,72,.30), rgba(111,82,42,.20))",
     fontSize: 12,
     fontWeight: 700,
+    letterSpacing: ".2px",
 };
 
 const navLinkActive = {
-    border: "1px solid rgba(90,160,255,.55)",
-    background: "linear-gradient(180deg, rgba(90,160,255,.26), rgba(90,160,255,.12))",
+    border: "1px solid rgba(223,188,127,.68)",
+    background: "linear-gradient(180deg, rgba(197,154,82,.44), rgba(132,96,47,.26))",
 };
 
 const navGroup = {
-    border: "1px solid rgba(255,255,255,.10)",
+    border: "1px solid var(--rh-border)",
     borderRadius: 10,
     padding: 8,
-    background: "rgba(0,0,0,.15)",
+    background: "rgba(60,45,25,.25)",
     minWidth: 210,
 };
 
 const navGroupLabel = {
     fontSize: 10,
     textTransform: "uppercase",
-    letterSpacing: 0.35,
-    color: "rgba(231,236,255,.62)",
+    letterSpacing: 0.6,
+    color: "var(--rh-muted)",
     marginBottom: 6,
     fontWeight: 700,
+    fontFamily: "var(--rh-head)",
 };
 
 function Layout({ children }) {
@@ -162,7 +164,7 @@ function Layout({ children }) {
     }
 
     return (
-        <div style={{ minHeight: "100vh", background: "transparent", color: "#e7ecff" }}>
+        <div style={{ minHeight: "100vh", background: "transparent", color: "var(--rh-text)" }}>
             <div style={{ maxWidth: 1240, margin: "0 auto", padding: 20 }}>
                 <header
                     style={{
@@ -171,16 +173,16 @@ function Layout({ children }) {
                         justifyContent: "space-between",
                         gap: 12,
                         flexWrap: "wrap",
-                        background: "rgba(255,255,255,.03)",
-                        border: "1px solid rgba(255,255,255,.11)",
+                        background: "linear-gradient(180deg, rgba(153,116,62,.26), rgba(89,66,36,.20))",
+                        border: "1px solid var(--rh-border)",
                         borderRadius: 14,
                         padding: 12,
-                        boxShadow: "0 14px 36px rgba(0,0,0,.2)",
+                        boxShadow: "0 14px 36px rgba(0,0,0,.34)",
                     }}
                 >
                     <div>
-                        <div style={{ fontWeight: 800, letterSpacing: 0.2 }}>Recon Hub</div>
-                        <div style={{ fontSize: 12, color: "rgba(231,236,255,.65)" }}>
+                        <div style={{ fontWeight: 800, letterSpacing: 0.4, fontFamily: "var(--rh-head)", textTransform: "uppercase" }}>Recon Hub</div>
+                        <div style={{ fontSize: 12, color: "var(--rh-muted)" }}>
                             KG tools + recon database views
                         </div>
                     </div>
@@ -242,7 +244,7 @@ function Layout({ children }) {
                 <div
                     style={{
                         height: 1,
-                        background: "rgba(255,255,255,.12)",
+                        background: "var(--rh-border)",
                         margin: "14px 0",
                     }}
                 />
@@ -256,17 +258,17 @@ function Card({ title, subtitle, children, right }) {
     return (
         <div
             style={{
-                border: "1px solid rgba(255,255,255,.13)",
+                border: "1px solid var(--rh-border)",
                 borderRadius: 14,
                 overflow: "hidden",
-                background: "linear-gradient(180deg, rgba(255,255,255,.08), rgba(255,255,255,.03))",
-                boxShadow: "0 16px 40px rgba(0,0,0,.25)",
+                background: "linear-gradient(180deg, rgba(255,236,201,.08), rgba(255,236,201,.04))",
+                boxShadow: "0 16px 40px rgba(0,0,0,.36)",
             }}
         >
             <div
                 style={{
                     padding: 12,
-                    borderBottom: "1px solid rgba(255,255,255,.10)",
+                    borderBottom: "1px solid var(--rh-border)",
                     display: "flex",
                     justifyContent: "space-between",
                     gap: 10,
@@ -275,9 +277,9 @@ function Card({ title, subtitle, children, right }) {
                 }}
             >
                 <div>
-                    <div style={{ fontWeight: 800, fontSize: 13 }}>{title}</div>
+                    <div style={{ fontWeight: 800, fontSize: 13, fontFamily: "var(--rh-head)", letterSpacing: ".35px" }}>{title}</div>
                     {subtitle ? (
-                        <div style={{ fontSize: 12, color: "rgba(231,236,255,.65)" }}>
+                        <div style={{ fontSize: 12, color: "var(--rh-muted)" }}>
                             {subtitle}
                         </div>
                     ) : null}
@@ -1345,11 +1347,11 @@ export default function App() {
 
 const input = {
     width: "100%",
-    background: "rgba(0,0,0,.25)",
-    border: "1px solid rgba(255,255,255,.10)",
+    background: "rgba(20,15,10,.70)",
+    border: "1px solid var(--rh-border)",
     borderRadius: 10,
     padding: "10px 12px",
-    color: "#e7ecff",
+    color: "var(--rh-text)",
     outline: "none",
 };
 
@@ -1362,21 +1364,21 @@ const table = {
 const th = {
     textAlign: "left",
     padding: "10px 8px",
-    borderBottom: "1px solid rgba(255,255,255,.10)",
-    color: "rgba(231,236,255,.65)",
+    borderBottom: "1px solid var(--rh-border)",
+    color: "var(--rh-muted)",
     whiteSpace: "nowrap",
 };
 
 const td = {
     padding: "10px 8px",
-    borderBottom: "1px solid rgba(255,255,255,.08)",
+    borderBottom: "1px solid rgba(205,172,111,.20)",
     whiteSpace: "nowrap",
 };
 
 const btn = {
-    background: "rgba(90,160,255,.16)",
-    border: "1px solid rgba(90,160,255,.35)",
-    color: "#e7ecff",
+    background: "linear-gradient(180deg, rgba(173,132,72,.35), rgba(111,82,42,.22))",
+    border: "1px solid rgba(223,188,127,.46)",
+    color: "var(--rh-text)",
     padding: "8px 10px",
     borderRadius: 10,
     cursor: "pointer",
@@ -1385,9 +1387,9 @@ const btn = {
 
 const btnGhost = {
     ...btn,
-    background: "rgba(255,255,255,.06)",
-    border: "1px solid rgba(255,255,255,.10)",
-    color: "rgba(231,236,255,.8)",
+    background: "rgba(120,89,47,.22)",
+    border: "1px solid var(--rh-border)",
+    color: "var(--rh-muted)",
 };
 
 const linkBtn = {
@@ -1395,7 +1397,7 @@ const linkBtn = {
     border: "none",
     padding: 0,
     margin: 0,
-    color: "#5aa0ff",
+    color: "var(--rh-accent)",
     cursor: "pointer",
     fontSize: 12,
 };
@@ -1406,15 +1408,15 @@ const navBtn = {
 };
 
 const pill = {
-    background: "rgba(0,0,0,.20)",
-    border: "1px solid rgba(255,255,255,.10)",
+    background: "rgba(67,50,27,.26)",
+    border: "1px solid var(--rh-border)",
     borderRadius: 12,
     padding: "10px 12px",
 };
 
 const pillLabel = {
     fontSize: 11,
-    color: "rgba(231,236,255,.65)",
+    color: "var(--rh-muted)",
     letterSpacing: 0.25,
     textTransform: "uppercase",
     marginBottom: 6,
@@ -1423,5 +1425,5 @@ const pillLabel = {
 const pillValue = {
     fontSize: 13,
     fontWeight: 800,
-    color: "#e7ecff",
+    color: "var(--rh-text)",
 };
