@@ -73,7 +73,14 @@ def serve_calc():
     p = STATIC_DIR / "kg-calc.html"
     if not p.exists():
         raise HTTPException(status_code=404, detail="kg-calc.html not found")
-    return FileResponse(str(p))
+    return FileResponse(
+        str(p),
+        headers={
+            "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
+            "Pragma": "no-cache",
+            "Expires": "0",
+        },
+    )
 
 
 @app.get("/api/status")
