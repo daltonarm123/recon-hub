@@ -268,6 +268,30 @@
 
           <div class="divider"></div>
           <div class="sectionTitle">My Research Profile</div>
+          <div class="hint">Simple mode: pick research from the list, set level, and click Save. Advanced mode: connect KG account using Account ID + Kingdom ID + Token.</div>
+          <div class="twocol">
+            <div class="rows">
+              <div class="row compact">
+                <div class="lbl">Quick Pick</div>
+                <select class="inp" id="urTemplate"></select>
+              </div>
+              <div class="row compact">
+                <div class="lbl">Quick Level</div>
+                <input class="inp" id="urTemplateLevel" type="number" min="0" step="1" value="0" />
+              </div>
+              <div class="btnrow">
+                <button class="btn ghost" id="btnApplyTemplate">Apply To Form</button>
+                <button class="btn" id="btnSaveTemplate">Quick Save</button>
+              </div>
+            </div>
+            <div class="rows">
+              <div class="hint"><b>Bulk Paste (easy):</b> one line per research like `Tactics 10` or `Horse Breeding: 8`.</div>
+              <textarea class="ta" id="urBulkText" placeholder="Tactics 10&#10;Horse Breeding 8&#10;Improved Defences 12" style="min-height:92px;"></textarea>
+              <div class="btnrow">
+                <button class="btn ghost" id="btnImportBulkResearch">Import Bulk</button>
+              </div>
+            </div>
+          </div>
           <div class="twocol">
             <div class="rows">
               <div class="row compact">
@@ -308,6 +332,38 @@
             <button class="btn" id="btnSaveResearch">Save Research</button>
             <button class="btn ghost" id="btnRefreshResearch">Refresh Research</button>
           </div>
+          <div class="divider"></div>
+          <div class="sectionTitle">Advanced KG Connect</div>
+          <div class="hint">For tech users: use this like Settlements. You can paste Account ID, Kingdom ID, and Token from browser DevTools to connect KG.</div>
+          <div class="twocol">
+            <div class="rows">
+              <div class="row compact">
+                <div class="lbl">Account ID</div>
+                <input class="inp" id="kgAccountId" type="number" min="1" step="1" />
+              </div>
+              <div class="row compact">
+                <div class="lbl">Kingdom ID</div>
+                <input class="inp" id="kgKingdomId" type="number" min="1" step="1" />
+              </div>
+              <div class="row compact">
+                <div class="lbl">Token</div>
+                <input class="inp" id="kgToken" />
+              </div>
+              <div class="btnrow">
+                <button class="btn ghost" id="btnLoadKgConnection">Load Saved KG</button>
+                <button class="btn" id="btnSaveKgConnection">Save KG Connection</button>
+              </div>
+            </div>
+            <div class="rows">
+              <div class="hint">How to find values (quick):</div>
+              <div class="hint">1) Open kingdomgame in browser and login.</div>
+              <div class="hint">2) Open DevTools -> Network.</div>
+              <div class="hint">3) Open a KG API request (settlements works).</div>
+              <div class="hint">4) In Request Payload, copy `accountId`, `kingdomId`, and `token`.</div>
+              <div class="hint">5) Paste here and click Save KG Connection.</div>
+            </div>
+          </div>
+          <div class="status" id="kgConnectStatus"></div>
           <div class="status" id="researchStatus"></div>
           <div style="overflow:auto; border:1px solid var(--border); border-radius:10px; margin-top:8px;">
             <table style="width:100%; border-collapse:collapse; font-size:12px;">
@@ -734,6 +790,33 @@
   const CAL_STORAGE_KEY = "kg_calc_known_hits_v1";
   const KNOWN_HITS_API = "/api/calc/known-hits";
   const USER_RESEARCH_API = "/api/profile/research";
+  const KG_CONNECTION_API = "/api/kg/connection";
+  const KG_CONNECT_API = "/api/kg/connect";
+  const RESEARCH_TEMPLATES = [
+    { name:"Horse Breeding", affects:"cavalry", ratePerLevel:0.005, apUp:true, dpUp:false, speedUp:false, casualtyReduction:false },
+    { name:"War Horse", affects:"cavalry", ratePerLevel:0.005, apUp:true, dpUp:false, speedUp:false, casualtyReduction:false },
+    { name:"City Walls", affects:"all", ratePerLevel:0.0025, apUp:false, dpUp:true, speedUp:false, casualtyReduction:false },
+    { name:"Curtain Walls", affects:"castles", ratePerLevel:0.01, apUp:false, dpUp:true, speedUp:false, casualtyReduction:false },
+    { name:"Improved Castles (Mot and Bailey)", affects:"castles", ratePerLevel:0.01, apUp:false, dpUp:true, speedUp:false, casualtyReduction:false },
+    { name:"Improved Defences", affects:"castles", ratePerLevel:0.01, apUp:false, dpUp:true, speedUp:false, casualtyReduction:false },
+    { name:"Moats", affects:"castles", ratePerLevel:0.01, apUp:false, dpUp:true, speedUp:false, casualtyReduction:false },
+    { name:"Palisades", affects:"all", ratePerLevel:0.0025, apUp:false, dpUp:true, speedUp:false, casualtyReduction:false },
+    { name:"Roads", affects:"all", ratePerLevel:0.0025, apUp:false, dpUp:false, speedUp:true, casualtyReduction:false },
+    { name:"Good Medical Practice", affects:"all", ratePerLevel:0.005, apUp:false, dpUp:false, speedUp:false, casualtyReduction:true },
+    { name:"Herbalism", affects:"all", ratePerLevel:0.005, apUp:false, dpUp:false, speedUp:false, casualtyReduction:true },
+    { name:"Hospitals", affects:"all", ratePerLevel:0.005, apUp:false, dpUp:false, speedUp:false, casualtyReduction:true },
+    { name:"Medicine", affects:"all", ratePerLevel:0.005, apUp:false, dpUp:false, speedUp:false, casualtyReduction:true },
+    { name:"Advanced Weapon Design", affects:"all", ratePerLevel:0.0025, apUp:true, dpUp:true, speedUp:false, casualtyReduction:false },
+    { name:"Better Training Methods", affects:"all", ratePerLevel:0.0025, apUp:true, dpUp:true, speedUp:false, casualtyReduction:false },
+    { name:"Improved Weapon Design", affects:"all", ratePerLevel:0.0025, apUp:true, dpUp:true, speedUp:false, casualtyReduction:false },
+    { name:"Lance Formation", affects:"cavalry", ratePerLevel:0.01, apUp:false, dpUp:true, speedUp:false, casualtyReduction:false },
+    { name:"Leadership Training", affects:"all", ratePerLevel:0.0025, apUp:false, dpUp:true, speedUp:false, casualtyReduction:false },
+    { name:"Loose Order Formation", affects:"all", ratePerLevel:0.01, apUp:false, dpUp:true, speedUp:false, casualtyReduction:false },
+    { name:"Military Encampment", affects:"all", ratePerLevel:0.01, apUp:true, dpUp:false, speedUp:false, casualtyReduction:false },
+    { name:"Phlanx", affects:"infantry", ratePerLevel:0.01, apUp:false, dpUp:true, speedUp:false, casualtyReduction:false },
+    { name:"Sharpshooter", affects:"archers", ratePerLevel:0.01, apUp:false, dpUp:true, speedUp:false, casualtyReduction:false },
+    { name:"Tactics", affects:"all", ratePerLevel:0.0025, apUp:true, dpUp:false, speedUp:false, casualtyReduction:false },
+  ];
   let USER_RESEARCH_CACHE = [];
   let lastCalcSnapshot = null;
 
@@ -846,6 +929,89 @@
     const a = String(v || "").trim().toLowerCase();
     if (["all", "infantry", "archers", "cavalry", "castles"].includes(a)) return a;
     return "all";
+  }
+
+  function normalizeTemplateName(v){
+    return String(v || "").toLowerCase().replace(/[\(\)\[\]\{\}\.,:'"`]/g, " ").replace(/\s+/g, " ").trim();
+  }
+
+  function getTemplateByName(name){
+    const n = normalizeTemplateName(name);
+    return RESEARCH_TEMPLATES.find(t => {
+      const tn = normalizeTemplateName(t.name);
+      return n === tn || n.includes(tn) || tn.includes(n);
+    }) || null;
+  }
+
+  function populateTemplateDropdown(){
+    const sel = el("urTemplate");
+    if (!sel) return;
+    sel.innerHTML = RESEARCH_TEMPLATES
+      .slice()
+      .sort((a, b) => String(a.name).localeCompare(String(b.name)))
+      .map(t => `<option value="${escapeHtml(t.name)}">${escapeHtml(t.name)} (${(t.ratePerLevel * 100).toFixed(2)}%/lvl)</option>`)
+      .join("");
+  }
+
+  function applyTemplateToForm(t, levelOverride){
+    if (!t) return;
+    el("urName").value = t.name;
+    el("urAffects").value = normalizeAffects(t.affects);
+    el("urRatePct").value = (Number(t.ratePerLevel || 0) * 100).toFixed(2);
+    el("urLevel").value = Number(levelOverride ?? parseNumberLoose(el("urTemplateLevel")?.value) ?? 0);
+    el("urApUp").checked = !!t.apUp;
+    el("urDpUp").checked = !!t.dpUp;
+    el("urSpeedUp").checked = !!t.speedUp;
+    el("urCasRed").checked = !!t.casualtyReduction;
+  }
+
+  function parseBulkResearchLines(text){
+    const rows = [];
+    const lines = String(text || "").split(/\r?\n/).map(x => x.trim()).filter(Boolean);
+    for (const ln of lines) {
+      let m = ln.match(/^(.+?)\s*[:\-]\s*(\d{1,4})$/i);
+      if (!m) m = ln.match(/^(.+?)\s+(?:lv|lvl|level)?\s*(\d{1,4})$/i);
+      if (!m) continue;
+      const nameRaw = String(m[1] || "").trim();
+      const level = Number(m[2] || 0);
+      if (!nameRaw || !(level >= 0)) continue;
+      const tpl = getTemplateByName(nameRaw);
+      rows.push({
+        name: tpl?.name || nameRaw,
+        affects: normalizeAffects(tpl?.affects || "all"),
+        ratePerLevel: Number(tpl?.ratePerLevel || 0),
+        level,
+        apUp: !!tpl?.apUp,
+        dpUp: !!tpl?.dpUp,
+        speedUp: !!tpl?.speedUp,
+        casualtyReduction: !!tpl?.casualtyReduction,
+        notes: "bulk import"
+      });
+    }
+    return rows;
+  }
+
+  async function loadKgConnection(){
+    const res = await fetch(KG_CONNECTION_API, { credentials: "include" });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(String(data?.detail || `HTTP ${res.status}`));
+    return data;
+  }
+
+  async function saveKgConnection(accountId, kingdomId, token){
+    const res = await fetch(KG_CONNECT_API, {
+      method: "POST",
+      credentials: "include",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        account_id: Number(accountId || 0),
+        kingdom_id: Number(kingdomId || 0),
+        token: String(token || "").trim()
+      }),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(String(data?.detail || `HTTP ${res.status}`));
+    return data;
   }
 
   async function loadUserResearch(){
@@ -1637,6 +1803,66 @@
     }
   });
 
+  el("btnApplyTemplate").addEventListener("click", () => {
+    const t = getTemplateByName(el("urTemplate")?.value || "");
+    if (!t) {
+      setStatus(el("researchStatus"), [{ k:"Template", v:"No template selected." }]);
+      return;
+    }
+    applyTemplateToForm(t, parseNumberLoose(el("urTemplateLevel")?.value) ?? 0);
+    setStatus(el("researchStatus"), [{ k:"Template", v:`Applied: ${t.name}` }]);
+  });
+
+  el("btnSaveTemplate").addEventListener("click", async () => {
+    const t = getTemplateByName(el("urTemplate")?.value || "");
+    if (!t) {
+      setStatus(el("researchStatus"), [{ k:"Template", v:"No template selected." }]);
+      return;
+    }
+    const lvl = Number(parseNumberLoose(el("urTemplateLevel")?.value) || 0);
+    try {
+      await saveUserResearchItem({
+        name: t.name,
+        affects: normalizeAffects(t.affects),
+        ratePerLevel: Number(t.ratePerLevel || 0),
+        level: lvl,
+        apUp: !!t.apUp,
+        dpUp: !!t.dpUp,
+        speedUp: !!t.speedUp,
+        casualtyReduction: !!t.casualtyReduction,
+        notes: "quick save"
+      });
+      await loadUserResearch();
+      renderUserResearchTable();
+      setStatus(el("researchStatus"), [{ k:"Template", v:`Saved ${t.name} L${lvl}` }, { k:"Total", v:String(USER_RESEARCH_CACHE.length) }]);
+    } catch (e) {
+      setStatus(el("researchStatus"), [{ k:"Template", v:`save failed: ${String(e?.message || e)}` }]);
+    }
+  });
+
+  el("btnImportBulkResearch").addEventListener("click", async () => {
+    const rows = parseBulkResearchLines(el("urBulkText")?.value || "");
+    if (!rows.length) {
+      setStatus(el("researchStatus"), [{ k:"Bulk Import", v:"No valid lines found. Use format like: Tactics 10" }]);
+      return;
+    }
+    let ok = 0;
+    let fail = 0;
+    for (const r of rows) {
+      try {
+        await saveUserResearchItem(r);
+        ok += 1;
+      } catch {
+        fail += 1;
+      }
+    }
+    try {
+      await loadUserResearch();
+      renderUserResearchTable();
+    } catch {}
+    setStatus(el("researchStatus"), [{ k:"Bulk Import", v:`saved ${ok}, failed ${fail}` }, { k:"Total", v:String(USER_RESEARCH_CACHE.length) }]);
+  });
+
   el("btnRefreshResearch").addEventListener("click", async () => {
     try {
       await loadUserResearch();
@@ -1644,6 +1870,39 @@
       setStatus(el("researchStatus"), [{ k:"Research", v:"refreshed" }, { k:"Total", v:String(USER_RESEARCH_CACHE.length) }]);
     } catch (e) {
       setStatus(el("researchStatus"), [{ k:"Research", v:`refresh failed: ${String(e?.message || e)}` }]);
+    }
+  });
+
+  el("btnLoadKgConnection").addEventListener("click", async () => {
+    try {
+      const data = await loadKgConnection();
+      const c = data?.connection || {};
+      if (!data?.connected) {
+        setStatus(el("kgConnectStatus"), [{ k:"KG Connection", v:"No saved KG connection yet." }]);
+        return;
+      }
+      el("kgAccountId").value = c.account_id || "";
+      el("kgKingdomId").value = c.kingdom_id || "";
+      setStatus(el("kgConnectStatus"), [{ k:"KG Connection", v:"Loaded account + kingdom IDs. Token hidden for security." }]);
+    } catch (e) {
+      setStatus(el("kgConnectStatus"), [{ k:"KG Connection", v:`load failed: ${String(e?.message || e)}` }]);
+    }
+  });
+
+  el("btnSaveKgConnection").addEventListener("click", async () => {
+    const accountId = parseNumberLoose(el("kgAccountId")?.value);
+    const kingdomId = parseNumberLoose(el("kgKingdomId")?.value);
+    const token = String(el("kgToken")?.value || "").trim();
+    if (!(accountId > 0) || !(kingdomId > 0) || !token) {
+      setStatus(el("kgConnectStatus"), [{ k:"KG Connection", v:"Account ID, Kingdom ID, and Token are required." }]);
+      return;
+    }
+    try {
+      await saveKgConnection(accountId, kingdomId, token);
+      setStatus(el("kgConnectStatus"), [{ k:"KG Connection", v:"Saved successfully. You can now use this same KG link across features." }]);
+      el("kgToken").value = "";
+    } catch (e) {
+      setStatus(el("kgConnectStatus"), [{ k:"KG Connection", v:`save failed: ${String(e?.message || e)}` }]);
     }
   });
 
@@ -1914,12 +2173,21 @@
   });
 
   (async () => {
+    populateTemplateDropdown();
     await pullKnownHitsFromServer();
     try {
       await loadUserResearch();
     } catch (e) {
       setStatus(el("researchStatus"), [{ k:"Research", v:`load failed: ${String(e?.message || e)}` }]);
     }
+    try {
+      const data = await loadKgConnection();
+      const c = data?.connection || {};
+      if (data?.connected) {
+        el("kgAccountId").value = c.account_id || "";
+        el("kgKingdomId").value = c.kingdom_id || "";
+      }
+    } catch {}
     renderUserResearchTable();
     renderCalibrationStatus();
   })();
