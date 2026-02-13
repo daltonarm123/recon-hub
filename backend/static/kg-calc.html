@@ -971,21 +971,72 @@
     for (const ln of lines) {
       let m = ln.match(/^(.+?)\s*[:\-]\s*(\d{1,4})$/i);
       if (!m) m = ln.match(/^(.+?)\s+(?:lv|lvl|level)?\s*(\d{1,4})$/i);
-      if (!m) continue;
-      const nameRaw = String(m[1] || "").trim();
-      const level = Number(m[2] || 0);
-      if (!nameRaw || !(level >= 0)) continue;
-      const tpl = getTemplateByName(nameRaw);
+      if (m) {
+        const nameRaw = String(m[1] || "").trim();
+        const level = Number(m[2] || 0);
+        if (!nameRaw || !(level >= 0)) continue;
+        const tpl = getTemplateByName(nameRaw);
+        rows.push({
+          name: tpl?.name || nameRaw,
+          affects: normalizeAffects(tpl?.affects || "all"),
+          ratePerLevel: Number(tpl?.ratePerLevel || 0),
+          level,
+          apUp: !!tpl?.apUp,
+          dpUp: !!tpl?.dpUp,
+          speedUp: !!tpl?.speedUp,
+          casualtyReduction: !!tpl?.casualtyReduction,
+          notes: "bulk import (level)"
+        });
+        continue;
+      }
+
+      // Also support "Effect Name    3.00%" format from spreadsheets.
+      const p = ln.match(/^(.+?)\s+(-?\d+(?:\.\d+)?)\s*%$/i);
+      if (!p) continue;
+      const effectName = String(p[1] || "").trim();
+      const pctAbs = Math.abs(Number(p[2] || 0));
+      if (!effectName || !(pctAbs > 0)) continue;
+      const effectDec = pctAbs / 100;
+      const lower = effectName.toLowerCase();
+      const tpl = getTemplateByName(effectName);
+
+      let affects = normalizeAffects(tpl?.affects || "all");
+      let apUp = !!tpl?.apUp;
+      let dpUp = !!tpl?.dpUp;
+      let speedUp = !!tpl?.speedUp;
+      let casualtyReduction = !!tpl?.casualtyReduction;
+
+      if (!tpl) {
+        if (lower.includes("attack")) apUp = true;
+        if (lower.includes("defence") || lower.includes("defense")) dpUp = true;
+        if (lower.includes("market wagon speed") || lower.includes("speed")) speedUp = true;
+        if (lower.includes("casualty")) casualtyReduction = true;
+        if (lower.includes("archer")) affects = "archers";
+        if (lower.includes("infantry")) affects = "infantry";
+        if (lower.includes("cavalry") || lower.includes("mounted")) affects = "cavalry";
+        if (lower.includes("castle")) affects = "castles";
+      }
+
+      let ratePerLevel = Number(tpl?.ratePerLevel || 0);
+      let level = 1;
+      if (ratePerLevel > 0) {
+        level = Math.max(1, Math.round(effectDec / ratePerLevel));
+      } else {
+        // Unknown per-level rate: store full effect as level 1 custom.
+        ratePerLevel = effectDec;
+        level = 1;
+      }
+
       rows.push({
-        name: tpl?.name || nameRaw,
-        affects: normalizeAffects(tpl?.affects || "all"),
-        ratePerLevel: Number(tpl?.ratePerLevel || 0),
+        name: tpl?.name || effectName,
+        affects,
+        ratePerLevel,
         level,
-        apUp: !!tpl?.apUp,
-        dpUp: !!tpl?.dpUp,
-        speedUp: !!tpl?.speedUp,
-        casualtyReduction: !!tpl?.casualtyReduction,
-        notes: "bulk import"
+        apUp,
+        dpUp,
+        speedUp,
+        casualtyReduction,
+        notes: "bulk import (%)"
       });
     }
     return rows;
