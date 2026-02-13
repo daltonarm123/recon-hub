@@ -207,6 +207,18 @@ class KnownHitBody(BaseModel):
     note: Optional[str] = Field(default="", max_length=500)
 
 
+class UserResearchBody(BaseModel):
+    name: str = Field(..., min_length=1, max_length=120)
+    affects: str = Field(default="all", max_length=40)
+    ratePerLevel: float = Field(default=0, ge=0, le=1)
+    level: int = Field(default=0, ge=0, le=10000)
+    apUp: bool = False
+    dpUp: bool = False
+    speedUp: bool = False
+    casualtyReduction: bool = False
+    notes: Optional[str] = Field(default="", max_length=1000)
+
+
 DEFAULT_ALLIANCES: List[tuple[str, str]] = [
     ("nwo-1", "[NWO-1] NWO-1"),
     ("a-taem", "[A_TAEM] THE A-TEAM"),
@@ -410,6 +422,12 @@ def ensure_recon_tables():
             )
             cur.execute(
                 """
+                ALTER TABLE public.calc_known_hits
+                ADD COLUMN IF NOT EXISTS source_attack_report_id BIGINT;
+                """
+            )
+            cur.execute(
+                """
                 CREATE INDEX IF NOT EXISTS calc_known_hits_target_idx
                 ON public.calc_known_hits (target_norm, created_at DESC);
                 """
@@ -418,6 +436,39 @@ def ensure_recon_tables():
                 """
                 CREATE INDEX IF NOT EXISTS calc_known_hits_alliance_idx
                 ON public.calc_known_hits (alliance_scope, created_at DESC);
+                """
+            )
+            cur.execute(
+                """
+                CREATE UNIQUE INDEX IF NOT EXISTS calc_known_hits_source_attack_unique_idx
+                ON public.calc_known_hits (source_attack_report_id)
+                WHERE source_attack_report_id IS NOT NULL;
+                """
+            )
+            cur.execute(
+                """
+                CREATE TABLE IF NOT EXISTS public.user_attack_research (
+                    id BIGSERIAL PRIMARY KEY,
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+                    updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+                    discord_user_id TEXT NOT NULL REFERENCES public.app_users(discord_user_id) ON DELETE CASCADE,
+                    name TEXT NOT NULL,
+                    affects TEXT NOT NULL DEFAULT 'all',
+                    rate_per_level DOUBLE PRECISION NOT NULL DEFAULT 0,
+                    level INT NOT NULL DEFAULT 0,
+                    ap_up BOOLEAN NOT NULL DEFAULT false,
+                    dp_up BOOLEAN NOT NULL DEFAULT false,
+                    speed_up BOOLEAN NOT NULL DEFAULT false,
+                    casualty_reduction BOOLEAN NOT NULL DEFAULT false,
+                    notes TEXT,
+                    UNIQUE(discord_user_id, name)
+                );
+                """
+            )
+            cur.execute(
+                """
+                CREATE INDEX IF NOT EXISTS user_attack_research_user_idx
+                ON public.user_attack_research (discord_user_id, updated_at DESC);
                 """
             )
         conn.commit()
@@ -793,6 +844,258 @@ def parse_attack_report(text: str) -> Dict[str, Any]:
     }
 
 
+AUTO_ATTACK_WEIGHTS = {
+    "footmen": 1.0,
+    "pikemen": 2.0,
+    "elites": 10.0,
+    "archers": 1.0,
+    "crossbowmen": 3.0,
+    "lightCav": 5.0,
+    "heavyCav": 7.0,
+    "knights": 15.0,
+}
+
+AUTO_DEFENSE_WEIGHTS = {
+    "peasants": 0.1,
+    "footmen": 1.0,
+    "pikemen": 2.0,
+    "elites": 10.0,
+    "archers": 4.0,
+    "crossbowmen": 2.0,
+    "lightCav": 4.0,
+    "heavyCav": 5.0,
+    "knights": 10.0,
+}
+
+
+def _auto_norm_unit(name: str) -> Optional[str]:
+    n = str(name or "").strip().lower()
+    if not n:
+        return None
+    if "foot" in n:
+        return "footmen"
+    if "pike" in n:
+        return "pikemen"
+    if "elite" in n:
+        return "elites"
+    if "crossbow" in n:
+        return "crossbowmen"
+    if "archer" in n:
+        return "archers"
+    if "light" in n and "cav" in n:
+        return "lightCav"
+    if "heavy" in n and "cav" in n:
+        return "heavyCav"
+    if "knight" in n:
+        return "knights"
+    if "peasant" in n:
+        return "peasants"
+    if "cav" in n:
+        return "lightCav"
+    return None
+
+
+def _auto_zero_units() -> Dict[str, int]:
+    return {
+        "peasants": 0,
+        "footmen": 0,
+        "pikemen": 0,
+        "elites": 0,
+        "archers": 0,
+        "crossbowmen": 0,
+        "lightCav": 0,
+        "heavyCav": 0,
+        "knights": 0,
+    }
+
+
+def _auto_grouped(units: Dict[str, int]) -> Dict[str, int]:
+    return {
+        "infantry": int(units.get("footmen", 0) + units.get("pikemen", 0) + units.get("elites", 0)),
+        "archers": int(units.get("archers", 0) + units.get("crossbowmen", 0)),
+        "cavalry": int(units.get("lightCav", 0) + units.get("heavyCav", 0) + units.get("knights", 0)),
+        "pike": int(units.get("pikemen", 0)),
+    }
+
+
+def _auto_counter_reduction(counter_count: int, target_count: int, need_ratio: float) -> float:
+    c = float(counter_count or 0)
+    t = float(target_count or 0)
+    if c <= 0 or t <= 0 or need_ratio <= 0:
+        return 0.0
+    needed = t * need_ratio
+    if needed <= 0:
+        return 0.0
+    coverage = c / needed
+    pct = 0.25 * coverage
+    return max(0.0, min(0.40, pct))
+
+
+def _auto_attack_units_from_casualties(casualties: Dict[str, Dict[str, int]]) -> Dict[str, int]:
+    out = _auto_zero_units()
+    for unit_name, item in (casualties or {}).items():
+        key = _auto_norm_unit(unit_name)
+        if not key:
+            continue
+        sent = _num(str((item or {}).get("sent") or "0")) or 0
+        out[key] = int(out.get(key, 0) + max(0, int(sent)))
+    return out
+
+
+def _auto_defender_units_from_spy(parsed_spy: Dict[str, Any]) -> Dict[str, int]:
+    out = _auto_zero_units()
+    for unit_name, count in ((parsed_spy or {}).get("troops") or {}).items():
+        key = _auto_norm_unit(str(unit_name))
+        if not key:
+            continue
+        out[key] = int(out.get(key, 0) + max(0, int(count or 0)))
+    return out
+
+
+def _auto_compute_attack_power(attacker_units: Dict[str, int], defender_units: Dict[str, int]) -> float:
+    a = attacker_units
+    d = defender_units
+    ag = _auto_grouped(a)
+    dg = _auto_grouped(d)
+
+    infantry_ap = (
+        a.get("footmen", 0) * AUTO_ATTACK_WEIGHTS["footmen"]
+        + a.get("pikemen", 0) * AUTO_ATTACK_WEIGHTS["pikemen"]
+        + a.get("elites", 0) * AUTO_ATTACK_WEIGHTS["elites"]
+    )
+    archer_ap = (
+        a.get("archers", 0) * AUTO_ATTACK_WEIGHTS["archers"]
+        + a.get("crossbowmen", 0) * AUTO_ATTACK_WEIGHTS["crossbowmen"]
+    )
+    cav_ap = (
+        a.get("lightCav", 0) * AUTO_ATTACK_WEIGHTS["lightCav"]
+        + a.get("heavyCav", 0) * AUTO_ATTACK_WEIGHTS["heavyCav"]
+        + a.get("knights", 0) * AUTO_ATTACK_WEIGHTS["knights"]
+    )
+
+    def_pike_vs_atk_cav = _auto_counter_reduction(dg["pike"], ag["cavalry"], 0.25)
+    def_cav_vs_atk_arch = _auto_counter_reduction(dg["cavalry"], ag["archers"], 1.0)
+    def_arch_vs_atk_inf = _auto_counter_reduction(dg["archers"], ag["infantry"], 1.0)
+
+    infantry_ap *= (1.0 - def_arch_vs_atk_inf)
+    archer_ap *= (1.0 - def_cav_vs_atk_arch)
+    cav_ap *= (1.0 - def_pike_vs_atk_cav)
+    return max(0.0, infantry_ap + archer_ap + cav_ap)
+
+
+def _auto_compute_troop_dp(defender_units: Dict[str, int], attacker_units: Dict[str, int]) -> float:
+    d = defender_units
+    a = attacker_units
+    ag = _auto_grouped(a)
+    dg = _auto_grouped(d)
+
+    atk_pike_vs_def_cav = _auto_counter_reduction(ag["pike"], dg["cavalry"], 0.25)
+    atk_cav_vs_def_arch = _auto_counter_reduction(ag["cavalry"], dg["archers"], 1.0)
+    atk_arch_vs_def_inf = _auto_counter_reduction(ag["archers"], dg["infantry"], 1.0)
+
+    infantry_dp = (
+        d.get("footmen", 0) * AUTO_DEFENSE_WEIGHTS["footmen"]
+        + d.get("pikemen", 0) * AUTO_DEFENSE_WEIGHTS["pikemen"]
+        + d.get("elites", 0) * AUTO_DEFENSE_WEIGHTS["elites"]
+    )
+    archer_dp = (
+        d.get("archers", 0) * AUTO_DEFENSE_WEIGHTS["archers"]
+        + d.get("crossbowmen", 0) * AUTO_DEFENSE_WEIGHTS["crossbowmen"]
+    )
+    cav_dp = (
+        d.get("lightCav", 0) * AUTO_DEFENSE_WEIGHTS["lightCav"]
+        + d.get("heavyCav", 0) * AUTO_DEFENSE_WEIGHTS["heavyCav"]
+        + d.get("knights", 0) * AUTO_DEFENSE_WEIGHTS["knights"]
+    )
+    peasant_dp = d.get("peasants", 0) * AUTO_DEFENSE_WEIGHTS["peasants"]
+
+    infantry_dp *= (1.0 - atk_arch_vs_def_inf)
+    archer_dp *= (1.0 - atk_cav_vs_def_arch)
+    cav_dp *= (1.0 - atk_pike_vs_def_cav)
+    return max(0.0, infantry_dp + archer_dp + cav_dp + peasant_dp)
+
+
+def _auto_extract_land_taken(gains: Dict[str, int]) -> Optional[int]:
+    for k, v in (gains or {}).items():
+        lk = str(k or "").lower()
+        if "land" in lk or "acre" in lk:
+            try:
+                return int(v)
+            except Exception:
+                return None
+    return None
+
+
+def _auto_insert_known_hit_for_attack(cur, attack_report_id: int, attack_created_at: datetime, parsed_attack: Dict[str, Any]) -> bool:
+    target = str((parsed_attack or {}).get("target") or "").strip()
+    if not target:
+        return False
+
+    cur.execute(
+        """
+        SELECT id, created_at, kingdom, alliance, defense_power, castles, raw, raw_gz
+        FROM public.spy_reports
+        WHERE kingdom = %s
+          AND created_at <= %s
+        ORDER BY created_at DESC, id DESC
+        LIMIT 1
+        """,
+        (target, attack_created_at),
+    )
+    spy = cur.fetchone()
+    if not spy:
+        return False
+
+    spy_raw = _load_raw_text(spy)
+    if not spy_raw:
+        return False
+    spy_parsed = parse_spy_report(spy_raw)
+    attacker_units = _auto_attack_units_from_casualties((parsed_attack or {}).get("casualties") or {})
+    defender_units = _auto_defender_units_from_spy(spy_parsed)
+    attack_power = _auto_compute_attack_power(attacker_units, defender_units)
+
+    castles = int(spy_parsed.get("castles") or 0)
+    castle_mult = 1.0 + (pow(max(0, castles), 0.5) / 100.0 if castles > 0 else 0.0)
+    base_dp_from_spy = float(spy_parsed.get("defender_dp") or 0)
+    if base_dp_from_spy > 0:
+        defender_dp = base_dp_from_spy * castle_mult
+    else:
+        defender_dp = _auto_compute_troop_dp(defender_units, attacker_units) * castle_mult
+    if defender_dp <= 0:
+        return False
+
+    raw_ratio = attack_power / max(1.0, defender_dp)
+    land_taken = _auto_extract_land_taken((parsed_attack or {}).get("gains") or {})
+    actual_outcome = str((parsed_attack or {}).get("attack_result") or "").strip() or "UNKNOWN"
+
+    cur.execute(
+        """
+        INSERT INTO public.calc_known_hits (
+            created_by_discord_user_id, alliance_scope, target, target_norm, raw_ratio, calibrated_ratio,
+            predicted_outcome, actual_outcome, atk_power, def_dp, land_taken, note, source_attack_report_id, created_at
+        )
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, now())
+        ON CONFLICT (source_attack_report_id) DO NOTHING
+        """,
+        (
+            None,
+            None,
+            target,
+            _target_norm(target),
+            float(raw_ratio),
+            None,
+            "",
+            actual_outcome,
+            float(attack_power),
+            float(defender_dp),
+            (int(land_taken) if land_taken is not None else None),
+            f"auto: attack_report_id={int(attack_report_id)} linked_spy_id={int(spy.get('id') or 0)}",
+            int(attack_report_id),
+        ),
+    )
+    return cur.rowcount > 0
+
+
 def _load_raw_text(row: Dict[str, Any]) -> str:
     raw = row.get("raw")
     if raw and isinstance(raw, str) and raw.strip():
@@ -983,6 +1286,7 @@ def _known_hit_to_api(row: Dict[str, Any]) -> Dict[str, Any]:
         "note": row.get("note") or None,
         "allianceScope": row.get("alliance_scope") or None,
         "createdBy": row.get("created_by_discord_user_id") or None,
+        "sourceAttackReportId": row.get("source_attack_report_id"),
     }
 
 
@@ -999,7 +1303,8 @@ def list_known_hits(request: Request, limit: int = 1000, target: Optional[str] =
 
         q = f"""
             SELECT id, created_at, target, target_norm, raw_ratio, calibrated_ratio, predicted_outcome,
-                   actual_outcome, atk_power, def_dp, land_taken, note, alliance_scope, created_by_discord_user_id
+                   actual_outcome, atk_power, def_dp, land_taken, note, alliance_scope, created_by_discord_user_id,
+                   source_attack_report_id
             FROM public.calc_known_hits
             {where}
             ORDER BY created_at DESC, id DESC
@@ -1028,7 +1333,8 @@ def create_known_hit(request: Request, body: KnownHitBody):
                     predicted_outcome, actual_outcome, atk_power, def_dp, land_taken, note
                 ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 RETURNING id, created_at, target, target_norm, raw_ratio, calibrated_ratio, predicted_outcome,
-                          actual_outcome, atk_power, def_dp, land_taken, note, alliance_scope, created_by_discord_user_id
+                          actual_outcome, atk_power, def_dp, land_taken, note, alliance_scope, created_by_discord_user_id,
+                          source_attack_report_id
                 """,
                 (
                     uid,
@@ -1076,7 +1382,8 @@ def update_known_hit(request: Request, hit_id: int, body: KnownHitBody):
                     note = %s
                 WHERE id = %s
                 RETURNING id, created_at, target, target_norm, raw_ratio, calibrated_ratio, predicted_outcome,
-                          actual_outcome, atk_power, def_dp, land_taken, note, alliance_scope, created_by_discord_user_id
+                          actual_outcome, atk_power, def_dp, land_taken, note, alliance_scope, created_by_discord_user_id,
+                          source_attack_report_id
                 """,
                 (
                     target,
@@ -1385,6 +1692,159 @@ def _sync_settlement_observations_from_attack_reports(from_id: int, limit: int) 
         conn.close()
 
 
+def _research_row_to_api(row: Dict[str, Any]) -> Dict[str, Any]:
+    return {
+        "id": int(row.get("id") or 0),
+        "name": row.get("name") or "",
+        "affects": row.get("affects") or "all",
+        "ratePerLevel": float(row.get("rate_per_level") or 0),
+        "level": int(row.get("level") or 0),
+        "apUp": bool(row.get("ap_up")),
+        "dpUp": bool(row.get("dp_up")),
+        "speedUp": bool(row.get("speed_up")),
+        "casualtyReduction": bool(row.get("casualty_reduction")),
+        "notes": row.get("notes") or "",
+        "updatedAt": (row.get("updated_at").isoformat() if row.get("updated_at") else None),
+    }
+
+
+@app.get("/api/profile/research")
+def list_my_research(request: Request):
+    uid = _require_user_id(request)
+    conn = _connect()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT id, name, affects, rate_per_level, level, ap_up, dp_up, speed_up, casualty_reduction, notes, updated_at
+                FROM public.user_attack_research
+                WHERE discord_user_id = %s
+                ORDER BY updated_at DESC, id DESC
+                """,
+                (uid,),
+            )
+            rows = cur.fetchall()
+        return {"ok": True, "items": [_research_row_to_api(r) for r in rows]}
+    finally:
+        conn.close()
+
+
+@app.post("/api/profile/research")
+def upsert_my_research(request: Request, body: UserResearchBody):
+    uid = _require_user_id(request)
+    name = str(body.name or "").strip()
+    if not name:
+        raise HTTPException(status_code=400, detail="name is required")
+    conn = _connect()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO public.user_attack_research
+                  (discord_user_id, name, affects, rate_per_level, level, ap_up, dp_up, speed_up, casualty_reduction, notes, created_at, updated_at)
+                VALUES
+                  (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, now(), now())
+                ON CONFLICT (discord_user_id, name)
+                DO UPDATE SET
+                  affects = EXCLUDED.affects,
+                  rate_per_level = EXCLUDED.rate_per_level,
+                  level = EXCLUDED.level,
+                  ap_up = EXCLUDED.ap_up,
+                  dp_up = EXCLUDED.dp_up,
+                  speed_up = EXCLUDED.speed_up,
+                  casualty_reduction = EXCLUDED.casualty_reduction,
+                  notes = EXCLUDED.notes,
+                  updated_at = now()
+                RETURNING id, name, affects, rate_per_level, level, ap_up, dp_up, speed_up, casualty_reduction, notes, updated_at
+                """,
+                (
+                    uid,
+                    name,
+                    str(body.affects or "all").strip().lower() or "all",
+                    float(body.ratePerLevel or 0),
+                    int(body.level or 0),
+                    bool(body.apUp),
+                    bool(body.dpUp),
+                    bool(body.speedUp),
+                    bool(body.casualtyReduction),
+                    (str(body.notes or "").strip() or None),
+                ),
+            )
+            row = cur.fetchone()
+        conn.commit()
+        return {"ok": True, "item": _research_row_to_api(row or {})}
+    finally:
+        conn.close()
+
+
+@app.delete("/api/profile/research/{item_id}")
+def delete_my_research(request: Request, item_id: int):
+    uid = _require_user_id(request)
+    conn = _connect()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "DELETE FROM public.user_attack_research WHERE id = %s AND discord_user_id = %s",
+                (int(item_id), uid),
+            )
+            deleted = cur.rowcount
+        conn.commit()
+        return {"ok": True, "deleted": int(deleted or 0)}
+    finally:
+        conn.close()
+
+
+def _sync_auto_known_hits_from_attack_reports(from_id: int, limit: int) -> Dict[str, int]:
+    start_id = max(0, int(from_id))
+    lim = max(1, min(int(limit), 1_000_000))
+    conn = _connect()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT id, created_at, raw_text
+                FROM public.attack_reports
+                WHERE id > %s
+                ORDER BY id ASC
+                LIMIT %s
+                """,
+                (start_id, lim),
+            )
+            rows = cur.fetchall()
+
+            scanned = 0
+            inserted_known_hits = 0
+            last_id = start_id
+            for r in rows:
+                scanned += 1
+                rid = int(r.get("id") or 0)
+                last_id = max(last_id, rid)
+                raw = str(r.get("raw_text") or "").strip()
+                if not raw:
+                    continue
+                parsed = parse_attack_report(raw)
+                try:
+                    ins = _auto_insert_known_hit_for_attack(
+                        cur,
+                        rid,
+                        r.get("created_at") or datetime.utcnow(),
+                        parsed,
+                    )
+                except Exception:
+                    ins = False
+                if ins:
+                    inserted_known_hits += 1
+
+        conn.commit()
+        return {
+            "scanned": scanned,
+            "inserted_known_hits": inserted_known_hits,
+            "last_id": last_id,
+        }
+    finally:
+        conn.close()
+
+
 def _initial_settlement_observer_last_id() -> int:
     conn = _connect()
     try:
@@ -1488,6 +1948,15 @@ def ingest_report(body: RawReportBody):
                     if inserted:
                         events += 1
 
+                auto_known_hit_inserted = False
+                if stored:
+                    auto_known_hit_inserted = _auto_insert_known_hit_for_attack(
+                        cur,
+                        int(stored["id"]),
+                        stored["created_at"],
+                        parsed,
+                    )
+
                 conn.commit()
                 return {
                     "ok": True,
@@ -1495,6 +1964,7 @@ def ingest_report(body: RawReportBody):
                     "stored": stored,
                     "parsed": parsed,
                     "settlement_events": events,
+                    "auto_known_hit_inserted": bool(auto_known_hit_inserted),
                 }
 
             parsed = parse_spy_report(raw_text)
@@ -1683,6 +2153,31 @@ def backfill_settlement_observations(
         "attack_reports_with_settlements": int(attack.get("reports_with_settlements") or 0),
         "inserted_attack_settlement_events": int(attack.get("inserted_events") or 0),
         "next_attack_from_id": int(attack.get("last_id") or 0),
+    }
+
+
+@app.post("/api/calc/known-hits/backfill-auto")
+def backfill_auto_known_hits(
+    token: str = "",
+    from_id: int = 0,
+    limit: int = 250000,
+):
+    expected = (os.getenv("SETTLEMENT_BACKFILL_TOKEN", "") or "").strip()
+    if not expected:
+        raise HTTPException(status_code=500, detail="SETTLEMENT_BACKFILL_TOKEN is not set")
+    if token != expected:
+        raise HTTPException(status_code=403, detail="Invalid backfill token")
+
+    lim = max(1, min(int(limit), 1_000_000))
+    start_id = max(0, int(from_id))
+    r = _sync_auto_known_hits_from_attack_reports(start_id, lim)
+    scanned = int(r.get("scanned") or 0)
+    return {
+        "ok": True,
+        "scanned_attack_reports": scanned,
+        "inserted_known_hits": int(r.get("inserted_known_hits") or 0),
+        "next_from_id": int(r.get("last_id") or start_id),
+        "done": scanned < lim,
     }
 
 

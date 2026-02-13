@@ -266,6 +266,65 @@
             <input class="inp" id="atkMorale" type="number" min="-99" step="0.1" value="0" />
           </div>
 
+          <div class="divider"></div>
+          <div class="sectionTitle">My Research Profile</div>
+          <div class="twocol">
+            <div class="rows">
+              <div class="row compact">
+                <div class="lbl">Research Name</div>
+                <input class="inp" id="urName" placeholder="e.g. Tactics" />
+              </div>
+              <div class="row compact">
+                <div class="lbl">Affects</div>
+                <select class="inp" id="urAffects">
+                  <option value="all">All</option>
+                  <option value="infantry">Infantry</option>
+                  <option value="archers">Archers</option>
+                  <option value="cavalry">Cavalry</option>
+                  <option value="castles">Castles</option>
+                </select>
+              </div>
+              <div class="row compact">
+                <div class="lbl">Rate Per Level %</div>
+                <input class="inp" id="urRatePct" type="number" min="0" step="0.01" value="0" />
+              </div>
+              <div class="row compact">
+                <div class="lbl">Level</div>
+                <input class="inp" id="urLevel" type="number" min="0" step="1" value="0" />
+              </div>
+            </div>
+            <div class="rows">
+              <label class="pill"><input id="urApUp" type="checkbox" checked> Affects Attack</label>
+              <label class="pill"><input id="urDpUp" type="checkbox"> Affects Defense</label>
+              <label class="pill"><input id="urSpeedUp" type="checkbox"> Speed Up</label>
+              <label class="pill"><input id="urCasRed" type="checkbox"> Casualty Reduction</label>
+              <div class="row compact">
+                <div class="lbl">Notes (optional)</div>
+                <input class="inp" id="urNotes" />
+              </div>
+            </div>
+          </div>
+          <div class="btnrow">
+            <button class="btn" id="btnSaveResearch">Save Research</button>
+            <button class="btn ghost" id="btnRefreshResearch">Refresh Research</button>
+          </div>
+          <div class="status" id="researchStatus"></div>
+          <div style="overflow:auto; border:1px solid var(--border); border-radius:10px; margin-top:8px;">
+            <table style="width:100%; border-collapse:collapse; font-size:12px;">
+              <thead>
+                <tr>
+                  <th style="text-align:left; padding:8px; border-bottom:1px solid var(--border); color:var(--muted);">Name</th>
+                  <th style="text-align:left; padding:8px; border-bottom:1px solid var(--border); color:var(--muted);">Affects</th>
+                  <th style="text-align:left; padding:8px; border-bottom:1px solid var(--border); color:var(--muted);">Rate</th>
+                  <th style="text-align:left; padding:8px; border-bottom:1px solid var(--border); color:var(--muted);">Level</th>
+                  <th style="text-align:left; padding:8px; border-bottom:1px solid var(--border); color:var(--muted);">Flags</th>
+                  <th style="text-align:left; padding:8px; border-bottom:1px solid var(--border); color:var(--muted);">Actions</th>
+                </tr>
+              </thead>
+              <tbody id="userResearchBody"></tbody>
+            </table>
+          </div>
+
           <div class="btnrow">
             <button class="btn" id="btnCalc">Calculate</button>
             <button class="btn ghost" id="btnCopyAtk">Copy Attack JSON</button>
@@ -674,6 +733,8 @@
 
   const CAL_STORAGE_KEY = "kg_calc_known_hits_v1";
   const KNOWN_HITS_API = "/api/calc/known-hits";
+  const USER_RESEARCH_API = "/api/profile/research";
+  let USER_RESEARCH_CACHE = [];
   let lastCalcSnapshot = null;
 
   function median(nums){
@@ -779,6 +840,120 @@
     const data = await res.json().catch(() => ({}));
     if (!res.ok) throw new Error(String(data?.detail || `HTTP ${res.status}`));
     return data;
+  }
+
+  function normalizeAffects(v){
+    const a = String(v || "").trim().toLowerCase();
+    if (["all", "infantry", "archers", "cavalry", "castles"].includes(a)) return a;
+    return "all";
+  }
+
+  async function loadUserResearch(){
+    const res = await fetch(USER_RESEARCH_API, { credentials: "include" });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok || !Array.isArray(data?.items)) throw new Error(String(data?.detail || `HTTP ${res.status}`));
+    USER_RESEARCH_CACHE = data.items.map(x => ({
+      id: Number(x?.id || 0),
+      name: String(x?.name || "").trim(),
+      affects: normalizeAffects(x?.affects),
+      ratePerLevel: Number(x?.ratePerLevel || 0),
+      level: Number(x?.level || 0),
+      apUp: !!x?.apUp,
+      dpUp: !!x?.dpUp,
+      speedUp: !!x?.speedUp,
+      casualtyReduction: !!x?.casualtyReduction,
+      notes: String(x?.notes || "")
+    }));
+    return USER_RESEARCH_CACHE;
+  }
+
+  async function saveUserResearchItem(payload){
+    const res = await fetch(USER_RESEARCH_API, {
+      method: "POST",
+      credentials: "include",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload || {})
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(String(data?.detail || `HTTP ${res.status}`));
+    return data;
+  }
+
+  async function deleteUserResearchItem(id){
+    const res = await fetch(`${USER_RESEARCH_API}/${encodeURIComponent(String(id))}`, {
+      method: "DELETE",
+      credentials: "include",
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(String(data?.detail || `HTTP ${res.status}`));
+    return data;
+  }
+
+  function renderUserResearchTable(){
+    const body = el("userResearchBody");
+    if (!body) return;
+    const items = USER_RESEARCH_CACHE.slice().sort((a, b) => String(a.name).localeCompare(String(b.name)));
+    if (!items.length) {
+      body.innerHTML = `<tr><td colspan="6" style="padding:10px; color:var(--muted);">No saved research yet.</td></tr>`;
+      return;
+    }
+    body.innerHTML = items.map(it => {
+      const flags = [
+        it.apUp ? "AP" : "",
+        it.dpUp ? "DP" : "",
+        it.speedUp ? "SPD" : "",
+        it.casualtyReduction ? "CAS" : "",
+      ].filter(Boolean).join(", ") || "—";
+      return `
+        <tr data-rid="${escapeHtml(it.id)}">
+          <td style="padding:8px; border-top:1px solid var(--border);">${escapeHtml(it.name)}</td>
+          <td style="padding:8px; border-top:1px solid var(--border);">${escapeHtml(it.affects)}</td>
+          <td style="padding:8px; border-top:1px solid var(--border);">${(Number(it.ratePerLevel || 0) * 100).toFixed(2)}%</td>
+          <td style="padding:8px; border-top:1px solid var(--border);">${escapeHtml(it.level)}</td>
+          <td style="padding:8px; border-top:1px solid var(--border);">${escapeHtml(flags)}</td>
+          <td style="padding:8px; border-top:1px solid var(--border);">
+            <button class="btn ghost" data-act="del-research">Delete</button>
+          </td>
+        </tr>
+      `;
+    }).join("");
+  }
+
+  function computeUserAttackResearchBonus(attackerUnits){
+    const active = USER_RESEARCH_CACHE.filter(x => x.apUp && (Number(x.level || 0) > 0) && (Number(x.ratePerLevel || 0) > 0));
+    if (!active.length) {
+      return { multiplier: 1, bonusPct: 0, allPct: 0, infantryPct: 0, archersPct: 0, cavalryPct: 0, count: 0 };
+    }
+
+    let allPct = 0;
+    let infantryPct = 0;
+    let archersPct = 0;
+    let cavalryPct = 0;
+    for (const r of active) {
+      const pct = Number(r.ratePerLevel || 0) * Number(r.level || 0);
+      const aff = normalizeAffects(r.affects);
+      if (aff === "all") allPct += pct;
+      else if (aff === "infantry") infantryPct += pct;
+      else if (aff === "archers") archersPct += pct;
+      else if (aff === "cavalry") cavalryPct += pct;
+    }
+
+    const infAP = (attackerUnits.footmen || 0) * ATTACK_WEIGHTS.footmen + (attackerUnits.pikemen || 0) * ATTACK_WEIGHTS.pikemen + (attackerUnits.elites || 0) * ATTACK_WEIGHTS.elites;
+    const archAP = (attackerUnits.archers || 0) * ATTACK_WEIGHTS.archers + (attackerUnits.crossbowmen || 0) * ATTACK_WEIGHTS.crossbowmen;
+    const cavAP = (attackerUnits.lightCav || 0) * ATTACK_WEIGHTS.lightCav + (attackerUnits.heavyCav || 0) * ATTACK_WEIGHTS.heavyCav + (attackerUnits.knights || 0) * ATTACK_WEIGHTS.knights;
+    const totalAP = infAP + archAP + cavAP;
+
+    const weightedGroupPct = totalAP > 0 ? ((infantryPct * infAP) + (archersPct * archAP) + (cavalryPct * cavAP)) / totalAP : 0;
+    const bonusPct = allPct + weightedGroupPct;
+    return {
+      multiplier: Math.max(1, 1 + bonusPct),
+      bonusPct,
+      allPct,
+      infantryPct,
+      archersPct,
+      cavalryPct,
+      count: active.length,
+    };
   }
 
   function outcomeTargetRatio(name){
@@ -1181,7 +1356,12 @@
     power *= (1 + bonusPct / 100);
     power *= (1 + moralePct / 100);
 
-    if (el("tgUseResearch").checked) power *= 1.10;
+    let userResearch = { multiplier: 1, bonusPct: 0, allPct: 0, infantryPct: 0, archersPct: 0, cavalryPct: 0, count: 0 };
+    if (el("tgUseResearch").checked) {
+      power *= 1.10;
+      userResearch = computeUserAttackResearchBonus(a);
+      power *= userResearch.multiplier;
+    }
     if (el("tgUseWrath").checked) power *= 1.05;
     if (el("tgUseSteedsFury").checked) {
       const mountedBaseAP =
@@ -1194,6 +1374,7 @@
 
     return {
       power: Math.max(0, power),
+      userResearch,
       rps: {
         defPikeVsAtkCav,
         defCavVsAtkArch,
@@ -1427,6 +1608,60 @@
     };
     await navigator.clipboard.writeText(JSON.stringify(data, null, 2));
     setStatus(el("atkStatus"), [{ k:"Copied", v:"attack JSON to clipboard" }]);
+  });
+
+  el("btnSaveResearch").addEventListener("click", async () => {
+    const name = String(el("urName")?.value || "").trim();
+    if (!name) {
+      setStatus(el("researchStatus"), [{ k:"Research", v:"Name is required." }]);
+      return;
+    }
+    const payload = {
+      name,
+      affects: normalizeAffects(el("urAffects")?.value || "all"),
+      ratePerLevel: (Number(parseNumberLoose(el("urRatePct")?.value) || 0) / 100),
+      level: Number(parseNumberLoose(el("urLevel")?.value) || 0),
+      apUp: !!el("urApUp")?.checked,
+      dpUp: !!el("urDpUp")?.checked,
+      speedUp: !!el("urSpeedUp")?.checked,
+      casualtyReduction: !!el("urCasRed")?.checked,
+      notes: String(el("urNotes")?.value || "").trim()
+    };
+    try {
+      await saveUserResearchItem(payload);
+      await loadUserResearch();
+      renderUserResearchTable();
+      setStatus(el("researchStatus"), [{ k:"Research", v:`Saved: ${name}` }, { k:"Total", v:String(USER_RESEARCH_CACHE.length) }]);
+    } catch (e) {
+      setStatus(el("researchStatus"), [{ k:"Research", v:`save failed: ${String(e?.message || e)}` }]);
+    }
+  });
+
+  el("btnRefreshResearch").addEventListener("click", async () => {
+    try {
+      await loadUserResearch();
+      renderUserResearchTable();
+      setStatus(el("researchStatus"), [{ k:"Research", v:"refreshed" }, { k:"Total", v:String(USER_RESEARCH_CACHE.length) }]);
+    } catch (e) {
+      setStatus(el("researchStatus"), [{ k:"Research", v:`refresh failed: ${String(e?.message || e)}` }]);
+    }
+  });
+
+  el("userResearchBody").addEventListener("click", async (ev) => {
+    const btn = ev.target.closest("button[data-act='del-research']");
+    if (!btn) return;
+    const tr = ev.target.closest("tr[data-rid]");
+    if (!tr) return;
+    const id = Number(tr.getAttribute("data-rid") || 0);
+    if (!(id > 0)) return;
+    try {
+      await deleteUserResearchItem(id);
+      await loadUserResearch();
+      renderUserResearchTable();
+      setStatus(el("researchStatus"), [{ k:"Research", v:"deleted" }, { k:"Total", v:String(USER_RESEARCH_CACHE.length) }]);
+    } catch (e) {
+      setStatus(el("researchStatus"), [{ k:"Research", v:`delete failed: ${String(e?.message || e)}` }]);
+    }
   });
 
   el("btnAddKnownHit").addEventListener("click", async () => {
@@ -1664,6 +1899,7 @@
       { k:"DP Source", v: manualDP && manualDP > 0 ? "manual override" : (parsedDP && parsedDP > 0 ? "spy report" : "troop-derived") },
       { k:"Calibration", v: `${calFactor.toFixed(3)}x (${calStats.profile}, ${calStats.activeSamples} sample${calStats.activeSamples === 1 ? "" : "s"})` },
       { k:"Model Confidence", v: `${calStats.confidencePct}%` },
+      { k:"My Research (AP)", v: el("tgUseResearch").checked ? `${(Number(atk.userResearch?.bonusPct || 0) * 100).toFixed(2)}% (${Number(atk.userResearch?.count || 0)} entries)` : "disabled" },
       { k:"Target Research", v: useTargetResearch ? `${matchedResearch.length} matched / ${targetResearchProfile.reportsScanned} report(s)` : "disabled" },
       { k:"Research DP Bonus", v: useTargetResearch ? `${((def.troopResearchMult - 1) * 100).toFixed(2)}% troops, ${(def.castleResearchPct * 100).toFixed(2)}% castles` : "0.00%" },
       { k:"Research Top", v: useTargetResearch ? (topResearch || "None matched") : "disabled" },
@@ -1679,6 +1915,12 @@
 
   (async () => {
     await pullKnownHitsFromServer();
+    try {
+      await loadUserResearch();
+    } catch (e) {
+      setStatus(el("researchStatus"), [{ k:"Research", v:`load failed: ${String(e?.message || e)}` }]);
+    }
+    renderUserResearchTable();
     renderCalibrationStatus();
   })();
 </script>
