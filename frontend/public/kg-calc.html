@@ -673,6 +673,7 @@
   ];
 
   const CAL_STORAGE_KEY = "kg_calc_known_hits_v1";
+  const KNOWN_HITS_API = "/api/calc/known-hits";
   let lastCalcSnapshot = null;
 
   function median(nums){
@@ -721,6 +722,63 @@
 
   function saveKnownHits(hits){
     localStorage.setItem(CAL_STORAGE_KEY, JSON.stringify(hits || []));
+  }
+
+  async function pullKnownHitsFromServer(){
+    try {
+      const res = await fetch(`${KNOWN_HITS_API}?limit=2000`, { credentials: "include" });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || !Array.isArray(data?.hits)) return false;
+      const normalized = data.hits.map(sanitizeKnownHit).filter(Boolean);
+      saveKnownHits(normalized);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  async function apiCreateKnownHit(payload){
+    const res = await fetch(KNOWN_HITS_API, {
+      method: "POST",
+      credentials: "include",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload || {})
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(String(data?.detail || `HTTP ${res.status}`));
+    return data;
+  }
+
+  async function apiUpdateKnownHit(id, payload){
+    const res = await fetch(`${KNOWN_HITS_API}/${encodeURIComponent(String(id))}`, {
+      method: "PUT",
+      credentials: "include",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload || {})
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(String(data?.detail || `HTTP ${res.status}`));
+    return data;
+  }
+
+  async function apiDeleteKnownHit(id){
+    const res = await fetch(`${KNOWN_HITS_API}/${encodeURIComponent(String(id))}`, {
+      method: "DELETE",
+      credentials: "include"
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(String(data?.detail || `HTTP ${res.status}`));
+    return data;
+  }
+
+  async function apiClearKnownHits(){
+    const res = await fetch(KNOWN_HITS_API, {
+      method: "DELETE",
+      credentials: "include"
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(String(data?.detail || `HTTP ${res.status}`));
+    return data;
   }
 
   function outcomeTargetRatio(name){
@@ -1371,7 +1429,7 @@
     setStatus(el("atkStatus"), [{ k:"Copied", v:"attack JSON to clipboard" }]);
   });
 
-  el("btnAddKnownHit").addEventListener("click", () => {
+  el("btnAddKnownHit").addEventListener("click", async () => {
     if (!lastCalcSnapshot) {
       setStatus(el("calStatus"), [{ k:"Save Known Hit", v:"Run Calculate first." }]);
       return;
@@ -1385,22 +1443,23 @@
     const landTaken = parseNumberLoose(el("khLandTaken").value);
     const note = String(el("khNote").value || "").trim();
     const target = String(el("defTarget")?.value || "").trim();
-    const hits = getKnownHits();
-    hits.push({
-      id: `${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
-      ts: new Date().toISOString(),
-      target: target,
-      targetNorm: normalizeProfileTarget(target),
-      rawRatio: Number(lastCalcSnapshot.rawRatio || 0),
-      calibratedRatio: Number(lastCalcSnapshot.calibratedRatio || 0),
-      predictedOutcome: String(lastCalcSnapshot.predictedOutcome || ""),
-      actualOutcome: actualOutcome,
-      atkPower: Number(lastCalcSnapshot.atkPower || 0),
-      defDP: Number(lastCalcSnapshot.defDP || 0),
-      landTaken: landTaken ?? null,
-      note: note || null
-    });
-    saveKnownHits(hits);
+    try {
+      await apiCreateKnownHit({
+        target: target,
+        rawRatio: Number(lastCalcSnapshot.rawRatio || 0),
+        calibratedRatio: Number(lastCalcSnapshot.calibratedRatio || 0),
+        predictedOutcome: String(lastCalcSnapshot.predictedOutcome || ""),
+        actualOutcome: actualOutcome,
+        atkPower: Number(lastCalcSnapshot.atkPower || 0),
+        defDP: Number(lastCalcSnapshot.defDP || 0),
+        landTaken: landTaken ?? null,
+        note: note || null
+      });
+      await pullKnownHitsFromServer();
+    } catch (e) {
+      setStatus(el("calStatus"), [{ k:"Known Hit", v:`save failed: ${String(e?.message || e)}` }]);
+      return;
+    }
     renderCalibrationStatus();
     setStatus(el("atkStatus"), [
       { k:"Known Hit", v:"saved" },
@@ -1410,7 +1469,7 @@
     ]);
   });
 
-  el("knownHitsBody").addEventListener("click", (ev) => {
+  el("knownHitsBody").addEventListener("click", async (ev) => {
     const btn = ev.target.closest("button[data-act]");
     if (!btn) return;
     const tr = ev.target.closest("tr[data-hit-id]");
@@ -1424,8 +1483,13 @@
 
     const act = btn.getAttribute("data-act");
     if (act === "delete") {
-      hits.splice(idx, 1);
-      saveKnownHits(hits);
+      try {
+        await apiDeleteKnownHit(id);
+        await pullKnownHitsFromServer();
+      } catch (e) {
+        setStatus(el("calStatus"), [{ k:"Known Hit", v:`delete failed: ${String(e?.message || e)}` }]);
+        return;
+      }
       renderCalibrationStatus();
       return;
     }
@@ -1439,22 +1503,36 @@
         setStatus(el("calStatus"), [{ k:"Known Hit", v:"Observed outcome is required." }]);
         return;
       }
-      hits[idx] = sanitizeKnownHit({
-        ...hits[idx],
-        target,
-        targetNorm: normalizeProfileTarget(target),
-        actualOutcome,
-        landTaken: landTaken ?? null,
-        note: note || null
-      }) || hits[idx];
-      saveKnownHits(hits);
+      try {
+        await apiUpdateKnownHit(id, {
+          target,
+          rawRatio: Number(hits[idx].rawRatio || 0),
+          calibratedRatio: Number(hits[idx].calibratedRatio || 0),
+          predictedOutcome: String(hits[idx].predictedOutcome || ""),
+          actualOutcome,
+          atkPower: Number(hits[idx].atkPower || 0),
+          defDP: Number(hits[idx].defDP || 0),
+          landTaken: landTaken ?? null,
+          note: note || null
+        });
+        await pullKnownHitsFromServer();
+      } catch (e) {
+        setStatus(el("calStatus"), [{ k:"Known Hit", v:`update failed: ${String(e?.message || e)}` }]);
+        return;
+      }
       renderCalibrationStatus();
       setStatus(el("calStatus"), [{ k:"Known Hit", v:"row updated" }]);
     }
   });
 
-  el("btnClearKnownHits").addEventListener("click", () => {
-    saveKnownHits([]);
+  el("btnClearKnownHits").addEventListener("click", async () => {
+    try {
+      await apiClearKnownHits();
+      await pullKnownHitsFromServer();
+    } catch (e) {
+      setStatus(el("calStatus"), [{ k:"Known Hit", v:`clear failed: ${String(e?.message || e)}` }]);
+      return;
+    }
     renderCalibrationStatus();
   });
 
@@ -1485,11 +1563,21 @@
     try {
       const text = await file.text();
       const incoming = knownHitsFromCsv(text);
-      const existing = getKnownHits();
-      const byId = new Map(existing.map(h => [String(h.id), h]));
-      for (const h of incoming) byId.set(String(h.id), h);
-      const merged = Array.from(byId.values());
-      saveKnownHits(merged);
+      for (const h of incoming) {
+        await apiCreateKnownHit({
+          target: String(h.target || "").trim(),
+          rawRatio: Number(h.rawRatio || 0),
+          calibratedRatio: Number(h.calibratedRatio || 0),
+          predictedOutcome: String(h.predictedOutcome || ""),
+          actualOutcome: String(h.actualOutcome || ""),
+          atkPower: Number(h.atkPower || 0),
+          defDP: Number(h.defDP || 0),
+          landTaken: h.landTaken ?? null,
+          note: h.note || null
+        });
+      }
+      await pullKnownHitsFromServer();
+      const merged = getKnownHits();
       renderCalibrationStatus();
       setStatus(el("calStatus"), [{ k:"CSV", v:`imported ${incoming.length} row(s), total ${merged.length}` }]);
     } catch (e) {
@@ -1589,7 +1677,10 @@
     ]);
   });
 
-  renderCalibrationStatus();
+  (async () => {
+    await pullKnownHitsFromServer();
+    renderCalibrationStatus();
+  })();
 </script>
 </body>
 </html>

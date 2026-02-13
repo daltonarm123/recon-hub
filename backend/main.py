@@ -180,8 +180,31 @@ def _get_scope_from_request(request: Request) -> Optional[Dict[str, Any]]:
         conn.close()
 
 
+def _require_user_id(request: Request) -> str:
+    token = request.cookies.get(JWT_COOKIE_NAME, "")
+    if not token:
+        raise HTTPException(status_code=401, detail="Login required")
+    claims = _decode_session_jwt(token)
+    uid = str(claims.get("sub") or "").strip()
+    if not uid:
+        raise HTTPException(status_code=401, detail="Invalid session")
+    return uid
+
+
 class RawReportBody(BaseModel):
     raw_text: str = Field(..., min_length=1, max_length=250000)
+
+
+class KnownHitBody(BaseModel):
+    target: str = Field(default="", max_length=120)
+    rawRatio: float = Field(..., gt=0)
+    calibratedRatio: Optional[float] = None
+    predictedOutcome: Optional[str] = Field(default="", max_length=60)
+    actualOutcome: str = Field(..., min_length=1, max_length=60)
+    atkPower: Optional[float] = None
+    defDP: Optional[float] = None
+    landTaken: Optional[float] = None
+    note: Optional[str] = Field(default="", max_length=500)
 
 
 DEFAULT_ALLIANCES: List[tuple[str, str]] = [
@@ -362,6 +385,39 @@ def ensure_recon_tables():
                 ON public.settlement_observations
                 (source_type, source_report_id, kingdom, settlement_name, COALESCE(settlement_level, -1), event_type)
                 WHERE source_report_id IS NOT NULL;
+                """
+            )
+            cur.execute(
+                """
+                CREATE TABLE IF NOT EXISTS public.calc_known_hits (
+                    id BIGSERIAL PRIMARY KEY,
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+                    updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+                    created_by_discord_user_id TEXT,
+                    alliance_scope TEXT,
+                    target TEXT NOT NULL DEFAULT '',
+                    target_norm TEXT NOT NULL DEFAULT '',
+                    raw_ratio DOUBLE PRECISION NOT NULL,
+                    calibrated_ratio DOUBLE PRECISION,
+                    predicted_outcome TEXT,
+                    actual_outcome TEXT NOT NULL,
+                    atk_power DOUBLE PRECISION,
+                    def_dp DOUBLE PRECISION,
+                    land_taken DOUBLE PRECISION,
+                    note TEXT
+                );
+                """
+            )
+            cur.execute(
+                """
+                CREATE INDEX IF NOT EXISTS calc_known_hits_target_idx
+                ON public.calc_known_hits (target_norm, created_at DESC);
+                """
+            )
+            cur.execute(
+                """
+                CREATE INDEX IF NOT EXISTS calc_known_hits_alliance_idx
+                ON public.calc_known_hits (alliance_scope, created_at DESC);
                 """
             )
         conn.commit()
@@ -903,6 +959,175 @@ def list_spy_reports(request: Request, kingdom: str, limit: int = 50):
             )
 
         return {"ok": True, "kingdom": kingdom, "reports": reports}
+    finally:
+        conn.close()
+
+
+def _target_norm(v: Optional[str]) -> str:
+    return re.sub(r"\s+", " ", str(v or "").strip().lower())
+
+
+def _known_hit_to_api(row: Dict[str, Any]) -> Dict[str, Any]:
+    return {
+        "id": str(row.get("id")),
+        "ts": (row.get("created_at").isoformat() if row.get("created_at") else None),
+        "target": row.get("target") or "",
+        "targetNorm": row.get("target_norm") or "",
+        "rawRatio": float(row.get("raw_ratio") or 0),
+        "calibratedRatio": float(row.get("calibrated_ratio") or 0),
+        "predictedOutcome": row.get("predicted_outcome") or "",
+        "actualOutcome": row.get("actual_outcome") or "",
+        "atkPower": float(row.get("atk_power") or 0),
+        "defDP": float(row.get("def_dp") or 0),
+        "landTaken": row.get("land_taken"),
+        "note": row.get("note") or None,
+        "allianceScope": row.get("alliance_scope") or None,
+        "createdBy": row.get("created_by_discord_user_id") or None,
+    }
+
+
+@app.get("/api/calc/known-hits")
+def list_known_hits(request: Request, limit: int = 1000, target: Optional[str] = None):
+    conn = _connect()
+    try:
+        where = ""
+        args: List[Any] = []
+        if target and target.strip():
+            where = " WHERE target_norm = %s"
+            args.append(_target_norm(target))
+        args.append(max(1, min(int(limit or 1000), 5000)))
+
+        q = f"""
+            SELECT id, created_at, target, target_norm, raw_ratio, calibrated_ratio, predicted_outcome,
+                   actual_outcome, atk_power, def_dp, land_taken, note, alliance_scope, created_by_discord_user_id
+            FROM public.calc_known_hits
+            {where}
+            ORDER BY created_at DESC, id DESC
+            LIMIT %s
+        """
+        with conn.cursor() as cur:
+            cur.execute(q, tuple(args))
+            rows = cur.fetchall()
+        return {"ok": True, "hits": [_known_hit_to_api(r) for r in rows]}
+    finally:
+        conn.close()
+
+
+@app.post("/api/calc/known-hits")
+def create_known_hit(request: Request, body: KnownHitBody):
+    uid = _require_user_id(request)
+    target = str(body.target or "").strip()
+
+    conn = _connect()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO public.calc_known_hits (
+                    created_by_discord_user_id, alliance_scope, target, target_norm, raw_ratio, calibrated_ratio,
+                    predicted_outcome, actual_outcome, atk_power, def_dp, land_taken, note
+                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                RETURNING id, created_at, target, target_norm, raw_ratio, calibrated_ratio, predicted_outcome,
+                          actual_outcome, atk_power, def_dp, land_taken, note, alliance_scope, created_by_discord_user_id
+                """,
+                (
+                    uid,
+                    None,
+                    target,
+                    _target_norm(target),
+                    float(body.rawRatio),
+                    (float(body.calibratedRatio) if body.calibratedRatio is not None else None),
+                    str(body.predictedOutcome or "").strip(),
+                    str(body.actualOutcome or "").strip(),
+                    (float(body.atkPower) if body.atkPower is not None else None),
+                    (float(body.defDP) if body.defDP is not None else None),
+                    (float(body.landTaken) if body.landTaken is not None else None),
+                    (str(body.note or "").strip() or None),
+                ),
+            )
+            row = cur.fetchone()
+        conn.commit()
+        return {"ok": True, "hit": _known_hit_to_api(row or {})}
+    finally:
+        conn.close()
+
+
+@app.put("/api/calc/known-hits/{hit_id}")
+def update_known_hit(request: Request, hit_id: int, body: KnownHitBody):
+    _require_user_id(request)
+    target = str(body.target or "").strip()
+
+    conn = _connect()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                f"""
+                UPDATE public.calc_known_hits
+                SET updated_at = now(),
+                    target = %s,
+                    target_norm = %s,
+                    raw_ratio = %s,
+                    calibrated_ratio = %s,
+                    predicted_outcome = %s,
+                    actual_outcome = %s,
+                    atk_power = %s,
+                    def_dp = %s,
+                    land_taken = %s,
+                    note = %s
+                WHERE id = %s
+                RETURNING id, created_at, target, target_norm, raw_ratio, calibrated_ratio, predicted_outcome,
+                          actual_outcome, atk_power, def_dp, land_taken, note, alliance_scope, created_by_discord_user_id
+                """,
+                (
+                    target,
+                    _target_norm(target),
+                    float(body.rawRatio),
+                    (float(body.calibratedRatio) if body.calibratedRatio is not None else None),
+                    str(body.predictedOutcome or "").strip(),
+                    str(body.actualOutcome or "").strip(),
+                    (float(body.atkPower) if body.atkPower is not None else None),
+                    (float(body.defDP) if body.defDP is not None else None),
+                    (float(body.landTaken) if body.landTaken is not None else None),
+                    (str(body.note or "").strip() or None),
+                    int(hit_id),
+                ),
+            )
+            row = cur.fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail="Known hit not found")
+        conn.commit()
+        return {"ok": True, "hit": _known_hit_to_api(row)}
+    finally:
+        conn.close()
+
+
+@app.delete("/api/calc/known-hits/{hit_id}")
+def delete_known_hit(request: Request, hit_id: int):
+    _require_user_id(request)
+    conn = _connect()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "DELETE FROM public.calc_known_hits WHERE id = %s",
+                (int(hit_id),),
+            )
+            deleted = cur.rowcount
+        conn.commit()
+        return {"ok": True, "deleted": int(deleted or 0)}
+    finally:
+        conn.close()
+
+
+@app.delete("/api/calc/known-hits")
+def clear_known_hits(request: Request):
+    _require_user_id(request)
+    conn = _connect()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("DELETE FROM public.calc_known_hits")
+            deleted = cur.rowcount
+        conn.commit()
+        return {"ok": True, "deleted": int(deleted or 0)}
     finally:
         conn.close()
 
