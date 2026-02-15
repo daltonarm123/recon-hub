@@ -447,6 +447,7 @@
           <div class="toolTabs">
             <button class="toolTab active" id="toolTabCalibration">Calibration</button>
             <button class="toolTab" id="toolTabSimulator">Simulator</button>
+            <button class="toolTab" id="toolTabReturn">Return Time</button>
           </div>
 
           <div id="toolPanelCalibration">
@@ -557,6 +558,44 @@
                 </thead>
                 <tbody id="simBody"></tbody>
               </table>
+            </div>
+          </div>
+
+          <div id="toolPanelReturn" style="display:none;">
+            <div class="sectionTitle">Return Time Calculator</div>
+            <div class="twocol">
+              <div class="rows">
+                <div class="row compact">
+                  <div class="lbl">Departure Time (UTC)</div>
+                  <input class="inp" id="rtDepartAt" type="datetime-local" />
+                </div>
+                <div class="row compact">
+                  <div class="lbl">Base Return Minutes</div>
+                  <input class="inp" id="rtBaseMinutes" type="number" min="1" step="1" value="20" />
+                </div>
+              </div>
+              <div class="rows">
+                <div class="row compact">
+                  <div class="lbl">Hit Direction</div>
+                  <select class="inp" id="rtHitDirection">
+                    <option value="unknown">Unknown / Even</option>
+                    <option value="up">Hitting Up (faster)</option>
+                    <option value="down">Hitting Down (slower)</option>
+                  </select>
+                </div>
+                <div class="row compact">
+                  <div class="lbl">Season Epoch (UTC)</div>
+                  <input class="inp" id="rtSeasonEpoch" value="2026-01-01T00:00:00Z" />
+                </div>
+              </div>
+            </div>
+            <div class="btnrow">
+              <button class="btn" id="btnCalcReturnTime">Calculate Return</button>
+              <button class="btn ghost" id="btnReturnUseNow">Use Now (UTC)</button>
+            </div>
+            <div class="status" id="returnStatus"></div>
+            <div class="hint">
+              Rules applied: seasonal speed (Summer -25%, Autumn -10%, Winter +25%) plus hit direction speed (Up = faster, Down = slower).
             </div>
           </div>
         </div>
@@ -1976,11 +2015,115 @@
   }
 
   function simSetTab(which){
-    const isSim = which === "sim";
-    el("toolPanelCalibration").style.display = isSim ? "none" : "";
+    const tab = (which === "sim" || which === "return") ? which : "cal";
+    const isCal = tab === "cal";
+    const isSim = tab === "sim";
+    const isRet = tab === "return";
+    el("toolPanelCalibration").style.display = isCal ? "" : "none";
     el("toolPanelSimulator").style.display = isSim ? "" : "none";
-    el("toolTabCalibration").classList.toggle("active", !isSim);
+    el("toolPanelReturn").style.display = isRet ? "" : "none";
+    el("toolTabCalibration").classList.toggle("active", isCal);
     el("toolTabSimulator").classList.toggle("active", isSim);
+    el("toolTabReturn").classList.toggle("active", isRet);
+  }
+
+  const RETURN_SEASONS = ["spring", "summer", "autumn", "winter"];
+  const RETURN_SEASON_MULT = { spring: 1.00, summer: 0.75, autumn: 0.90, winter: 1.25 };
+  const RETURN_HIT_MULT = { up: 0.90, down: 1.10, unknown: 1.00 };
+  const RETURN_SEASON_DAYS = 5;
+
+  function parseIsoUtcOrFallback(s, fallback){
+    try {
+      const txt = String(s || "").trim();
+      if (!txt) return fallback;
+      const d = new Date(txt);
+      if (!Number.isFinite(d.getTime())) return fallback;
+      return d;
+    } catch {
+      return fallback;
+    }
+  }
+
+  function toUtcInputValue(d){
+    if (!(d instanceof Date) || !Number.isFinite(d.getTime())) return "";
+    const y = d.getUTCFullYear();
+    const m = String(d.getUTCMonth() + 1).padStart(2, "0");
+    const day = String(d.getUTCDate()).padStart(2, "0");
+    const hh = String(d.getUTCHours()).padStart(2, "0");
+    const mm = String(d.getUTCMinutes()).padStart(2, "0");
+    return `${y}-${m}-${day}T${hh}:${mm}`;
+  }
+
+  function getSeasonIndexAndStart(tsUtc, epochUtc){
+    const epochMs = epochUtc.getTime();
+    const tMs = tsUtc.getTime();
+    if (tMs < epochMs) return { idx: 0, start: new Date(epochMs) };
+    const seasonLenMs = RETURN_SEASON_DAYS * 24 * 60 * 60 * 1000;
+    const slot = Math.floor((tMs - epochMs) / seasonLenMs);
+    const idx = ((slot % 4) + 4) % 4;
+    const start = new Date(epochMs + slot * seasonLenMs);
+    return { idx, start };
+  }
+
+  function seasonNameAt(tsUtc, epochUtc){
+    const { idx } = getSeasonIndexAndStart(tsUtc, epochUtc);
+    return RETURN_SEASONS[idx];
+  }
+
+  function seasonEndAt(tsUtc, epochUtc){
+    const { start } = getSeasonIndexAndStart(tsUtc, epochUtc);
+    return new Date(start.getTime() + (RETURN_SEASON_DAYS * 24 * 60 * 60 * 1000));
+  }
+
+  function estimateReturnUtcSeasonAware(departedUtc, baseMinutes, epochUtc){
+    let remainingBase = Math.max(0, Number(baseMinutes || 0));
+    let t = new Date(departedUtc.getTime());
+    let guard = 0;
+    while (remainingBase > 0 && guard < 64) {
+      guard += 1;
+      const season = seasonNameAt(t, epochUtc);
+      const mult = Number(RETURN_SEASON_MULT[season] || 1);
+      const segEnd = seasonEndAt(t, epochUtc);
+      const segRealMinutes = Math.max(0, (segEnd.getTime() - t.getTime()) / 60000);
+      const segBaseCapacity = segRealMinutes / Math.max(0.01, mult);
+      if (segBaseCapacity >= remainingBase) {
+        return new Date(t.getTime() + (remainingBase * mult * 60000));
+      }
+      remainingBase -= segBaseCapacity;
+      t = segEnd;
+    }
+    return t;
+  }
+
+  function calcReturnTimeTool(){
+    const departRaw = el("rtDepartAt")?.value;
+    const base = parseNumberLoose(el("rtBaseMinutes")?.value) ?? 20;
+    const hitDir = String(el("rtHitDirection")?.value || "unknown").toLowerCase();
+    const epochRaw = String(el("rtSeasonEpoch")?.value || "").trim() || "2026-01-01T00:00:00Z";
+
+    const departUtc = departRaw ? new Date(`${departRaw}:00Z`) : new Date();
+    if (!Number.isFinite(departUtc.getTime())) {
+      setStatus(el("returnStatus"), [{ k:"Return Calc", v:"Invalid departure time." }]);
+      return;
+    }
+    const epochUtc = parseIsoUtcOrFallback(epochRaw, new Date(Date.UTC(2026, 0, 1, 0, 0, 0)));
+    const dirMult = Number(RETURN_HIT_MULT[hitDir] || 1);
+    const adjustedBase = Math.max(0, Number(base) * dirMult);
+    const seasonAtDepart = seasonNameAt(departUtc, epochUtc);
+    const etaUtc = estimateReturnUtcSeasonAware(departUtc, adjustedBase, epochUtc);
+    const etaSeason = seasonNameAt(etaUtc, epochUtc);
+    const minsTotal = Math.round((etaUtc.getTime() - departUtc.getTime()) / 60000);
+
+    setStatus(el("returnStatus"), [
+      { k:"Depart (UTC)", v: departUtc.toISOString().replace(".000Z","Z") },
+      { k:"Season At Depart", v: seasonAtDepart },
+      { k:"Base Minutes", v: String(Math.round(base)) },
+      { k:"Direction Multiplier", v: `${dirMult.toFixed(2)}x (${hitDir})` },
+      { k:"Adjusted Base Minutes", v: String(Math.round(adjustedBase)) },
+      { k:"ETA (UTC)", v: etaUtc.toISOString().replace(".000Z","Z") },
+      { k:"ETA Season", v: etaSeason },
+      { k:"Real Minutes Until Return", v: String(minsTotal) }
+    ]);
   }
 
   function renderSimulatorRows(rows){
@@ -2125,7 +2268,12 @@
   // ---------- WIRING ----------
   el("toolTabCalibration").addEventListener("click", () => simSetTab("cal"));
   el("toolTabSimulator").addEventListener("click", () => simSetTab("sim"));
-  simSetTab("cal");
+  el("toolTabReturn").addEventListener("click", () => simSetTab("return"));
+  const initialTool = new URLSearchParams(window.location.search).get("tool");
+  simSetTab(initialTool === "sim" || initialTool === "return" ? initialTool : "cal");
+  if (el("rtDepartAt")) {
+    el("rtDepartAt").value = toUtcInputValue(new Date());
+  }
 
   function applyCompact(){
     const compact = el("tgCompact").checked;
@@ -2148,6 +2296,13 @@
     } catch (e) {
       setStatus(el("simStatus"), [{ k:"Simulator", v:`failed: ${String(e?.message || e)}` }]);
     }
+  });
+  el("btnCalcReturnTime").addEventListener("click", () => {
+    calcReturnTimeTool();
+  });
+  el("btnReturnUseNow").addEventListener("click", () => {
+    el("rtDepartAt").value = toUtcInputValue(new Date());
+    calcReturnTimeTool();
   });
   el("btnSimUseDefNW").addEventListener("click", () => {
     const n = parseNumberLoose(el("defNetworth").value) ?? 0;
