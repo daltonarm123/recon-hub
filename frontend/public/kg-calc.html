@@ -190,6 +190,25 @@
     .troopItem{ display:grid; grid-template-columns:1.3fr 1fr; gap:10px; align-items:center; }
 
     .hint{ font-size:12px; color:rgba(232,208,163,.82); }
+    .toolTabs{ display:flex; gap:8px; flex-wrap:wrap; margin:6px 0 8px; }
+    .toolTab{
+      background:rgba(122,95,56,.20);
+      border:1px solid var(--border);
+      color:var(--muted);
+      padding:7px 10px;
+      border-radius:10px;
+      cursor:pointer;
+      font-size:12px;
+    }
+    .toolTab.active{
+      background:linear-gradient(180deg, rgba(167,126,67,.34), rgba(117,84,42,.24));
+      border-color:rgba(216,175,108,.50);
+      color:#f9e9c8;
+    }
+    .simTableWrap{ overflow:auto; border:1px solid var(--border); border-radius:10px; margin-top:8px; }
+    .simTable{ width:100%; border-collapse:collapse; font-size:12px; min-width:980px; }
+    .simTable th,.simTable td{ text-align:left; padding:8px; border-bottom:1px solid var(--border); white-space:nowrap; }
+    .simTable th{ color:var(--muted); }
 
     /* SAFETY: FORCE DESKTOP SIDE-BY-SIDE */
     @media (min-width: 1100px){
@@ -424,6 +443,13 @@
           <div class="status" id="atkStatus"></div>
 
           <div class="divider"></div>
+          <div class="sectionTitle">Tools</div>
+          <div class="toolTabs">
+            <button class="toolTab active" id="toolTabCalibration">Calibration</button>
+            <button class="toolTab" id="toolTabSimulator">Simulator</button>
+          </div>
+
+          <div id="toolPanelCalibration">
           <div class="sectionTitle">Known Hit Calibration</div>
           <div class="twocol">
             <div class="rows">
@@ -479,6 +505,59 @@
               </thead>
               <tbody id="knownHitsBody"></tbody>
             </table>
+          </div>
+          </div>
+
+          <div id="toolPanelSimulator" style="display:none;">
+            <div class="sectionTitle">Automatic Scenarios</div>
+            <div class="twocol">
+              <div class="rows">
+                <div class="row compact">
+                  <div class="lbl">Your Current NW</div>
+                  <input class="inp" id="simCurrentNW" type="number" min="0" step="1" value="0" />
+                </div>
+              <div class="row compact">
+                <div class="lbl">Target NW (auto from defender)</div>
+                <input class="inp" id="simTargetNW" type="number" min="0" step="1" value="0" />
+              </div>
+              <div class="row compact">
+                <div class="lbl">Target Land (auto from spy)</div>
+                <input class="inp" id="simTargetLand" type="number" min="0" step="1" value="0" />
+              </div>
+            </div>
+              <div class="rows">
+                <div class="row compact">
+                  <div class="lbl">Over-NW Buffer</div>
+                  <input class="inp" id="simOverBufferNW" type="number" min="0" step="1" value="5000" />
+                </div>
+                <div class="btnrow">
+                  <button class="btn" id="btnRunSimulator">Run Scenarios</button>
+                  <button class="btn ghost" id="btnSimUseDefNW">Use Defender NW</button>
+                </div>
+              </div>
+            </div>
+            <div class="status" id="simStatus"></div>
+            <div class="simTableWrap">
+              <table class="simTable">
+                <thead>
+                  <tr>
+                    <th>Scenario</th>
+                    <th>LC</th>
+                    <th>HC</th>
+                    <th>Pike</th>
+                    <th>Added NW</th>
+                    <th>Final NW</th>
+                    <th>Adj AP</th>
+                    <th>Adj DP</th>
+                    <th>Ratio %</th>
+                    <th>Expected</th>
+                    <th>Rough Land</th>
+                    <th>Hitting Up?</th>
+                  </tr>
+                </thead>
+                <tbody id="simBody"></tbody>
+              </table>
+            </div>
           </div>
         </div>
       </div>
@@ -722,6 +801,15 @@
     return res;
   }
 
+  function extractLandFromLandRaw(landRaw){
+    const s = String(landRaw || "").trim();
+    if (!s) return null;
+    const m = s.match(/([0-9][0-9,]*)/);
+    if (!m) return null;
+    const v = parseNumberLoose(m[1]);
+    return (v != null && v >= 0) ? v : null;
+  }
+
   function extractTroops(text){
     const troopsChunk = sliceSection(
       text,
@@ -795,6 +883,13 @@
       if (parsed.alliance != null) el("defAlliance").value = parsed.alliance;
       if (parsed.ranking != null) el("defRank").value = parsed.ranking;
       if (parsed.networth != null) el("defNetworth").value = parsed.networth;
+      if ((parseNumberLoose(el("simTargetNW")?.value) ?? 0) <= 0 && parsed.networth != null) {
+        el("simTargetNW").value = parsed.networth;
+      }
+      const parsedLand = extractLandFromLandRaw(parsed.resources?.landRaw || "");
+      if ((parseNumberLoose(el("simTargetLand")?.value) ?? 0) <= 0 && parsedLand != null) {
+        el("simTargetLand").value = parsedLand;
+      }
       if (parsed.honour != null) el("defHonour").value = parsed.honour;
       if (parsed.castles != null) el("defCastles").value = parsed.castles;
       const parsedDP = extractDefenderDPFromSpyText(rawText || "");
@@ -917,6 +1012,16 @@
     lightCav: 4,
     heavyCav: 5,
     knights: 10
+  };
+  const ATTACK_NW_WEIGHTS = {
+    footmen: 0.38,
+    pikemen: 0.5,
+    archers: 0.5,
+    lightCav: 0.5,
+    heavyCav: 0.63,
+    knights: 1.63,
+    elites: 0.8,
+    crossbowmen: 0.38
   };
 
   const RPS_CONFIG = {
@@ -1856,6 +1961,153 @@
     return { name: "UNKNOWN", min: 0, max: Infinity, landDown: null, landUp: null };
   }
 
+  function computeAttackAddedNW(units){
+    const u = units || {};
+    return (
+      (u.footmen || 0) * ATTACK_NW_WEIGHTS.footmen +
+      (u.pikemen || 0) * ATTACK_NW_WEIGHTS.pikemen +
+      (u.archers || 0) * ATTACK_NW_WEIGHTS.archers +
+      (u.lightCav || 0) * ATTACK_NW_WEIGHTS.lightCav +
+      (u.heavyCav || 0) * ATTACK_NW_WEIGHTS.heavyCav +
+      (u.knights || 0) * ATTACK_NW_WEIGHTS.knights +
+      (u.elites || 0) * ATTACK_NW_WEIGHTS.elites +
+      (u.crossbowmen || 0) * ATTACK_NW_WEIGHTS.crossbowmen
+    );
+  }
+
+  function simSetTab(which){
+    const isSim = which === "sim";
+    el("toolPanelCalibration").style.display = isSim ? "none" : "";
+    el("toolPanelSimulator").style.display = isSim ? "" : "none";
+    el("toolTabCalibration").classList.toggle("active", !isSim);
+    el("toolTabSimulator").classList.toggle("active", isSim);
+  }
+
+  function renderSimulatorRows(rows){
+    const body = el("simBody");
+    if (!body) return;
+    if (!rows || !rows.length) {
+      body.innerHTML = `<tr><td colspan="12" style="padding:10px; color:var(--muted);">No scenarios yet. Click Run Scenarios.</td></tr>`;
+      return;
+    }
+    body.innerHTML = rows.map(r => {
+      const landTxt = Number.isFinite(r.roughLand) ? Math.round(r.roughLand).toLocaleString() : "N/A";
+      return `<tr>
+        <td>${r.name}</td>
+        <td>${Number(r.units.lightCav || 0).toLocaleString()}</td>
+        <td>${Number(r.units.heavyCav || 0).toLocaleString()}</td>
+        <td>${Number(r.units.pikemen || 0).toLocaleString()}</td>
+        <td>${Math.round(r.addedNW).toLocaleString()}</td>
+        <td>${Math.round(r.finalNW).toLocaleString()}</td>
+        <td>${Math.round(r.attackPower).toLocaleString()}</td>
+        <td>${Math.round(r.defDP).toLocaleString()}</td>
+        <td>${(r.ratio * 100).toFixed(2)}%</td>
+        <td>${r.outcome}</td>
+        <td>${landTxt}</td>
+        <td>${r.hittingUp ? "Yes, Send It!" : "Stop and rethink, you need to hit UP!"}</td>
+      </tr>`;
+    }).join("");
+  }
+
+  async function runSimulatorScenarios(){
+    const currentNW = parseNumberLoose(el("simCurrentNW").value) ?? 0;
+    const targetNW = parseNumberLoose(el("simTargetNW").value) ?? 0;
+    const targetLand = parseNumberLoose(el("simTargetLand").value) ?? 0;
+    const overBuffer = parseNumberLoose(el("simOverBufferNW").value) ?? 0;
+    const underBudget = Math.max(0, targetNW - currentNW);
+    const overBudget = Math.max(0, underBudget + overBuffer);
+
+    const defenderUnits = buildDefenderUnitBreakdownFromRows();
+    const targetName = String(el("defTarget")?.value || "").trim();
+    const useTargetResearch = !!el("tgUseTargetResearch")?.checked;
+    let targetResearchProfile = { target: targetName, levels: {}, bonuses: computeTargetResearchBonuses({}), reportsScanned: 0 };
+    if (useTargetResearch && targetName) {
+      targetResearchProfile = await fetchTargetResearchProfile(targetName);
+    }
+
+    const manualDP = parseNumberLoose(el("defDP").value);
+    const parsedDP = extractDefenderDPFromSpyText(el("spyPaste").value || "");
+    const baseDpOverride = manualDP && manualDP > 0 ? manualDP : parsedDP;
+    const defForBase = computeDefenderPower(defenderUnits, buildAttackerUnitBreakdown(), baseDpOverride, targetResearchProfile.bonuses);
+    const defDP = Number(defForBase.adjustedDP || 0);
+    if (!(defDP > 0)) {
+      setStatus(el("simStatus"), [{ k:"Simulator", v:"Need defender DP (spy/manual) or defender troops first." }]);
+      renderSimulatorRows([]);
+      return;
+    }
+
+    const defPike = Number(defenderUnits.pikemen || 0);
+    const defCav = Number((defenderUnits.lightCav || 0) + (defenderUnits.heavyCav || 0) + (defenderUnits.knights || 0));
+    const pikeToSend = defCav > 0 ? Math.ceil(defCav * 0.25) : 0;
+    const cavToCounterPike = defPike > 0 ? ((defPike * 4) + 1) : 0;
+
+    function maxUnitsForBudget(unitKey, budget){
+      const w = Number(ATTACK_NW_WEIGHTS[unitKey] || 0);
+      if (!(w > 0) || !(budget > 0)) return 0;
+      return Math.max(0, Math.floor(budget / w));
+    }
+
+    function buildScenario(name, units){
+      const attackerUnits = {
+        footmen: 0, pikemen: Number(units.pikemen || 0), archers: 0,
+        lightCav: Number(units.lightCav || 0), heavyCav: Number(units.heavyCav || 0), knights: 0,
+        elites: 0, crossbowmen: 0
+      };
+      const atk = computeAttackPower(attackerUnits, defenderUnits);
+      const ratio = atk.power / Math.max(1, defDP);
+      const outcome = pickOutcome(ratio);
+      const landBase = Number(targetLand) > 0 ? Number(targetLand) : Number(targetNW);
+      const roughLand = (outcome.landUp != null && landBase > 0)
+        ? ((Number(outcome.landUp) / 100) * landBase)
+        : NaN;
+      const addedNW = computeAttackAddedNW(attackerUnits);
+      const finalNW = Number(currentNW) + Number(addedNW);
+      return {
+        name,
+        units: attackerUnits,
+        addedNW,
+        finalNW,
+        attackPower: atk.power,
+        defDP,
+        ratio,
+        outcome: outcome.name,
+        roughLand,
+        hittingUp: Number(targetNW) > 0 ? (finalNW <= Number(targetNW)) : false
+      };
+    }
+
+    const rows = [];
+    rows.push(buildScenario("Just enough HC To counter pike", { heavyCav: cavToCounterPike }));
+    rows.push(buildScenario("Just enough LC To counter pike", { lightCav: cavToCounterPike }));
+
+    const pikeNW = pikeToSend * ATTACK_NW_WEIGHTS.pikemen;
+    const underHC = Math.max(0, maxUnitsForBudget("heavyCav", underBudget - pikeNW));
+    const underLC = Math.max(0, maxUnitsForBudget("lightCav", underBudget - pikeNW));
+    rows.push(buildScenario("Pike + HC Under NW", { pikemen: pikeToSend, heavyCav: underHC }));
+    rows.push(buildScenario("Pike + LC Under NW", { pikemen: pikeToSend, lightCav: underLC }));
+
+    rows.push(buildScenario("Max LC Under NW", { lightCav: maxUnitsForBudget("lightCav", underBudget) }));
+    rows.push(buildScenario("Max HC Under NW", { heavyCav: maxUnitsForBudget("heavyCav", underBudget) }));
+    rows.push(buildScenario("Max HC Over NW", { heavyCav: maxUnitsForBudget("heavyCav", overBudget) }));
+    rows.push(buildScenario("Max LC Over NW", { lightCav: maxUnitsForBudget("lightCav", overBudget) }));
+
+    const overHCWithPike = Math.max(0, maxUnitsForBudget("heavyCav", overBudget - pikeNW));
+    const overLCWithPike = Math.max(0, maxUnitsForBudget("lightCav", overBudget - pikeNW));
+    rows.push(buildScenario("Max HC+Pike Over NW", { pikemen: pikeToSend, heavyCav: overHCWithPike }));
+    rows.push(buildScenario("Max LC+Pike Over NW", { pikemen: pikeToSend, lightCav: overLCWithPike }));
+
+    renderSimulatorRows(rows);
+    setStatus(el("simStatus"), [
+      { k:"Defender Pike", v:defPike.toLocaleString() },
+      { k:"Defender Cav", v:defCav.toLocaleString() },
+      { k:"Pike To Send", v:pikeToSend.toLocaleString() },
+      { k:"Cav To Counter Pike", v:cavToCounterPike.toLocaleString() },
+      { k:"Under NW Budget", v:Math.round(underBudget).toLocaleString() },
+      { k:"Over NW Budget", v:Math.round(overBudget).toLocaleString() },
+      { k:"Land Basis", v: Number(targetLand) > 0 ? `${Math.round(targetLand).toLocaleString()} acres` : (Number(targetNW) > 0 ? "fallback: target NW" : "not set") }
+    ]);
+  }
+
   function computeOutcomeConfidencePct(ratio, modelConfidencePct){
     const r = Number(ratio || 0);
     const model = Math.max(0, Math.min(100, Number(modelConfidencePct || 0)));
@@ -1871,6 +2123,10 @@
   }
 
   // ---------- WIRING ----------
+  el("toolTabCalibration").addEventListener("click", () => simSetTab("cal"));
+  el("toolTabSimulator").addEventListener("click", () => simSetTab("sim"));
+  simSetTab("cal");
+
   function applyCompact(){
     const compact = el("tgCompact").checked;
     document.querySelectorAll(".row").forEach(r => {
@@ -1886,6 +2142,31 @@
   addTroopRow("", 0);
 
   el("btnAddTroop").addEventListener("click", () => addTroopRow("", 0));
+  el("btnRunSimulator").addEventListener("click", async () => {
+    try {
+      await runSimulatorScenarios();
+    } catch (e) {
+      setStatus(el("simStatus"), [{ k:"Simulator", v:`failed: ${String(e?.message || e)}` }]);
+    }
+  });
+  el("btnSimUseDefNW").addEventListener("click", () => {
+    const n = parseNumberLoose(el("defNetworth").value) ?? 0;
+    el("simTargetNW").value = String(n);
+    const parsed = parseKgSpyReport(el("spyPaste").value || "");
+    const l = extractLandFromLandRaw(parsed?.resources?.landRaw || "") ?? 0;
+    if (l > 0) el("simTargetLand").value = String(l);
+    setStatus(el("simStatus"), [
+      { k:"Target NW", v:n ? n.toLocaleString() : "0" },
+      { k:"Target Land", v:l ? l.toLocaleString() : "0" }
+    ]);
+  });
+  el("defNetworth").addEventListener("input", () => {
+    const cur = parseNumberLoose(el("simTargetNW").value) ?? 0;
+    if (!(cur > 0)) {
+      const n = parseNumberLoose(el("defNetworth").value) ?? 0;
+      el("simTargetNW").value = String(n);
+    }
+  });
 
   el("btnClearDef").addEventListener("click", () => {
     ["defTarget","defAlliance","defRank","defNetworth","defHonour","defCastles","defDP",
@@ -2399,6 +2680,9 @@
     } catch {}
     renderUserResearchTable();
     renderCalibrationStatus();
+    renderSimulatorRows([]);
+    const n0 = parseNumberLoose(el("defNetworth")?.value) ?? 0;
+    if (n0 > 0) el("simTargetNW").value = String(n0);
 
     const qp = new URLSearchParams(window.location.search || "");
     const qKingdom = String(qp.get("kingdom") || "").trim();
