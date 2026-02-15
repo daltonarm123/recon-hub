@@ -226,6 +226,8 @@ function Layout({ children }) {
                                 <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
                                     <NavLink style={navStyle("/research")} to="/research">Research</NavLink>
                                     <a style={navLink} href="/kg-calc.html">Calc</a>
+                                    <a style={navLink} href="/kg-calc.html?tool=sim">Simulator</a>
+                                    <a style={navLink} href="/kg-calc.html?tool=return">Return Time</a>
                                 </div>
                             </div>
 
