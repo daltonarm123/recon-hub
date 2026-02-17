@@ -255,13 +255,6 @@ def _normalize_premium_tier(tier_raw: Optional[str]) -> str:
         "month": "monthly",
         "1m": "monthly",
         "monthly": "monthly",
-        "quarter": "quarterly",
-        "3m": "quarterly",
-        "quarterly": "quarterly",
-        "semi": "semiannual",
-        "halfyear": "semiannual",
-        "6m": "semiannual",
-        "semiannual": "semiannual",
         "year": "annual",
         "12m": "annual",
         "annual": "annual",
@@ -276,31 +269,17 @@ def _premium_plan_for_tier(tier_raw: Optional[str]) -> Dict[str, Any]:
 
     if tier == "monthly":
         legacy_monthly = os.getenv("PREMIUM_PRICE_USD", "").strip()
-        monthly_env = os.getenv("PREMIUM_MONTHLY_USD", "").strip() or legacy_monthly or "3.00"
+        monthly_env = os.getenv("PREMIUM_MONTHLY_USD", "").strip() or legacy_monthly or "1.00"
         return {
             "tier": "monthly",
             "label": "Monthly",
-            "amount_usd": _money_text(monthly_env, 3.00),
+            "amount_usd": _money_text(monthly_env, 1.00),
             "duration_days": _int_env("PREMIUM_MONTHLY_DAYS", 30),
-        }
-    if tier == "quarterly":
-        return {
-            "tier": "quarterly",
-            "label": "Quarterly",
-            "amount_usd": _money_text(os.getenv("PREMIUM_QUARTERLY_USD", "8.00"), 8.00),
-            "duration_days": _int_env("PREMIUM_QUARTERLY_DAYS", 90),
-        }
-    if tier == "semiannual":
-        return {
-            "tier": "semiannual",
-            "label": "Semi-Annual",
-            "amount_usd": _money_text(os.getenv("PREMIUM_SEMIANNUAL_USD", "15.00"), 15.00),
-            "duration_days": _int_env("PREMIUM_SEMIANNUAL_DAYS", 180),
         }
     return {
         "tier": "annual",
         "label": "Annual",
-        "amount_usd": _money_text(os.getenv("PREMIUM_ANNUAL_USD", "27.00"), 27.00),
+        "amount_usd": _money_text(os.getenv("PREMIUM_ANNUAL_USD", "10.00"), 10.00),
         "duration_days": _int_env("PREMIUM_ANNUAL_DAYS", 365),
     }
 
@@ -308,8 +287,6 @@ def _premium_plan_for_tier(tier_raw: Optional[str]) -> Dict[str, Any]:
 def _premium_plans() -> List[Dict[str, Any]]:
     return [
         _premium_plan_for_tier("monthly"),
-        _premium_plan_for_tier("quarterly"),
-        _premium_plan_for_tier("semiannual"),
         _premium_plan_for_tier("annual"),
     ]
 
