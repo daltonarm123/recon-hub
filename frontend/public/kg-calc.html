@@ -454,6 +454,7 @@
             <button class="toolTab active" id="toolTabCalibration">Calibration</button>
             <button class="toolTab" id="toolTabSimulator">Simulator</button>
             <button class="toolTab" id="toolTabReturn">Return Time</button>
+            <button class="toolTab" id="toolTabLoss">Troop Loss</button>
           </div>
 
           <div id="toolPanelCalibration">
@@ -643,6 +644,46 @@
             <div class="status" id="returnStatus"></div>
             <div class="hint">
               Rules applied: season speed (Summer -25%, Autumn -10%, Winter +25%), hit direction (up/down), and optional gem speed-up (25/50/75).
+            </div>
+          </div>
+
+          <div id="toolPanelLoss" style="display:none;">
+            <div class="sectionTitle">Troop Loss Calculator</div>
+            <div class="twocol">
+              <div class="rows">
+                <div class="row compact">
+                  <div class="lbl">Before Spy Report</div>
+                  <button class="btn ghost" id="btnLossUseMainSpy">Use Main Spy Paste</button>
+                </div>
+                <textarea class="ta" id="lossBeforePaste" placeholder="Paste older SR (before hit)"></textarea>
+              </div>
+              <div class="rows">
+                <div class="row compact">
+                  <div class="lbl">After Spy Report</div>
+                  <button class="btn ghost" id="btnLossClear">Clear</button>
+                </div>
+                <textarea class="ta" id="lossAfterPaste" placeholder="Paste newer SR (after hit)"></textarea>
+              </div>
+            </div>
+            <div class="btnrow">
+              <button class="btn" id="btnCalcLoss">Calculate Losses</button>
+            </div>
+            <div class="status" id="lossStatus"></div>
+            <div style="overflow:auto; border:1px solid var(--border); border-radius:10px; margin-top:8px;">
+              <table style="width:100%; border-collapse:collapse; font-size:12px;">
+                <thead>
+                  <tr>
+                    <th style="text-align:left; padding:8px; border-bottom:1px solid var(--border); color:var(--muted);">Unit</th>
+                    <th style="text-align:left; padding:8px; border-bottom:1px solid var(--border); color:var(--muted);">Before</th>
+                    <th style="text-align:left; padding:8px; border-bottom:1px solid var(--border); color:var(--muted);">After</th>
+                    <th style="text-align:left; padding:8px; border-bottom:1px solid var(--border); color:var(--muted);">Delta</th>
+                    <th style="text-align:left; padding:8px; border-bottom:1px solid var(--border); color:var(--muted);">Type</th>
+                    <th style="text-align:left; padding:8px; border-bottom:1px solid var(--border); color:var(--muted);">Est AP Δ</th>
+                    <th style="text-align:left; padding:8px; border-bottom:1px solid var(--border); color:var(--muted);">Est DP Δ</th>
+                  </tr>
+                </thead>
+                <tbody id="lossBody"></tbody>
+              </table>
             </div>
           </div>
         </div>
@@ -2062,16 +2103,123 @@
   }
 
   function simSetTab(which){
-    const tab = (which === "sim" || which === "return") ? which : "cal";
+    const tab = (which === "sim" || which === "return" || which === "loss") ? which : "cal";
     const isCal = tab === "cal";
     const isSim = tab === "sim";
     const isRet = tab === "return";
+    const isLoss = tab === "loss";
     el("toolPanelCalibration").style.display = isCal ? "" : "none";
     el("toolPanelSimulator").style.display = isSim ? "" : "none";
     el("toolPanelReturn").style.display = isRet ? "" : "none";
+    el("toolPanelLoss").style.display = isLoss ? "" : "none";
     el("toolTabCalibration").classList.toggle("active", isCal);
     el("toolTabSimulator").classList.toggle("active", isSim);
     el("toolTabReturn").classList.toggle("active", isRet);
+    el("toolTabLoss").classList.toggle("active", isLoss);
+  }
+
+  function normalizeLossUnitKey(name){
+    const n = String(name || "").trim().toLowerCase();
+    if (!n) return null;
+    if (n.includes("light") && n.includes("cav")) return "lightCav";
+    if (n.includes("heavy") && n.includes("cav")) return "heavyCav";
+    if (n.includes("knight")) return "knights";
+    if (n.includes("crossbow")) return "crossbowmen";
+    if (n.includes("archer")) return "archers";
+    if (n.includes("pik")) return "pikemen";
+    if (n.includes("foot")) return "footmen";
+    if (n.includes("peasant")) return "peasants";
+    if (n.includes("elite")) return "elites";
+    return null;
+  }
+
+  function parseLossTroopsFromSpy(text){
+    const parsed = parseKgSpyReport(String(text || ""));
+    const out = {
+      peasants: 0, footmen: 0, pikemen: 0, elites: 0,
+      archers: 0, crossbowmen: 0, lightCav: 0, heavyCav: 0, knights: 0
+    };
+    for (const [k, v] of Object.entries(parsed?.troops || {})) {
+      const key = normalizeLossUnitKey(k);
+      const val = Number(v || 0);
+      if (!key || !(val >= 0)) continue;
+      out[key] = (out[key] || 0) + val;
+    }
+    return out;
+  }
+
+  function renderLossRows(rows){
+    const body = el("lossBody");
+    if (!body) return;
+    if (!rows || !rows.length) {
+      body.innerHTML = `<tr><td colspan="7" style="padding:10px; color:var(--muted);">No troop delta detected.</td></tr>`;
+      return;
+    }
+    const labelMap = {
+      peasants: "Peasants", footmen: "Footmen", pikemen: "Pikemen", elites: "Elites",
+      archers: "Archers", crossbowmen: "Crossbowmen", lightCav: "Light Cavalry", heavyCav: "Heavy Cavalry", knights: "Knights"
+    };
+    body.innerHTML = rows.map(r => `
+      <tr>
+        <td style="padding:8px; border-bottom:1px solid var(--border);">${labelMap[r.unit] || r.unit}</td>
+        <td style="padding:8px; border-bottom:1px solid var(--border);">${Number(r.before || 0).toLocaleString()}</td>
+        <td style="padding:8px; border-bottom:1px solid var(--border);">${Number(r.after || 0).toLocaleString()}</td>
+        <td style="padding:8px; border-bottom:1px solid var(--border);">${Number(r.delta || 0).toLocaleString()}</td>
+        <td style="padding:8px; border-bottom:1px solid var(--border);">${r.kind}</td>
+        <td style="padding:8px; border-bottom:1px solid var(--border);">${Math.round(r.apDelta).toLocaleString()}</td>
+        <td style="padding:8px; border-bottom:1px solid var(--border);">${Math.round(r.dpDelta).toLocaleString()}</td>
+      </tr>
+    `).join("");
+  }
+
+  function calcTroopLossTool(){
+    const beforeText = String(el("lossBeforePaste")?.value || "").trim();
+    const afterText = String(el("lossAfterPaste")?.value || "").trim();
+    if (!beforeText || !afterText) {
+      setStatus(el("lossStatus"), [{ k:"Troop Loss", v:"Paste both before and after spy reports first." }]);
+      renderLossRows([]);
+      return;
+    }
+    const before = parseLossTroopsFromSpy(beforeText);
+    const after = parseLossTroopsFromSpy(afterText);
+    const units = ["peasants","footmen","pikemen","elites","archers","crossbowmen","lightCav","heavyCav","knights"];
+    const rows = [];
+    let totalLost = 0;
+    let totalGained = 0;
+    let apLoss = 0;
+    let dpLoss = 0;
+    for (const u of units) {
+      const b = Number(before[u] || 0);
+      const a = Number(after[u] || 0);
+      const d = a - b;
+      if (d === 0) continue;
+      const apw = Number(ATTACK_WEIGHTS[u] || 0);
+      const dpw = Number(DEFENSE_WEIGHTS[u] || 0);
+      const apd = d * apw;
+      const dpd = d * dpw;
+      rows.push({
+        unit: u, before: b, after: a, delta: d,
+        kind: d < 0 ? "Loss" : "Gain",
+        apDelta: apd,
+        dpDelta: dpd
+      });
+      if (d < 0) {
+        totalLost += Math.abs(d);
+        apLoss += Math.abs(apd);
+        dpLoss += Math.abs(dpd);
+      } else {
+        totalGained += d;
+      }
+    }
+    rows.sort((x, y) => Math.abs(y.delta) - Math.abs(x.delta));
+    renderLossRows(rows);
+    setStatus(el("lossStatus"), [
+      { k:"Units Lost", v: totalLost.toLocaleString() },
+      { k:"Units Gained", v: totalGained.toLocaleString() },
+      { k:"Est AP Lost", v: Math.round(apLoss).toLocaleString() },
+      { k:"Est DP Lost", v: Math.round(dpLoss).toLocaleString() },
+      { k:"Rows", v: rows.length.toLocaleString() }
+    ]);
   }
 
   const RETURN_SEASONS = ["spring", "summer", "autumn", "winter"];
@@ -2396,8 +2544,9 @@
   el("toolTabCalibration").addEventListener("click", () => simSetTab("cal"));
   el("toolTabSimulator").addEventListener("click", () => simSetTab("sim"));
   el("toolTabReturn").addEventListener("click", () => simSetTab("return"));
+  el("toolTabLoss").addEventListener("click", () => simSetTab("loss"));
   const initialTool = new URLSearchParams(window.location.search).get("tool");
-  simSetTab(initialTool === "sim" || initialTool === "return" ? initialTool : "cal");
+  simSetTab(initialTool === "sim" || initialTool === "return" || initialTool === "loss" ? initialTool : "cal");
   if (el("rtDepartAt")) {
     el("rtDepartAt").value = toUtcInputValue(new Date());
   }
@@ -2436,6 +2585,24 @@
   });
   el("btnParseReturnSpy").addEventListener("click", () => {
     parseReturnFromSpy();
+  });
+  el("btnCalcLoss").addEventListener("click", () => {
+    calcTroopLossTool();
+  });
+  el("btnLossUseMainSpy").addEventListener("click", () => {
+    const src = String(el("spyPaste")?.value || "");
+    if (!src.trim()) return;
+    if (!String(el("lossBeforePaste")?.value || "").trim()) {
+      el("lossBeforePaste").value = src;
+    } else {
+      el("lossAfterPaste").value = src;
+    }
+  });
+  el("btnLossClear").addEventListener("click", () => {
+    el("lossBeforePaste").value = "";
+    el("lossAfterPaste").value = "";
+    setStatus(el("lossStatus"), []);
+    renderLossRows([]);
   });
   el("btnSimUseDefNW").addEventListener("click", () => {
     const n = parseNumberLoose(el("defNetworth").value) ?? 0;
