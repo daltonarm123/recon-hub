@@ -32,7 +32,7 @@ class AllianceSwitchBody(BaseModel):
 
 
 class PayPalCreateOrderBody(BaseModel):
-    tier: str = Field(default="premium", min_length=3, max_length=40)
+    tier: str = Field(default="monthly", min_length=2, max_length=40)
 
 
 class PayPalCaptureBody(BaseModel):
@@ -230,15 +230,101 @@ def _paypal_webhook_id() -> str:
     return os.getenv("PAYPAL_WEBHOOK_ID", "").strip()
 
 
-def _premium_price_usd() -> str:
-    val = os.getenv("PREMIUM_PRICE_USD", "9.99").strip()
+def _money_text(value: Any, default_value: float) -> str:
     try:
-        n = float(val)
+        n = float(value)
     except Exception:
-        n = 9.99
+        n = float(default_value)
     if n <= 0:
-        n = 9.99
+        n = float(default_value)
     return f"{n:.2f}"
+
+
+def _int_env(name: str, default_value: int) -> int:
+    try:
+        n = int(str(os.getenv(name, str(default_value))).strip())
+    except Exception:
+        n = default_value
+    return n if n > 0 else default_value
+
+
+def _normalize_premium_tier(tier_raw: Optional[str]) -> str:
+    t = str(tier_raw or "monthly").strip().lower()
+    alias = {
+        "premium": "monthly",
+        "month": "monthly",
+        "1m": "monthly",
+        "monthly": "monthly",
+        "quarter": "quarterly",
+        "3m": "quarterly",
+        "quarterly": "quarterly",
+        "semi": "semiannual",
+        "halfyear": "semiannual",
+        "6m": "semiannual",
+        "semiannual": "semiannual",
+        "year": "annual",
+        "12m": "annual",
+        "annual": "annual",
+    }
+    return alias.get(t, "")
+
+
+def _premium_plan_for_tier(tier_raw: Optional[str]) -> Dict[str, Any]:
+    tier = _normalize_premium_tier(tier_raw)
+    if not tier:
+        raise HTTPException(status_code=400, detail="Invalid premium tier")
+
+    if tier == "monthly":
+        legacy_monthly = os.getenv("PREMIUM_PRICE_USD", "").strip()
+        monthly_env = os.getenv("PREMIUM_MONTHLY_USD", "").strip() or legacy_monthly or "3.00"
+        return {
+            "tier": "monthly",
+            "label": "Monthly",
+            "amount_usd": _money_text(monthly_env, 3.00),
+            "duration_days": _int_env("PREMIUM_MONTHLY_DAYS", 30),
+        }
+    if tier == "quarterly":
+        return {
+            "tier": "quarterly",
+            "label": "Quarterly",
+            "amount_usd": _money_text(os.getenv("PREMIUM_QUARTERLY_USD", "8.00"), 8.00),
+            "duration_days": _int_env("PREMIUM_QUARTERLY_DAYS", 90),
+        }
+    if tier == "semiannual":
+        return {
+            "tier": "semiannual",
+            "label": "Semi-Annual",
+            "amount_usd": _money_text(os.getenv("PREMIUM_SEMIANNUAL_USD", "15.00"), 15.00),
+            "duration_days": _int_env("PREMIUM_SEMIANNUAL_DAYS", 180),
+        }
+    return {
+        "tier": "annual",
+        "label": "Annual",
+        "amount_usd": _money_text(os.getenv("PREMIUM_ANNUAL_USD", "27.00"), 27.00),
+        "duration_days": _int_env("PREMIUM_ANNUAL_DAYS", 365),
+    }
+
+
+def _premium_plans() -> List[Dict[str, Any]]:
+    return [
+        _premium_plan_for_tier("monthly"),
+        _premium_plan_for_tier("quarterly"),
+        _premium_plan_for_tier("semiannual"),
+        _premium_plan_for_tier("annual"),
+    ]
+
+
+def _compute_premium_expires_at(discord_user_id: str, duration_days: int) -> datetime:
+    now_utc = datetime.now(timezone.utc)
+    pctx = _load_premium_context(discord_user_id)
+    current_expires = pctx.get("premium_expires_at")
+    if isinstance(current_expires, datetime):
+        if current_expires.tzinfo is None:
+            current_expires = current_expires.replace(tzinfo=timezone.utc)
+        base = current_expires if current_expires > now_utc else now_utc
+    else:
+        base = now_utc
+    return base + timedelta(days=max(1, int(duration_days)))
 
 
 def _load_premium_context(discord_user_id: str) -> Dict[str, Any]:
@@ -269,7 +355,7 @@ def _set_user_premium(
     discord_user_id: str,
     *,
     enabled: bool,
-    tier: str = "premium",
+    tier: str = "monthly",
     source: str = "paypal",
     expires_at: Optional[datetime] = None,
 ):
@@ -1113,6 +1199,7 @@ def _paypal_verify_webhook_signature(headers: Dict[str, str], body: Dict[str, An
 def _premium_upsert_payment(
     discord_user_id: str,
     *,
+    tier: str = "monthly",
     order_id: Optional[str] = None,
     capture_id: Optional[str] = None,
     status: str = "created",
@@ -1125,13 +1212,58 @@ def _premium_upsert_payment(
     conn = _connect()
     try:
         with conn.cursor() as cur:
+            if not order_id and capture_id:
+                cur.execute(
+                    """
+                    UPDATE public.premium_payments
+                    SET
+                      discord_user_id = COALESCE(%s, discord_user_id),
+                      tier = COALESCE(%s, tier),
+                      payer_email = COALESCE(%s, payer_email),
+                      status = %s,
+                      amount = COALESCE(%s, amount),
+                      currency = COALESCE(%s, currency),
+                      payload_json = %s::jsonb,
+                      activated_at = COALESCE(%s, activated_at),
+                      updated_at = now()
+                    WHERE paypal_capture_id = %s
+                    RETURNING id
+                    """,
+                    (
+                        discord_user_id,
+                        tier,
+                        payer_email,
+                        status,
+                        amount,
+                        currency,
+                        json.dumps(payload or {}),
+                        (datetime.now(timezone.utc) if activate else None),
+                        capture_id,
+                    ),
+                )
+                existing = cur.fetchone()
+                if existing:
+                    conn.commit()
+                    if activate:
+                        plan = _premium_plan_for_tier(tier)
+                        expires_at = _compute_premium_expires_at(discord_user_id, int(plan["duration_days"]))
+                        _set_user_premium(
+                            discord_user_id,
+                            enabled=True,
+                            tier=plan["tier"],
+                            source="paypal",
+                            expires_at=expires_at,
+                        )
+                    return
+
             cur.execute(
                 """
                 INSERT INTO public.premium_payments
                   (discord_user_id, provider, tier, paypal_order_id, paypal_capture_id, payer_email, status, amount, currency, payload_json, activated_at, updated_at)
                 VALUES
-                  (%s, 'paypal', 'premium', %s, %s, %s, %s, %s, %s, %s::jsonb, %s, now())
+                  (%s, 'paypal', %s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s, now())
                 ON CONFLICT (paypal_order_id) DO UPDATE SET
+                  tier = COALESCE(EXCLUDED.tier, public.premium_payments.tier),
                   paypal_capture_id = COALESCE(EXCLUDED.paypal_capture_id, public.premium_payments.paypal_capture_id),
                   payer_email = COALESCE(EXCLUDED.payer_email, public.premium_payments.payer_email),
                   status = EXCLUDED.status,
@@ -1143,6 +1275,7 @@ def _premium_upsert_payment(
                 """,
                 (
                     discord_user_id,
+                    tier,
                     order_id,
                     capture_id,
                     payer_email,
@@ -1158,7 +1291,15 @@ def _premium_upsert_payment(
         conn.close()
 
     if activate:
-        _set_user_premium(discord_user_id, enabled=True, tier="premium", source="paypal")
+        plan = _premium_plan_for_tier(tier)
+        expires_at = _compute_premium_expires_at(discord_user_id, int(plan["duration_days"]))
+        _set_user_premium(
+            discord_user_id,
+            enabled=True,
+            tier=plan["tier"],
+            source="paypal",
+            expires_at=expires_at,
+        )
 
 
 @router.get("/api/billing/premium-status")
@@ -1174,6 +1315,7 @@ def billing_premium_status(request: Request):
             "expires_at": p.get("premium_expires_at"),
             "source": p.get("premium_source"),
         },
+        "plans": _premium_plans(),
     }
 
 
@@ -1186,8 +1328,9 @@ def billing_paypal_create_order(body: PayPalCreateOrderBody, request: Request):
     frontend = _frontend_url()
     return_url = f"{frontend}/research?billing=paypal_return"
     cancel_url = f"{frontend}/research?billing=paypal_cancel"
-    amount = _premium_price_usd()
-    tier = (body.tier or "premium").strip().lower() or "premium"
+    plan = _premium_plan_for_tier(body.tier)
+    amount = str(plan["amount_usd"])
+    tier = str(plan["tier"])
 
     with httpx.Client(timeout=25.0) as client:
         r = client.post(
@@ -1201,9 +1344,9 @@ def billing_paypal_create_order(body: PayPalCreateOrderBody, request: Request):
                 "intent": "CAPTURE",
                 "purchase_units": [
                     {
-                        "reference_id": "premium",
-                        "custom_id": user["discord_user_id"],
-                        "description": "Recon Hub Premium",
+                        "reference_id": tier,
+                        "custom_id": f"{user['discord_user_id']}|{tier}",
+                        "description": f"Recon Hub Premium - {plan['label']}",
                         "amount": {"currency_code": "USD", "value": amount},
                     }
                 ],
@@ -1231,6 +1374,7 @@ def billing_paypal_create_order(body: PayPalCreateOrderBody, request: Request):
 
         _premium_upsert_payment(
             user["discord_user_id"],
+            tier=tier,
             order_id=order_id,
             status="created",
             amount=amount,
@@ -1239,7 +1383,15 @@ def billing_paypal_create_order(body: PayPalCreateOrderBody, request: Request):
             activate=False,
         )
 
-        return {"ok": True, "order_id": order_id, "approve_url": approve_url, "tier": tier, "amount_usd": amount}
+        return {
+            "ok": True,
+            "order_id": order_id,
+            "approve_url": approve_url,
+            "tier": tier,
+            "amount_usd": amount,
+            "duration_days": plan["duration_days"],
+            "label": plan["label"],
+        }
 
 
 @router.post("/api/billing/paypal/capture")
@@ -1270,9 +1422,11 @@ def billing_paypal_capture(body: PayPalCaptureBody, request: Request):
     payer_email = None
     amount = None
     currency = None
+    tier = "monthly"
     try:
         payer_email = (j.get("payer") or {}).get("email_address")
         pu = (j.get("purchase_units") or [None])[0] or {}
+        tier = _normalize_premium_tier(pu.get("reference_id")) or "monthly"
         captures = (((pu.get("payments") or {}).get("captures")) or [None])[0] or {}
         cap_id = captures.get("id")
         money = captures.get("amount") or {}
@@ -1283,6 +1437,7 @@ def billing_paypal_capture(body: PayPalCaptureBody, request: Request):
 
     _premium_upsert_payment(
         user["discord_user_id"],
+        tier=tier,
         order_id=order_id,
         capture_id=cap_id,
         payer_email=payer_email,
@@ -1292,7 +1447,14 @@ def billing_paypal_capture(body: PayPalCaptureBody, request: Request):
         payload=j,
         activate=True,
     )
-    return {"ok": True, "order_id": order_id, "capture_id": cap_id, "status": "captured", "is_premium": True}
+    return {
+        "ok": True,
+        "order_id": order_id,
+        "capture_id": cap_id,
+        "status": "captured",
+        "is_premium": True,
+        "tier": tier,
+    }
 
 
 @router.post("/api/billing/paypal/webhook")
@@ -1314,17 +1476,24 @@ async def billing_paypal_webhook(request: Request):
     custom_id = str(resource.get("custom_id") or "").strip()
     order_id = str((resource.get("supplementary_data") or {}).get("related_ids", {}).get("order_id") or "").strip()
 
-    discord_user_id = custom_id
+    discord_user_id = ""
+    tier = "monthly"
+    if custom_id:
+        parts = custom_id.split("|", 1)
+        discord_user_id = parts[0].strip()
+        if len(parts) > 1:
+            tier = _normalize_premium_tier(parts[1]) or "monthly"
     if not discord_user_id and order_id:
         conn = _connect()
         try:
             with conn.cursor() as cur:
                 cur.execute(
-                    "SELECT discord_user_id FROM public.premium_payments WHERE paypal_order_id = %s LIMIT 1",
+                    "SELECT discord_user_id, tier FROM public.premium_payments WHERE paypal_order_id = %s LIMIT 1",
                     (order_id,),
                 )
                 row = cur.fetchone() or {}
                 discord_user_id = str(row.get("discord_user_id") or "").strip()
+                tier = _normalize_premium_tier(row.get("tier")) or tier
         finally:
             conn.close()
 
@@ -1333,6 +1502,7 @@ async def billing_paypal_webhook(request: Request):
 
     _premium_upsert_payment(
         discord_user_id,
+        tier=tier,
         order_id=(order_id or None),
         capture_id=(cap_id or None),
         payer_email=payer_email,
@@ -1342,7 +1512,13 @@ async def billing_paypal_webhook(request: Request):
         payload=body,
         activate=True,
     )
-    return {"ok": True, "event_type": event_type, "discord_user_id": discord_user_id, "is_premium": True}
+    return {
+        "ok": True,
+        "event_type": event_type,
+        "discord_user_id": discord_user_id,
+        "is_premium": True,
+        "tier": tier,
+    }
 
 
 @router.get("/auth/me")
