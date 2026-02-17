@@ -566,6 +566,23 @@
             <div class="twocol">
               <div class="rows">
                 <div class="row compact">
+                  <div class="lbl">Paste Attack Report (optional)</div>
+                  <button class="btn ghost" id="btnParseReturnReport">Parse Report Time</button>
+                </div>
+                <textarea class="ta" id="rtAttackPaste" placeholder="Paste attack report text here (Date:/Received: lines supported)."></textarea>
+              </div>
+              <div class="rows">
+                <div class="row compact">
+                  <div class="lbl">Paste Spy Report (optional)</div>
+                  <button class="btn ghost" id="btnParseReturnSpy">Use SR Networth</button>
+                </div>
+                <textarea class="ta" id="rtSpyPaste" placeholder="Paste spy report here if you want NW auto-filled for hit direction."></textarea>
+              </div>
+            </div>
+            <div class="divider"></div>
+            <div class="twocol">
+              <div class="rows">
+                <div class="row compact">
                   <div class="lbl">Departure Time (UTC)</div>
                   <input class="inp" id="rtDepartAt" type="datetime-local" />
                 </div>
@@ -576,8 +593,18 @@
               </div>
               <div class="rows">
                 <div class="row compact">
+                  <div class="lbl">Blue Gem Speed Up</div>
+                  <select class="inp" id="rtGemSpeedup">
+                    <option value="0">None</option>
+                    <option value="25">25%</option>
+                    <option value="50">50%</option>
+                    <option value="75">75%</option>
+                  </select>
+                </div>
+                <div class="row compact">
                   <div class="lbl">Hit Direction</div>
                   <select class="inp" id="rtHitDirection">
+                    <option value="auto">Auto (from NW below)</option>
                     <option value="unknown">Unknown / Even</option>
                     <option value="up">Hitting Up (faster)</option>
                     <option value="down">Hitting Down (slower)</option>
@@ -589,13 +616,27 @@
                 </div>
               </div>
             </div>
+            <div class="twocol">
+              <div class="rows">
+                <div class="row compact">
+                  <div class="lbl">Attacker NW (optional)</div>
+                  <input class="inp" id="rtAttackerNW" type="number" min="0" step="1" />
+                </div>
+              </div>
+              <div class="rows">
+                <div class="row compact">
+                  <div class="lbl">Defender NW (optional)</div>
+                  <input class="inp" id="rtDefenderNW" type="number" min="0" step="1" />
+                </div>
+              </div>
+            </div>
             <div class="btnrow">
               <button class="btn" id="btnCalcReturnTime">Calculate Return</button>
               <button class="btn ghost" id="btnReturnUseNow">Use Now (UTC)</button>
             </div>
             <div class="status" id="returnStatus"></div>
             <div class="hint">
-              Rules applied: seasonal speed (Summer -25%, Autumn -10%, Winter +25%) plus hit direction speed (Up = faster, Down = slower).
+              Rules applied: season speed (Summer -25%, Autumn -10%, Winter +25%), hit direction (up/down), and optional gem speed-up (25/50/75).
             </div>
           </div>
         </div>
@@ -2030,6 +2071,7 @@
   const RETURN_SEASONS = ["spring", "summer", "autumn", "winter"];
   const RETURN_SEASON_MULT = { spring: 1.00, summer: 0.75, autumn: 0.90, winter: 1.25 };
   const RETURN_HIT_MULT = { up: 0.90, down: 1.10, unknown: 1.00 };
+  const RETURN_GEM_MULT = { 0: 1.00, 25: 0.75, 50: 0.50, 75: 0.25 };
   const RETURN_SEASON_DAYS = 5;
 
   function parseIsoUtcOrFallback(s, fallback){
@@ -2095,11 +2137,57 @@
     return t;
   }
 
+  function parseAttackReportTimestampUtc(text){
+    const src = String(text || "");
+    // Date: [mytime]2026-02-10 13:09:17/mytime
+    let m = src.match(/Date:\s*(?:\[mytime\])?(\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2})/i);
+    if (m && m[1]) {
+      const d = new Date(`${m[1].replace(" ", "T")}Z`);
+      if (Number.isFinite(d.getTime())) return d;
+    }
+    // Received: Feb 12, 2026, 6:37:33 PM
+    m = src.match(/Received:\s*([A-Za-z]{3,9}\s+\d{1,2},\s+\d{4},\s+\d{1,2}:\d{2}:\d{2}\s+[AP]M)/i);
+    if (m && m[1]) {
+      const d = new Date(`${m[1]} UTC`);
+      if (Number.isFinite(d.getTime())) return d;
+    }
+    return null;
+  }
+
+  function parseAttackReportKingdoms(text){
+    const src = String(text || "");
+    let attacker = "";
+    let defender = "";
+    let m = src.match(/Attack Report:\s*(.+?)\s+attacked\s+([^\n\r]+)/i);
+    if (m) {
+      attacker = String(m[1] || "").trim();
+      defender = String(m[2] || "").trim();
+      return { attacker, defender };
+    }
+    m = src.match(/Recipient\(s\):\s*([^\n\r]+)/i);
+    if (m) attacker = String(m[1] || "").trim();
+    m = src.match(/Subject:\s*Attack Report:\s*([^\n\r]+)/i);
+    if (m) defender = String(m[1] || "").trim();
+    return { attacker, defender };
+  }
+
+  function parseDirectionFromNw(attackerNW, defenderNW){
+    const a = Number(attackerNW || 0);
+    const d = Number(defenderNW || 0);
+    if (!(a > 0) || !(d > 0)) return "unknown";
+    if (a < d) return "up";
+    if (a > d) return "down";
+    return "unknown";
+  }
+
   function calcReturnTimeTool(){
     const departRaw = el("rtDepartAt")?.value;
     const base = parseNumberLoose(el("rtBaseMinutes")?.value) ?? 20;
-    const hitDir = String(el("rtHitDirection")?.value || "unknown").toLowerCase();
+    const hitDirRaw = String(el("rtHitDirection")?.value || "unknown").toLowerCase();
+    const gemPct = parseNumberLoose(el("rtGemSpeedup")?.value) ?? 0;
     const epochRaw = String(el("rtSeasonEpoch")?.value || "").trim() || "2026-01-01T00:00:00Z";
+    const attackerNW = parseNumberLoose(el("rtAttackerNW")?.value) ?? 0;
+    const defenderNW = parseNumberLoose(el("rtDefenderNW")?.value) ?? 0;
 
     const departUtc = departRaw ? new Date(`${departRaw}:00Z`) : new Date();
     if (!Number.isFinite(departUtc.getTime())) {
@@ -2107,8 +2195,10 @@
       return;
     }
     const epochUtc = parseIsoUtcOrFallback(epochRaw, new Date(Date.UTC(2026, 0, 1, 0, 0, 0)));
-    const dirMult = Number(RETURN_HIT_MULT[hitDir] || 1);
-    const adjustedBase = Math.max(0, Number(base) * dirMult);
+    const resolvedDir = hitDirRaw === "auto" ? parseDirectionFromNw(attackerNW, defenderNW) : hitDirRaw;
+    const dirMult = Number(RETURN_HIT_MULT[resolvedDir] || 1);
+    const gemMult = Number(RETURN_GEM_MULT[Number(gemPct)] || 1);
+    const adjustedBase = Math.max(0, Number(base) * dirMult * gemMult);
     const seasonAtDepart = seasonNameAt(departUtc, epochUtc);
     const etaUtc = estimateReturnUtcSeasonAware(departUtc, adjustedBase, epochUtc);
     const etaSeason = seasonNameAt(etaUtc, epochUtc);
@@ -2118,12 +2208,43 @@
       { k:"Depart (UTC)", v: departUtc.toISOString().replace(".000Z","Z") },
       { k:"Season At Depart", v: seasonAtDepart },
       { k:"Base Minutes", v: String(Math.round(base)) },
-      { k:"Direction Multiplier", v: `${dirMult.toFixed(2)}x (${hitDir})` },
+      { k:"Direction Multiplier", v: `${dirMult.toFixed(2)}x (${resolvedDir})` },
+      { k:"Gem Multiplier", v: `${gemMult.toFixed(2)}x (${Math.round(gemPct)}%)` },
       { k:"Adjusted Base Minutes", v: String(Math.round(adjustedBase)) },
       { k:"ETA (UTC)", v: etaUtc.toISOString().replace(".000Z","Z") },
       { k:"ETA Season", v: etaSeason },
       { k:"Real Minutes Until Return", v: String(minsTotal) }
     ]);
+  }
+
+  function parseReturnFromAttackReport(){
+    const txt = String(el("rtAttackPaste")?.value || "");
+    const ts = parseAttackReportTimestampUtc(txt);
+    const who = parseAttackReportKingdoms(txt);
+    if (!ts) {
+      setStatus(el("returnStatus"), [{ k:"Report Parse", v:"Could not find Date:/Received: timestamp in report." }]);
+      return;
+    }
+    el("rtDepartAt").value = toUtcInputValue(ts);
+    const curTarget = String(el("defTarget")?.value || "").trim();
+    const defCandidate = who.defender || curTarget;
+    if (defCandidate) {
+      const dNw = parseNumberLoose(el("defNetworth")?.value) ?? 0;
+      if (dNw > 0) el("rtDefenderNW").value = String(dNw);
+    }
+    calcReturnTimeTool();
+  }
+
+  function parseReturnFromSpy(){
+    const txt = String(el("rtSpyPaste")?.value || "");
+    const parsed = parseKgSpyReport(txt);
+    const nw = Number(parsed?.networth || 0);
+    if (!(nw > 0)) {
+      setStatus(el("returnStatus"), [{ k:"SR Parse", v:"Could not parse networth from pasted spy report." }]);
+      return;
+    }
+    el("rtDefenderNW").value = String(Math.round(nw));
+    calcReturnTimeTool();
   }
 
   function renderSimulatorRows(rows){
@@ -2303,6 +2424,12 @@
   el("btnReturnUseNow").addEventListener("click", () => {
     el("rtDepartAt").value = toUtcInputValue(new Date());
     calcReturnTimeTool();
+  });
+  el("btnParseReturnReport").addEventListener("click", () => {
+    parseReturnFromAttackReport();
+  });
+  el("btnParseReturnSpy").addEventListener("click", () => {
+    parseReturnFromSpy();
   });
   el("btnSimUseDefNW").addEventListener("click", () => {
     const n = parseNumberLoose(el("defNetworth").value) ?? 0;
