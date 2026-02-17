@@ -198,6 +198,36 @@ def admin_overview(request: Request):
         conn.close()
 
 
+@router.get("/api/admin/premium-users")
+def admin_premium_users(request: Request):
+    _require_admin(request)
+    conn = _connect()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT
+                  discord_user_id,
+                  COALESCE(discord_username, '') AS discord_username,
+                  COALESCE(premium_tier, 'premium') AS premium_tier,
+                  premium_since,
+                  premium_expires_at,
+                  premium_source
+                FROM public.app_users
+                WHERE is_premium = true
+                ORDER BY COALESCE(discord_username, discord_user_id) ASC
+                """
+            )
+            rows = cur.fetchall() or []
+        return {
+            "ok": True,
+            "total_premium_users": len(rows),
+            "users": rows,
+        }
+    finally:
+        conn.close()
+
+
 @router.get("/api/admin/notes")
 def list_admin_notes(request: Request, limit: int = 200):
     _require_admin(request)

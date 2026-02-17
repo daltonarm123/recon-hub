@@ -31,6 +31,14 @@ class AllianceSwitchBody(BaseModel):
     alliance_id: int = Field(..., gt=0)
 
 
+class PayPalCreateOrderBody(BaseModel):
+    tier: str = Field(default="premium", min_length=3, max_length=40)
+
+
+class PayPalCaptureBody(BaseModel):
+    order_id: str = Field(..., min_length=8, max_length=200)
+
+
 def _get_dsn() -> str:
     dsn = os.getenv("DATABASE_URL") or os.getenv("POSTGRES_URL") or ""
     if not dsn:
@@ -57,6 +65,64 @@ def ensure_auth_tables():
                     created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
                     updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
                 );
+                """
+            )
+            cur.execute(
+                """
+                ALTER TABLE public.app_users
+                ADD COLUMN IF NOT EXISTS is_premium BOOLEAN NOT NULL DEFAULT false;
+                """
+            )
+            cur.execute(
+                """
+                ALTER TABLE public.app_users
+                ADD COLUMN IF NOT EXISTS premium_tier TEXT;
+                """
+            )
+            cur.execute(
+                """
+                ALTER TABLE public.app_users
+                ADD COLUMN IF NOT EXISTS premium_since TIMESTAMPTZ;
+                """
+            )
+            cur.execute(
+                """
+                ALTER TABLE public.app_users
+                ADD COLUMN IF NOT EXISTS premium_expires_at TIMESTAMPTZ;
+                """
+            )
+            cur.execute(
+                """
+                ALTER TABLE public.app_users
+                ADD COLUMN IF NOT EXISTS premium_source TEXT;
+                """
+            )
+            cur.execute(
+                """
+                CREATE TABLE IF NOT EXISTS public.premium_payments (
+                    id BIGSERIAL PRIMARY KEY,
+                    discord_user_id TEXT NOT NULL REFERENCES public.app_users(discord_user_id) ON DELETE CASCADE,
+                    provider TEXT NOT NULL DEFAULT 'paypal',
+                    tier TEXT NOT NULL DEFAULT 'premium',
+                    paypal_order_id TEXT,
+                    paypal_capture_id TEXT,
+                    payer_email TEXT,
+                    status TEXT NOT NULL DEFAULT 'created',
+                    amount NUMERIC(12,2),
+                    currency TEXT,
+                    payload_json JSONB NOT NULL DEFAULT '{}'::jsonb,
+                    activated_at TIMESTAMPTZ,
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+                    updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+                    UNIQUE(paypal_order_id),
+                    UNIQUE(paypal_capture_id)
+                );
+                """
+            )
+            cur.execute(
+                """
+                CREATE INDEX IF NOT EXISTS premium_payments_user_idx
+                ON public.premium_payments (discord_user_id, created_at DESC);
                 """
             )
         conn.commit()
@@ -137,18 +203,130 @@ def _admin_user_ids() -> set[str]:
     return {x.strip() for x in raw.split(",") if x.strip()}
 
 
+def _paypal_mode() -> str:
+    m = os.getenv("PAYPAL_MODE", "live").strip().lower()
+    return "sandbox" if m == "sandbox" else "live"
+
+
+def _paypal_base_url() -> str:
+    return "https://api-m.sandbox.paypal.com" if _paypal_mode() == "sandbox" else "https://api-m.paypal.com"
+
+
+def _paypal_client_id() -> str:
+    v = os.getenv("PAYPAL_CLIENT_ID", "").strip()
+    if not v:
+        raise HTTPException(status_code=500, detail="PAYPAL_CLIENT_ID is not set")
+    return v
+
+
+def _paypal_client_secret() -> str:
+    v = os.getenv("PAYPAL_CLIENT_SECRET", "").strip()
+    if not v:
+        raise HTTPException(status_code=500, detail="PAYPAL_CLIENT_SECRET is not set")
+    return v
+
+
+def _paypal_webhook_id() -> str:
+    return os.getenv("PAYPAL_WEBHOOK_ID", "").strip()
+
+
+def _premium_price_usd() -> str:
+    val = os.getenv("PREMIUM_PRICE_USD", "9.99").strip()
+    try:
+        n = float(val)
+    except Exception:
+        n = 9.99
+    if n <= 0:
+        n = 9.99
+    return f"{n:.2f}"
+
+
+def _load_premium_context(discord_user_id: str) -> Dict[str, Any]:
+    conn = _connect()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT is_premium, premium_tier, premium_since, premium_expires_at, premium_source
+                FROM public.app_users
+                WHERE discord_user_id = %s
+                """,
+                (discord_user_id,),
+            )
+            row = cur.fetchone() or {}
+            return {
+                "is_premium": bool(row.get("is_premium") or False),
+                "premium_tier": row.get("premium_tier"),
+                "premium_since": row.get("premium_since"),
+                "premium_expires_at": row.get("premium_expires_at"),
+                "premium_source": row.get("premium_source"),
+            }
+    finally:
+        conn.close()
+
+
+def _set_user_premium(
+    discord_user_id: str,
+    *,
+    enabled: bool,
+    tier: str = "premium",
+    source: str = "paypal",
+    expires_at: Optional[datetime] = None,
+):
+    conn = _connect()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                UPDATE public.app_users
+                SET is_premium = %s,
+                    premium_tier = %s,
+                    premium_source = %s,
+                    premium_since = CASE WHEN %s THEN COALESCE(premium_since, now()) ELSE NULL END,
+                    premium_expires_at = %s,
+                    updated_at = now()
+                WHERE discord_user_id = %s
+                """,
+                (
+                    bool(enabled),
+                    (tier if enabled else None),
+                    (source if enabled else None),
+                    bool(enabled),
+                    expires_at,
+                    discord_user_id,
+                ),
+            )
+        conn.commit()
+    finally:
+        conn.close()
+
+
 def _get_current_user(request: Request) -> Dict[str, Any]:
     token = request.cookies.get(JWT_COOKIE_NAME, "")
     if not token:
         raise HTTPException(status_code=401, detail="Not authenticated")
     claims = _decode_session_jwt(token)
     uid = str(claims.get("sub") or "")
-    return {
+    base = {
         "discord_user_id": uid,
         "discord_username": str(claims.get("name") or ""),
         "avatar": claims.get("avatar"),
         "is_admin": uid in _admin_user_ids(),
     }
+    try:
+        pctx = _load_premium_context(uid)
+        base.update(
+            {
+                "is_premium": bool(pctx.get("is_premium") or False),
+                "premium_tier": pctx.get("premium_tier"),
+                "premium_since": pctx.get("premium_since"),
+                "premium_expires_at": pctx.get("premium_expires_at"),
+                "premium_source": pctx.get("premium_source"),
+            }
+        )
+    except Exception:
+        base.update({"is_premium": False, "premium_tier": None})
+    return base
 
 
 def _ensure_app_user(discord_user_id: str, discord_username: str):
@@ -884,6 +1062,289 @@ def auth_logout():
     return resp
 
 
+def _paypal_get_access_token() -> str:
+    url = f"{_paypal_base_url()}/v1/oauth2/token"
+    with httpx.Client(timeout=20.0) as client:
+        r = client.post(
+            url,
+            data={"grant_type": "client_credentials"},
+            auth=(_paypal_client_id(), _paypal_client_secret()),
+            headers={"Accept": "application/json", "Accept-Language": "en_US"},
+        )
+        if r.status_code >= 400:
+            raise HTTPException(status_code=502, detail=f"PayPal token failed ({r.status_code})")
+        j = r.json()
+        tok = str(j.get("access_token") or "").strip()
+        if not tok:
+            raise HTTPException(status_code=502, detail="PayPal token missing")
+        return tok
+
+
+def _paypal_verify_webhook_signature(headers: Dict[str, str], body: Dict[str, Any]) -> bool:
+    webhook_id = _paypal_webhook_id()
+    if not webhook_id:
+        return True
+    token = _paypal_get_access_token()
+    payload = {
+        "auth_algo": headers.get("paypal-auth-algo"),
+        "cert_url": headers.get("paypal-cert-url"),
+        "transmission_id": headers.get("paypal-transmission-id"),
+        "transmission_sig": headers.get("paypal-transmission-sig"),
+        "transmission_time": headers.get("paypal-transmission-time"),
+        "webhook_id": webhook_id,
+        "webhook_event": body,
+    }
+    with httpx.Client(timeout=20.0) as client:
+        r = client.post(
+            f"{_paypal_base_url()}/v1/notifications/verify-webhook-signature",
+            headers={
+                "Authorization": f"Bearer {token}",
+                "Content-Type": "application/json",
+                "Accept": "application/json",
+            },
+            json=payload,
+        )
+        if r.status_code >= 400:
+            return False
+        j = r.json()
+        return str(j.get("verification_status") or "").upper() == "SUCCESS"
+
+
+def _premium_upsert_payment(
+    discord_user_id: str,
+    *,
+    order_id: Optional[str] = None,
+    capture_id: Optional[str] = None,
+    status: str = "created",
+    amount: Optional[str] = None,
+    currency: Optional[str] = None,
+    payer_email: Optional[str] = None,
+    payload: Optional[Dict[str, Any]] = None,
+    activate: bool = False,
+):
+    conn = _connect()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO public.premium_payments
+                  (discord_user_id, provider, tier, paypal_order_id, paypal_capture_id, payer_email, status, amount, currency, payload_json, activated_at, updated_at)
+                VALUES
+                  (%s, 'paypal', 'premium', %s, %s, %s, %s, %s, %s, %s::jsonb, %s, now())
+                ON CONFLICT (paypal_order_id) DO UPDATE SET
+                  paypal_capture_id = COALESCE(EXCLUDED.paypal_capture_id, public.premium_payments.paypal_capture_id),
+                  payer_email = COALESCE(EXCLUDED.payer_email, public.premium_payments.payer_email),
+                  status = EXCLUDED.status,
+                  amount = COALESCE(EXCLUDED.amount, public.premium_payments.amount),
+                  currency = COALESCE(EXCLUDED.currency, public.premium_payments.currency),
+                  payload_json = EXCLUDED.payload_json,
+                  activated_at = COALESCE(EXCLUDED.activated_at, public.premium_payments.activated_at),
+                  updated_at = now()
+                """,
+                (
+                    discord_user_id,
+                    order_id,
+                    capture_id,
+                    payer_email,
+                    status,
+                    amount,
+                    currency,
+                    json.dumps(payload or {}),
+                    (datetime.now(timezone.utc) if activate else None),
+                ),
+            )
+        conn.commit()
+    finally:
+        conn.close()
+
+    if activate:
+        _set_user_premium(discord_user_id, enabled=True, tier="premium", source="paypal")
+
+
+@router.get("/api/billing/premium-status")
+def billing_premium_status(request: Request):
+    user = _get_current_user(request)
+    p = _load_premium_context(user["discord_user_id"])
+    return {
+        "ok": True,
+        "premium": {
+            "is_premium": bool(p.get("is_premium") or False),
+            "tier": p.get("premium_tier"),
+            "since": p.get("premium_since"),
+            "expires_at": p.get("premium_expires_at"),
+            "source": p.get("premium_source"),
+        },
+    }
+
+
+@router.post("/api/billing/paypal/create-order")
+def billing_paypal_create_order(body: PayPalCreateOrderBody, request: Request):
+    user = _get_current_user(request)
+    _ensure_app_user(user["discord_user_id"], user["discord_username"])
+    token = _paypal_get_access_token()
+
+    frontend = _frontend_url()
+    return_url = f"{frontend}/research?billing=paypal_return"
+    cancel_url = f"{frontend}/research?billing=paypal_cancel"
+    amount = _premium_price_usd()
+    tier = (body.tier or "premium").strip().lower() or "premium"
+
+    with httpx.Client(timeout=25.0) as client:
+        r = client.post(
+            f"{_paypal_base_url()}/v2/checkout/orders",
+            headers={
+                "Authorization": f"Bearer {token}",
+                "Content-Type": "application/json",
+                "PayPal-Request-Id": f"rh_{user['discord_user_id']}_{int(datetime.now(timezone.utc).timestamp())}",
+            },
+            json={
+                "intent": "CAPTURE",
+                "purchase_units": [
+                    {
+                        "reference_id": "premium",
+                        "custom_id": user["discord_user_id"],
+                        "description": "Recon Hub Premium",
+                        "amount": {"currency_code": "USD", "value": amount},
+                    }
+                ],
+                "application_context": {
+                    "return_url": return_url,
+                    "cancel_url": cancel_url,
+                    "brand_name": "Recon Hub",
+                    "user_action": "PAY_NOW",
+                    "shipping_preference": "NO_SHIPPING",
+                },
+            },
+        )
+        if r.status_code >= 400:
+            detail = r.text[:300] if r.text else f"PayPal order create failed ({r.status_code})"
+            raise HTTPException(status_code=502, detail=detail)
+        j = r.json()
+        order_id = str(j.get("id") or "")
+        approve_url = None
+        for link in (j.get("links") or []):
+            if str(link.get("rel") or "").lower() == "approve":
+                approve_url = link.get("href")
+                break
+        if not order_id:
+            raise HTTPException(status_code=502, detail="PayPal order id missing")
+
+        _premium_upsert_payment(
+            user["discord_user_id"],
+            order_id=order_id,
+            status="created",
+            amount=amount,
+            currency="USD",
+            payload=j,
+            activate=False,
+        )
+
+        return {"ok": True, "order_id": order_id, "approve_url": approve_url, "tier": tier, "amount_usd": amount}
+
+
+@router.post("/api/billing/paypal/capture")
+def billing_paypal_capture(body: PayPalCaptureBody, request: Request):
+    user = _get_current_user(request)
+    order_id = str(body.order_id or "").strip()
+    if not order_id:
+        raise HTTPException(status_code=400, detail="order_id is required")
+
+    token = _paypal_get_access_token()
+    with httpx.Client(timeout=25.0) as client:
+        r = client.post(
+            f"{_paypal_base_url()}/v2/checkout/orders/{order_id}/capture",
+            headers={
+                "Authorization": f"Bearer {token}",
+                "Content-Type": "application/json",
+            },
+        )
+        if r.status_code >= 400:
+            detail = r.text[:300] if r.text else f"PayPal capture failed ({r.status_code})"
+            raise HTTPException(status_code=502, detail=detail)
+        j = r.json()
+    status = str(j.get("status") or "").upper()
+    if status != "COMPLETED":
+        raise HTTPException(status_code=400, detail=f"Capture not completed: {status or 'UNKNOWN'}")
+
+    cap_id = None
+    payer_email = None
+    amount = None
+    currency = None
+    try:
+        payer_email = (j.get("payer") or {}).get("email_address")
+        pu = (j.get("purchase_units") or [None])[0] or {}
+        captures = (((pu.get("payments") or {}).get("captures")) or [None])[0] or {}
+        cap_id = captures.get("id")
+        money = captures.get("amount") or {}
+        amount = money.get("value")
+        currency = money.get("currency_code")
+    except Exception:
+        pass
+
+    _premium_upsert_payment(
+        user["discord_user_id"],
+        order_id=order_id,
+        capture_id=cap_id,
+        payer_email=payer_email,
+        status="captured",
+        amount=amount,
+        currency=currency,
+        payload=j,
+        activate=True,
+    )
+    return {"ok": True, "order_id": order_id, "capture_id": cap_id, "status": "captured", "is_premium": True}
+
+
+@router.post("/api/billing/paypal/webhook")
+async def billing_paypal_webhook(request: Request):
+    body = await request.json()
+    hdr = {k.lower(): v for k, v in request.headers.items()}
+    if not _paypal_verify_webhook_signature(hdr, body):
+        raise HTTPException(status_code=400, detail="Invalid webhook signature")
+
+    event_type = str(body.get("event_type") or "").upper()
+    resource = body.get("resource") or {}
+    if event_type != "PAYMENT.CAPTURE.COMPLETED":
+        return {"ok": True, "ignored": True, "event_type": event_type}
+
+    cap_id = str(resource.get("id") or "")
+    amount = (resource.get("amount") or {}).get("value")
+    currency = (resource.get("amount") or {}).get("currency_code")
+    payer_email = ((resource.get("payer") or {}).get("email_address")) or None
+    custom_id = str(resource.get("custom_id") or "").strip()
+    order_id = str((resource.get("supplementary_data") or {}).get("related_ids", {}).get("order_id") or "").strip()
+
+    discord_user_id = custom_id
+    if not discord_user_id and order_id:
+        conn = _connect()
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT discord_user_id FROM public.premium_payments WHERE paypal_order_id = %s LIMIT 1",
+                    (order_id,),
+                )
+                row = cur.fetchone() or {}
+                discord_user_id = str(row.get("discord_user_id") or "").strip()
+        finally:
+            conn.close()
+
+    if not discord_user_id:
+        return {"ok": True, "ignored": True, "reason": "no_user_mapping", "event_type": event_type}
+
+    _premium_upsert_payment(
+        discord_user_id,
+        order_id=(order_id or None),
+        capture_id=(cap_id or None),
+        payer_email=payer_email,
+        status="captured_webhook",
+        amount=amount,
+        currency=currency,
+        payload=body,
+        activate=True,
+    )
+    return {"ok": True, "event_type": event_type, "discord_user_id": discord_user_id, "is_premium": True}
+
+
 @router.get("/auth/me")
 def auth_me(request: Request):
     token = request.cookies.get(JWT_COOKIE_NAME, "")
@@ -895,6 +1356,7 @@ def auth_me(request: Request):
         uname = str(claims.get("name") or "")
         _ensure_app_user(uid, uname)
         actx = _load_alliance_context(uid)
+        pctx = _load_premium_context(uid)
         return {
             "ok": True,
             "authenticated": True,
@@ -903,6 +1365,11 @@ def auth_me(request: Request):
                 "discord_username": uname,
                 "avatar": claims.get("avatar"),
                 "is_admin": uid in _admin_user_ids(),
+                "is_premium": bool(pctx.get("is_premium") or False),
+                "premium_tier": pctx.get("premium_tier"),
+                "premium_since": pctx.get("premium_since"),
+                "premium_expires_at": pctx.get("premium_expires_at"),
+                "premium_source": pctx.get("premium_source"),
                 "active_alliance_id": actx.get("active_alliance_id"),
                 "alliances": [
                     {

@@ -4,6 +4,10 @@ export default function AdminHealth() {
   const [overview, setOverview] = useState(null);
   const [err, setErr] = useState("");
   const [loading, setLoading] = useState(true);
+  const [premiumUsers, setPremiumUsers] = useState([]);
+  const [premiumTotal, setPremiumTotal] = useState(0);
+  const [premiumErr, setPremiumErr] = useState("");
+  const [premiumLoading, setPremiumLoading] = useState(true);
   const [users, setUsers] = useState([]);
   const [usersErr, setUsersErr] = useState("");
   const [usersLoading, setUsersLoading] = useState(true);
@@ -107,6 +111,28 @@ export default function AdminHealth() {
     }
   }
 
+  async function loadPremiumUsers() {
+    setPremiumLoading(true);
+    setPremiumErr("");
+    try {
+      const r = await fetch("/api/admin/premium-users", {
+        cache: "no-store",
+        credentials: "include",
+      });
+      const j = await r.json().catch(() => ({}));
+      if (!r.ok) throw new Error(j?.detail || `HTTP ${r.status}`);
+      const rows = Array.isArray(j?.users) ? j.users : [];
+      setPremiumUsers(rows);
+      setPremiumTotal(Number(j?.total_premium_users ?? rows.length ?? 0));
+    } catch (e) {
+      setPremiumUsers([]);
+      setPremiumTotal(0);
+      setPremiumErr(e?.message || "Failed to load premium users");
+    } finally {
+      setPremiumLoading(false);
+    }
+  }
+
   async function assignMembership() {
     if (!assignForm.alliance_id || !assignForm.discord_user_id) return;
     setAssigning(true);
@@ -175,6 +201,7 @@ export default function AdminHealth() {
 
   useEffect(() => {
     load();
+    loadPremiumUsers();
     loadNotes();
     loadAlliances();
     loadUsers();
@@ -193,7 +220,14 @@ export default function AdminHealth() {
     <div style={{ display: "grid", gap: 12 }}>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
         <h2 style={{ margin: 0, fontSize: 18 }}>Admin Operations</h2>
-        <button onClick={load} disabled={loading} style={btn}>
+        <button
+          onClick={() => {
+            load();
+            loadPremiumUsers();
+          }}
+          disabled={loading || premiumLoading}
+          style={btn}
+        >
           {loading ? "Refreshing..." : "Refresh"}
         </button>
       </div>
@@ -210,6 +244,49 @@ export default function AdminHealth() {
             <Metric label="KG Connections" value={overview?.counts?.kg_connections ?? 0} />
             <Metric label="Rankings Age (s)" value={overview?.health?.rankings_age_seconds ?? "-"} />
             <Metric label="NW Tick Age (s)" value={overview?.health?.nw_tick_age_seconds ?? "-"} />
+            <Metric label="Premium Users" value={premiumTotal} />
+          </div>
+
+          <div style={panel}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8, flexWrap: "wrap", marginBottom: 8 }}>
+              <div style={{ fontWeight: 700 }}>Premium Memberships</div>
+              <button onClick={loadPremiumUsers} disabled={premiumLoading} style={btn}>
+                {premiumLoading ? "Refreshing..." : "Refresh Premium List"}
+              </button>
+            </div>
+            {premiumErr ? <div style={{ fontSize: 12, color: "#ff8b8b", marginBottom: 8 }}>Error: {premiumErr}</div> : null}
+            {premiumLoading ? <div style={{ fontSize: 12, opacity: 0.8 }}>Loading premium users...</div> : null}
+            {!premiumLoading && premiumUsers.length === 0 ? (
+              <div style={{ fontSize: 12, opacity: 0.75 }}>No premium users yet.</div>
+            ) : null}
+            {!premiumLoading && premiumUsers.length > 0 ? (
+              <div style={{ overflowX: "auto" }}>
+                <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
+                  <thead>
+                    <tr>
+                      <th style={th}>Username</th>
+                      <th style={th}>Discord ID</th>
+                      <th style={th}>Tier</th>
+                      <th style={th}>Since</th>
+                      <th style={th}>Expires</th>
+                      <th style={th}>Source</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {premiumUsers.map((u) => (
+                      <tr key={u.discord_user_id}>
+                        <td style={td}>{u.discord_username || "-"}</td>
+                        <td style={td}>{u.discord_user_id}</td>
+                        <td style={td}>{u.premium_tier || "premium"}</td>
+                        <td style={td}>{u.premium_since ? new Date(u.premium_since).toLocaleString() : "-"}</td>
+                        <td style={td}>{u.premium_expires_at ? new Date(u.premium_expires_at).toLocaleString() : "-"}</td>
+                        <td style={td}>{u.premium_source || "-"}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            ) : null}
           </div>
 
           <div style={panel}>
