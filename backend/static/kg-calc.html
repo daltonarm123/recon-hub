@@ -345,8 +345,8 @@
               </div>
             </div>
             <div class="rows">
-              <div class="hint"><b>Bulk Paste (easy):</b> one line per research like `Tactics 10` or `Horse Breeding: 8`.</div>
-              <textarea class="ta" id="urBulkText" placeholder="Tactics 10&#10;Horse Breeding 8&#10;Improved Defences 12" style="min-height:92px;"></textarea>
+              <div class="hint"><b>Bulk Paste (easy):</b> paste either `Tactics 10` style lines or the full KG Skills/Technologies text block.</div>
+              <textarea class="ta" id="urBulkText" placeholder="Tactics 10&#10;Horse Breeding 8&#10;Improved Defences 12&#10;&#10;OR paste full KG skill blocks with Current Level lines" style="min-height:92px;"></textarea>
               <div class="btnrow">
                 <button class="btn ghost" id="btnImportBulkResearch">Import Bulk</button>
               </div>
@@ -1378,7 +1378,32 @@
 
   function parseBulkResearchLines(text){
     const rows = [];
-    const lines = String(text || "").split(/\r?\n/).map(x => x.trim()).filter(Boolean);
+    const src = String(text || "");
+    const lines = src.split(/\r?\n/).map(x => x.trim()).filter(Boolean);
+
+    // KG Skills page paste format:
+    // "ResearchNameCategory ... Current Level: 5 ... Effect: 2.5% 3%"
+    // We only need the name + current level; template mapping provides the calc behavior.
+    const blockRe = /(^|\n)([^\n]+?)\s*(?:Agriculture|Construction|Economics|Religion|Warfare)\s*\n[\s\S]*?Current Level:\s*(\d{1,4})\b/gi;
+    let bm;
+    while ((bm = blockRe.exec(src)) !== null) {
+      const nameRaw = String(bm[2] || "").trim().replace(/\s{2,}/g, " ");
+      const level = Number(bm[3] || 0);
+      if (!nameRaw || !(level >= 0)) continue;
+      const tpl = getTemplateByName(nameRaw);
+      rows.push({
+        name: tpl?.name || nameRaw,
+        affects: normalizeAffects(tpl?.affects || "all"),
+        ratePerLevel: Number(tpl?.ratePerLevel || 0),
+        level,
+        apUp: !!tpl?.apUp,
+        dpUp: !!tpl?.dpUp,
+        speedUp: !!tpl?.speedUp,
+        casualtyReduction: !!tpl?.casualtyReduction,
+        notes: "bulk import (kg block)"
+      });
+    }
+
     for (const ln of lines) {
       let m = ln.match(/^(.+?)\s*[:\-]\s*(\d{1,4})$/i);
       if (!m) m = ln.match(/^(.+?)\s+(?:lv|lvl|level)?\s*(\d{1,4})$/i);
@@ -1450,7 +1475,18 @@
         notes: "bulk import (%)"
       });
     }
-    return rows;
+
+    // Merge duplicate research names, keep highest level.
+    const dedup = new Map();
+    for (const row of rows) {
+      const key = String(row.name || "").trim().toLowerCase();
+      if (!key) continue;
+      const prev = dedup.get(key);
+      if (!prev || Number(row.level || 0) > Number(prev.level || 0)) {
+        dedup.set(key, row);
+      }
+    }
+    return Array.from(dedup.values());
   }
 
   async function loadKgConnection(){
