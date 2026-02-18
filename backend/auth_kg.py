@@ -364,6 +364,10 @@ def _set_user_premium(
         conn.close()
 
 
+def _has_premium_access(user: Dict[str, Any]) -> bool:
+    return bool(user.get("is_admin") or user.get("is_premium"))
+
+
 def _get_current_user(request: Request) -> Dict[str, Any]:
     token = request.cookies.get(JWT_COOKIE_NAME, "")
     if not token:
@@ -389,6 +393,7 @@ def _get_current_user(request: Request) -> Dict[str, Any]:
         )
     except Exception:
         base.update({"is_premium": False, "premium_tier": None})
+    base["has_premium_access"] = _has_premium_access(base)
     return base
 
 
@@ -1283,14 +1288,17 @@ def _premium_upsert_payment(
 def billing_premium_status(request: Request):
     user = _get_current_user(request)
     p = _load_premium_context(user["discord_user_id"])
+    is_premium = bool(p.get("is_premium") or False)
+    has_access = bool(user.get("is_admin") or is_premium)
     return {
         "ok": True,
         "premium": {
-            "is_premium": bool(p.get("is_premium") or False),
+            "is_premium": is_premium,
             "tier": p.get("premium_tier"),
             "since": p.get("premium_since"),
             "expires_at": p.get("premium_expires_at"),
             "source": p.get("premium_source"),
+            "has_access": has_access,
         },
         "plans": _premium_plans(),
     }
@@ -1519,6 +1527,7 @@ def auth_me(request: Request):
                 "avatar": claims.get("avatar"),
                 "is_admin": uid in _admin_user_ids(),
                 "is_premium": bool(pctx.get("is_premium") or False),
+                "has_premium_access": (uid in _admin_user_ids()) or bool(pctx.get("is_premium") or False),
                 "premium_tier": pctx.get("premium_tier"),
                 "premium_since": pctx.get("premium_since"),
                 "premium_expires_at": pctx.get("premium_expires_at"),
