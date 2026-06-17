@@ -879,14 +879,11 @@ function Settlements() {
                     subtitle="Login with Discord, connect KG token, then load your settlements."
                 >
                     {conn.err ? <div style={{ color: "#ff6b6b", marginBottom: 10 }}>{conn.err}</div> : null}
-                    {conn.err === "Not authenticated" ? (
+                    {!connected ? (
                         <div style={{ display: "grid", gap: 10, maxWidth: 560 }}>
                             <a style={{ ...btn, textDecoration: "none", width: "fit-content" }} href="/auth/discord/login">
                                 Login with Discord
                             </a>
-                        </div>
-                    ) : !connected ? (
-                        <div style={{ display: "grid", gap: 10, maxWidth: 560 }}>
                             <div style={{ fontSize: 12, color: "rgba(231,236,255,.75)" }}>
                                 Easy connect: paste the KG request snippet (from `GetKingdomDetails` or `GetSettlements`) and click Detect.
                             </div>
