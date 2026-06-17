@@ -28,7 +28,7 @@ function useFetchJson(url, deps = []) {
         setLoading(true);
         setErr("");
 
-        fetch(url)
+        fetch(url, { credentials: "include" })
             .then(async (r) => {
                 const j = await r.json().catch(() => ({}));
                 if (!r.ok) throw new Error(j?.detail || `HTTP ${r.status}`);
@@ -57,7 +57,7 @@ function useFetchText(url, deps = []) {
         setLoading(true);
         setErr("");
 
-        fetch(url, { headers: { Accept: "text/plain" } })
+        fetch(url, { headers: { Accept: "text/plain" }, credentials: "include" })
             .then(async (r) => {
                 const t = await r.text();
                 if (!r.ok) throw new Error(t || `HTTP ${r.status}`);
