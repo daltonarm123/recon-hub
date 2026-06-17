@@ -1115,8 +1115,8 @@ def auth_discord_callback(code: str):
         key=JWT_COOKIE_NAME,
         value=jwt_token,
         httponly=True,
-        secure=True,
-        samesite="none",
+        secure=_session_secure_cookie(),
+        samesite="lax",
         max_age=_jwt_exp_hours() * 3600,
         path="/",
     )
@@ -1126,7 +1126,7 @@ def auth_discord_callback(code: str):
 @router.post("/auth/logout")
 def auth_logout():
     resp = RedirectResponse(url=f"{_frontend_url()}/", status_code=302)
-    resp.delete_cookie(JWT_COOKIE_NAME, path="/", secure=True, samesite="none")
+    resp.delete_cookie(JWT_COOKIE_NAME, path="/")
     return resp
 
 
