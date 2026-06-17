@@ -4,6 +4,7 @@ import gzip
 import json
 import time
 import threading
+import logging
 from contextlib import asynccontextmanager
 from datetime import datetime
 from pathlib import Path
@@ -27,22 +28,26 @@ from admin_api import router as admin_router, ensure_admin_tables
 
 BASE_DIR = Path(__file__).resolve().parent
 STATIC_DIR = BASE_DIR / "static"
+logger = logging.getLogger("recon_hub.startup")
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    world_id = os.getenv("KG_WORLD_ID", "1")
+    try:
+        world_id = os.getenv("KG_WORLD_ID", "1")
+        rankings_seconds = int(os.getenv("RANKINGS_POLL_SECONDS", "900"))
+        nw_seconds = int(os.getenv("NW_POLL_SECONDS", "240"))
 
-    rankings_seconds = int(os.getenv("RANKINGS_POLL_SECONDS", "900"))
-    nw_seconds = int(os.getenv("NW_POLL_SECONDS", "240"))
-
-    ensure_auth_tables()
-    ensure_admin_tables()
-    ensure_recon_tables()
-    seed_default_alliances()
-    start_rankings_poller(poll_seconds=rankings_seconds, world_id=world_id)
-    start_nw_poller(poll_seconds=nw_seconds)
-    start_settlement_observer()
+        ensure_auth_tables()
+        ensure_admin_tables()
+        ensure_recon_tables()
+        seed_default_alliances()
+        start_rankings_poller(poll_seconds=rankings_seconds, world_id=world_id)
+        start_nw_poller(poll_seconds=nw_seconds)
+        start_settlement_observer()
+    except Exception:
+        # Keep the HTTP process alive so static pages and health endpoints stay reachable.
+        logger.exception("Startup initialization failed; continuing without background services")
     yield
 
 
