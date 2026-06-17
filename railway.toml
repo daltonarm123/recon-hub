@@ -1,2 +1,2 @@
 [deploy]
-startCommand = "python -m backend.app"
+startCommand = "python backend/main.py"
