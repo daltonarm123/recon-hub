@@ -31,17 +31,31 @@ STATIC_DIR = BASE_DIR / "static"
 logger = logging.getLogger("recon_hub.startup")
 
 
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    try:
-        world_id = os.getenv("KG_WORLD_ID", "1")
-        rankings_seconds = int(os.getenv("RANKINGS_POLL_SECONDS", "900"))
-        nw_seconds = int(os.getenv("NW_POLL_SECONDS", "240"))
+    world_id = os.getenv("KG_WORLD_ID", "1")
+    rankings_seconds = int(os.getenv("RANKINGS_POLL_SECONDS", "900"))
+    nw_seconds = int(os.getenv("NW_POLL_SECONDS", "240"))
 
-        ensure_recon_tables()
-        ensure_auth_tables()
-        ensure_admin_tables()
-        seed_default_alliances()
+    def _init_db():
+        try:
+            logger.info("Background DB init: starting ensure_recon_tables")
+            ensure_recon_tables()
+            logger.info("Background DB init: starting ensure_auth_tables")
+            ensure_auth_tables()
+            logger.info("Background DB init: starting ensure_admin_tables")
+            ensure_admin_tables()
+            logger.info("Background DB init: starting seed_default_alliances")
+            seed_default_alliances()
+            logger.info("Background DB init: complete")
+        except Exception:
+            logger.exception("Background DB init failed; some tables may be missing")
+
+    threading.Thread(target=_init_db, daemon=True, name="db-init").start()
+    logger.info("DB initialization started in background thread; HTTP server is ready")
+
+    try:
         # start_rankings_poller(poll_seconds=rankings_seconds, world_id=world_id)
         start_nw_poller(poll_seconds=nw_seconds)
         start_settlement_observer()
