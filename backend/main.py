@@ -339,6 +339,33 @@ def ensure_recon_tables():
         with conn.cursor() as cur:
             cur.execute(
                 """
+                CREATE TABLE IF NOT EXISTS public.spy_reports (
+                    id serial4 NOT NULL,
+                    kingdom text NULL,
+                    alliance text NULL,
+                    created_at timestamp NULL,
+                    raw text NULL,
+                    report_hash text NULL,
+                    defense_power int4 NULL,
+                    castles int4 NULL,
+                    raw_gz bytea NULL,
+                    CONSTRAINT spy_reports_pkey PRIMARY KEY (id),
+                    UNIQUE (report_hash)
+                );
+                """
+            )
+            cur.execute(
+                """
+                CREATE INDEX IF NOT EXISTS spy_reports_kingdom_idx ON public.spy_reports USING btree (kingdom);
+                """
+            )
+            cur.execute(
+                """
+                CREATE INDEX IF NOT EXISTS spy_reports_kingdom_alliance_idx ON public.spy_reports USING btree (kingdom, alliance);
+                """
+            )
+            cur.execute(
+                """
                 CREATE TABLE IF NOT EXISTS public.attack_reports (
                     id BIGSERIAL PRIMARY KEY,
                     created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
