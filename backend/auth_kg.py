@@ -371,7 +371,19 @@ def _has_premium_access(user: Dict[str, Any]) -> bool:
 def _get_current_user(request: Request) -> Dict[str, Any]:
     token = request.cookies.get(JWT_COOKIE_NAME, "")
     if not token:
-        raise HTTPException(status_code=401, detail="Not authenticated")
+        # Temporarily bypass Discord authentication requirement
+        return {
+            "discord_user_id": "guest_user_bypass",
+            "discord_username": "Guest",
+            "avatar": None,
+            "is_admin": True,
+            "is_premium": True,
+            "premium_tier": None,
+            "premium_since": None,
+            "premium_expires_at": None,
+            "premium_source": None,
+            "has_premium_access": True,
+        }
     claims = _decode_session_jwt(token)
     uid = str(claims.get("sub") or "")
     base = {
