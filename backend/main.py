@@ -42,7 +42,7 @@ async def lifespan(app: FastAPI):
         ensure_auth_tables()
         ensure_admin_tables()
         seed_default_alliances()
-        start_rankings_poller(poll_seconds=rankings_seconds, world_id=world_id)
+        # start_rankings_poller(poll_seconds=rankings_seconds, world_id=world_id)
         start_nw_poller(poll_seconds=nw_seconds)
         start_settlement_observer()
     except Exception:

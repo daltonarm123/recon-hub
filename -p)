@@ -1,0 +1,61 @@
+415:def start_rankings_poller(*, poll_seconds: int = 300, world_id: str = "1"):
+416-    """
+417-    Tick-aligned rankings poller:
+418-    - wakes up exactly on :00/:05/:10...
+419-    - waits KG_TICK_DELAY_SECONDS so KG has time to settle
+420-    - fetches/upserts top 300 into public.kg_top_kingdoms
+421-    """
+422-    global _POLL_THREAD
+423-    if _POLL_THREAD and _POLL_THREAD.is_alive():
+424-        return _POLL_THREAD
+425-
+426-    _ensure_tables()
+427-    cred_pool = _resolve_rankings_creds()
+428-    _log(
+429-        f"[rankings_poller] startup world_id={world_id} "
+430-        f"tick_delay={KG_TICK_DELAY_SECONDS}s creds={len(cred_pool)}"
+431-    )
+432-
+433-    def loop():
+434-        global _LAST_GOOD_CRED_IDX
+435-        # small boot jitter so multiple restarts don't hammer KG at once
+436-        time.sleep(random.uniform(0.0, 2.0))
+437-        first_run = True
+438-
+439-        while True:
+440-            try:
+441-                if first_run:
+442-                    # Run once immediately after boot to avoid long cold-start staleness.
+443-                    target = datetime.now(timezone.utc).replace(second=0, microsecond=0)
+444-                    first_run = False
+445-                else:
+446-                    # Align to tick boundary
+447-                    target = _next_5min_boundary_utc(datetime.now(timezone.utc))
+448-                    _sleep_until(target)
+449-
+450-                    # Let KG settle post-tick
+451-                    if KG_TICK_DELAY_SECONDS > 0:
+452-                        time.sleep(KG_TICK_DELAY_SECONDS)
+453-
+454-                last_err: Optional[Exception] = None
+455-                gal_nw: Optional[int] = None
+456-                n: int = 0
+457-
+458-                for attempt in range(1, 7):
+459-                    last_cred_err: Optional[Exception] = None
+460-                    try:
+461-                        ordered = cred_pool[_LAST_GOOD_CRED_IDX:] + cred_pool[:_LAST_GOOD_CRED_IDX]
+462-                        success = False
+463-                        for i, cred in enumerate(ordered):
+464-                            try:
+465-                                n, gal_nw = _poll_rankings_once(world_id=world_id, creds=cred)
+466-                                _LAST_GOOD_CRED_IDX = (i + _LAST_GOOD_CRED_IDX) % len(cred_pool)
+467-                                acct = cred.get("account_id")
+468-                                if gal_nw is not None:
+469-                                    _log(
+470-                                        f"[rankings_poller] ok: upserted {n} kingdoms @ "
+471-                                        f"{target.isoformat()} GalileoNW={gal_nw} acct={acct}"
+472-                                    )
+473-                                else:
+474-                                    _log(
+475-                                        f"[rankings_poller] ok: upserted {n} kingdoms @ "
