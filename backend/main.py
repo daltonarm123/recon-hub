@@ -3,8 +3,10 @@ import re
 import gzip
 import json
 import time
+import signal
 import threading
 import logging
+import concurrent.futures
 from contextlib import asynccontextmanager
 from datetime import datetime
 from pathlib import Path
@@ -28,7 +30,40 @@ from admin_api import router as admin_router, ensure_admin_tables
 
 BASE_DIR = Path(__file__).resolve().parent
 STATIC_DIR = BASE_DIR / "static"
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+)
 logger = logging.getLogger("recon_hub.startup")
+
+
+_DB_INIT_TIMEOUT = int(os.getenv("DB_INIT_TIMEOUT", "30"))
+
+
+def _run_with_timeout(label: str, fn, timeout: int = _DB_INIT_TIMEOUT) -> bool:
+    """Run *fn* in a thread pool with a hard *timeout* (seconds).
+
+    Returns True on success, False if the call timed out or raised.
+    Logs progress and any errors so the caller can see exactly where a hang occurs.
+    """
+    logger.info("Starting: %s", label)
+    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
+        future = executor.submit(fn)
+        try:
+            future.result(timeout=timeout)
+            logger.info("Completed: %s", label)
+            return True
+        except concurrent.futures.TimeoutError:
+            logger.error(
+                "TIMEOUT after %ds: %s — skipping; app will continue without this step",
+                timeout,
+                label,
+            )
+            return False
+        except Exception:
+            logger.exception("ERROR in: %s — skipping; app will continue without this step", label)
+            return False
 
 
 @asynccontextmanager
@@ -38,13 +73,20 @@ async def lifespan(app: FastAPI):
         rankings_seconds = int(os.getenv("RANKINGS_POLL_SECONDS", "900"))
         nw_seconds = int(os.getenv("NW_POLL_SECONDS", "240"))
 
-        ensure_recon_tables()
-        ensure_auth_tables()
-        ensure_admin_tables()
-        seed_default_alliances()
+        logger.info("=== Startup: beginning database initialization (timeout=%ds per step) ===", _DB_INIT_TIMEOUT)
+
+        _run_with_timeout("ensure_recon_tables()", ensure_recon_tables)
+        _run_with_timeout("ensure_auth_tables()", ensure_auth_tables)
+        _run_with_timeout("ensure_admin_tables()", ensure_admin_tables)
+        _run_with_timeout("seed_default_alliances()", seed_default_alliances)
+
+        logger.info("=== Startup: database initialization complete; starting background services ===")
+
         # start_rankings_poller(poll_seconds=rankings_seconds, world_id=world_id)
         start_nw_poller(poll_seconds=nw_seconds)
         start_settlement_observer()
+
+        logger.info("=== Startup: all background services started ===")
     except Exception:
         # Keep the HTTP process alive so static pages and health endpoints stay reachable.
         logger.exception("Startup initialization failed; continuing without background services")
