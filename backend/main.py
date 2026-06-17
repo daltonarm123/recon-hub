@@ -4,6 +4,7 @@ import gzip
 import json
 import time
 import threading
+from contextlib import asynccontextmanager
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -27,7 +28,25 @@ from admin_api import router as admin_router, ensure_admin_tables
 BASE_DIR = Path(__file__).resolve().parent
 STATIC_DIR = BASE_DIR / "static"
 
-app = FastAPI()
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    world_id = os.getenv("KG_WORLD_ID", "1")
+
+    rankings_seconds = int(os.getenv("RANKINGS_POLL_SECONDS", "900"))
+    nw_seconds = int(os.getenv("NW_POLL_SECONDS", "240"))
+
+    ensure_auth_tables()
+    ensure_admin_tables()
+    ensure_recon_tables()
+    seed_default_alliances()
+    start_rankings_poller(poll_seconds=rankings_seconds, world_id=world_id)
+    start_nw_poller(poll_seconds=nw_seconds)
+    start_settlement_observer()
+    yield
+
+
+app = FastAPI(lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
@@ -2194,25 +2213,6 @@ def backfill_auto_known_hits(
 app.include_router(nw_router, prefix="/api/nw", tags=["nw"])
 app.include_router(auth_kg_router, tags=["auth", "kg"])
 app.include_router(admin_router, tags=["admin"])
-
-
-# -------------------------
-# Startup: start pollers
-# -------------------------
-@app.on_event("startup")
-def _startup():
-    world_id = os.getenv("KG_WORLD_ID", "1")
-
-    rankings_seconds = int(os.getenv("RANKINGS_POLL_SECONDS", "900"))
-    nw_seconds = int(os.getenv("NW_POLL_SECONDS", "240"))
-
-    ensure_auth_tables()
-    ensure_admin_tables()
-    ensure_recon_tables()
-    seed_default_alliances()
-    start_rankings_poller(poll_seconds=rankings_seconds, world_id=world_id)
-    start_nw_poller(poll_seconds=nw_seconds)
-    start_settlement_observer()
 
 
 # -------------------------
