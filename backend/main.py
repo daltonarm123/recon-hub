@@ -38,9 +38,9 @@ async def lifespan(app: FastAPI):
         rankings_seconds = int(os.getenv("RANKINGS_POLL_SECONDS", "900"))
         nw_seconds = int(os.getenv("NW_POLL_SECONDS", "240"))
 
+        ensure_recon_tables()
         ensure_auth_tables()
         ensure_admin_tables()
-        ensure_recon_tables()
         seed_default_alliances()
         start_rankings_poller(poll_seconds=rankings_seconds, world_id=world_id)
         start_nw_poller(poll_seconds=nw_seconds)
