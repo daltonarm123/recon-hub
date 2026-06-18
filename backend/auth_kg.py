@@ -30,9 +30,18 @@ class AuthLoginBody(BaseModel):
     username: str = Field(..., min_length=3)
     password: str = Field(..., min_length=6)
 
-from passlib.context import CryptContext
+import bcrypt
 import uuid
-pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+
+def hash_password(password: str) -> str:
+    salt = bcrypt.gensalt()
+    return bcrypt.hashpw(password.encode("utf-8"), salt).decode("utf-8")
+
+def verify_password(plain_password: str, hashed_password: str) -> bool:
+    try:
+        return bcrypt.checkpw(plain_password.encode("utf-8"), hashed_password.encode("utf-8"))
+    except Exception:
+        return False
 
 
 class AllianceSwitchBody(BaseModel):
@@ -1093,7 +1102,7 @@ def auth_register(body: AuthLoginBody):
             if cur.fetchone():
                 raise HTTPException(status_code=400, detail="Username already exists")
             
-            hashed = pwd_context.hash(body.password)
+            hashed = hash_password(body.password)
             user_id = str(uuid.uuid4())
             uname = body.username.strip()
             
@@ -1137,7 +1146,7 @@ def auth_login(body: AuthLoginBody):
         with conn.cursor(row_factory=dict_row) as cur:
             cur.execute("SELECT discord_user_id, discord_username, password_hash FROM public.app_users WHERE LOWER(discord_username) = LOWER(%s)", (body.username.strip(),))
             user = cur.fetchone()
-            if not user or not user["password_hash"] or not pwd_context.verify(body.password, user["password_hash"]):
+            if not user or not user["password_hash"] or not verify_password(body.password, user["password_hash"]):
                 raise HTTPException(status_code=401, detail="Invalid username or password")
     finally:
         conn.close()
