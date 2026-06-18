@@ -371,19 +371,8 @@ def _has_premium_access(user: Dict[str, Any]) -> bool:
 def _get_current_user(request: Request) -> Dict[str, Any]:
     token = request.cookies.get(JWT_COOKIE_NAME, "")
     if not token:
-        # Temporarily bypass Discord authentication requirement
-        return {
-            "discord_user_id": "guest_user_bypass",
-            "discord_username": "Guest",
-            "avatar": None,
-            "is_admin": True,
-            "is_premium": True,
-            "premium_tier": None,
-            "premium_since": None,
-            "premium_expires_at": None,
-            "premium_source": None,
-            "has_premium_access": True,
-        }
+        raise HTTPException(status_code=401, detail="Not authenticated. The frontend should have initialized a guest session.")
+    
     claims = _decode_session_jwt(token)
     uid = str(claims.get("sub") or "")
     base = {
@@ -1530,10 +1519,41 @@ async def billing_paypal_webhook(request: Request):
 
 
 @router.get("/auth/me")
-def auth_me(request: Request):
+def auth_me(request: Request, response: Response):
     token = request.cookies.get(JWT_COOKIE_NAME, "")
     if not token:
-        return {"ok": True, "authenticated": False}
+        import uuid
+        guest_id = f"guest_{uuid.uuid4().hex}"
+        now = datetime.utcnow()
+        payload = {
+            "sub": guest_id,
+            "name": "Guest",
+            "avatar": None,
+            "iat": int(now.timestamp()),
+            "exp": int((now + timedelta(hours=_jwt_exp_hours())).timestamp()),
+        }
+        token = jwt.encode(payload, _jwt_secret(), algorithm="HS256")
+        response.set_cookie(
+            key=JWT_COOKIE_NAME,
+            value=token,
+            httponly=True,
+            secure=_session_secure_cookie(),
+            samesite="lax",
+            max_age=_jwt_exp_hours() * 3600,
+            path="/",
+        )
+        return {
+            "ok": True, 
+            "authenticated": True, 
+            "user": {
+                "discord_user_id": guest_id,
+                "discord_username": "Guest",
+                "avatar": None,
+                "is_admin": False,
+                "is_premium": False,
+                "has_premium_access": False,
+            }
+        }
     try:
         claims = _decode_session_jwt(token)
         uid = str(claims.get("sub") or "")
