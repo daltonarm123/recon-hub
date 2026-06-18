@@ -640,7 +640,7 @@ def _ci_get(d: Dict[str, Any], *keys: str) -> Any:
     return None
 
 
-def _extract_settlements(payload: Dict[str, Any]) -> List[Dict[str, Any]]:
+def _extract_settlements(payload: Dict[str, Any], account_id: Optional[int] = None) -> List[Dict[str, Any]]:
     candidates = _extract_list(
         payload,
         [
@@ -660,6 +660,17 @@ def _extract_settlements(payload: Dict[str, Any]) -> List[Dict[str, Any]]:
     def parse_item(item: Any):
         if not isinstance(item, dict):
             return
+        
+        # Filter out settlements that do not belong to the user's account
+        if account_id is not None:
+            owner_id = _ci_get(item, "accountId", "accountID", "ownerId", "ownerID", "playerId", "playerID")
+            if owner_id is not None:
+                try:
+                    if int(owner_id) != int(account_id):
+                        return
+                except Exception:
+                    pass
+
         sid = _ci_get(item, "id", "settlementId", "settlementID", "cityId", "cityID", "townId", "townID")
         name = _ci_get(item, "name", "settlementName", "cityName", "townName")
         if sid is None:
@@ -855,7 +866,7 @@ def _fetch_settlements_live(conn_row: Dict[str, Any]) -> List[Dict[str, Any]]:
         for idx, payload in enumerate(variants):
             try:
                 parsed = _kg_post_json(url, payload)
-                settlements = _extract_settlements(parsed)
+                settlements = _extract_settlements(parsed, account_id=int(base["accountId"]))
                 if settlements:
                     break
                 if isinstance(parsed, dict):
