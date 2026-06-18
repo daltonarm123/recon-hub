@@ -11,7 +11,7 @@ import jwt
 import psycopg
 from cryptography.fernet import Fernet, InvalidToken
 from fastapi import APIRouter, HTTPException, Request, Response
-from fastapi.responses import RedirectResponse
+from fastapi.responses import RedirectResponse, JSONResponse
 from psycopg.rows import dict_row
 from pydantic import BaseModel, Field
 
