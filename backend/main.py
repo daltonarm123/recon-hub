@@ -411,6 +411,7 @@ def ensure_recon_tables():
                     created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
                     updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
                 );
+                ALTER TABLE public.app_users ADD COLUMN IF NOT EXISTS password_hash TEXT;
                 """
             )
             cur.execute(

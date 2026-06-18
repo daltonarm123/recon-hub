@@ -211,7 +211,7 @@ function Layout({ children }) {
                                     {auth.data?.user?.discord_username || "Discord"} Logout
                                 </button>
                             ) : (
-                                <a style={navLink} href="/auth/discord/login">Discord Login</a>
+                                <a style={navLink} href="/login">Login</a>
                             )}
                         </div>
 
@@ -883,13 +883,13 @@ function Settlements() {
             <div style={{ display: "grid", gap: 14 }}>
                 <Card
                     title="Settlements"
-                    subtitle="Login with Discord, connect KG token, then load your settlements."
+                    subtitle="Log In, connect KG token, then load your settlements."
                 >
                     {conn.err ? <div style={{ color: "#ff6b6b", marginBottom: 10 }}>{conn.err}</div> : null}
                     {!connected ? (
                         <div style={{ display: "grid", gap: 10, maxWidth: 560 }}>
-                            <a style={{ ...btn, textDecoration: "none", width: "fit-content" }} href="/auth/discord/login">
-                                Login with Discord
+                            <a style={{ ...btn, textDecoration: "none", width: "fit-content" }} href="/login">
+                                Log In
                             </a>
                             <div style={{ fontSize: 12, color: "rgba(231,236,255,.75)" }}>
                                 Easy connect: paste the KG request snippet (from `GetKingdomDetails` or `GetSettlements`) and click Detect.
@@ -1167,8 +1167,8 @@ function Admin() {
                         You need to login with Discord to access admin tools.
                     </div>
                     <div style={{ marginTop: 10 }}>
-                        <a style={{ ...btn, textDecoration: "none" }} href="/auth/discord/login">
-                            Login with Discord
+                        <a style={{ ...btn, textDecoration: "none" }} href="/login">
+                            Log In
                         </a>
                     </div>
                 </Card>
@@ -1328,7 +1328,75 @@ function NWOT() {
     );
 }
 
+
+function Login() {
+    const [isReg, setIsReg] = useState(false);
+    const [form, setForm] = useState({ username: "", password: "" });
+    const [msg, setMsg] = useState("");
+    const [busy, setBusy] = useState(false);
+
+    async function submit(e) {
+        e.preventDefault();
+        if (!form.username || !form.password) {
+            setMsg("Username & password required.");
+            return;
+        }
+        setMsg("");
+        setBusy(true);
+
+        const url = isReg ? `${API_BASE}/auth/register` : `${API_BASE}/auth/login`;
+
+        try {
+            const r = await fetch(url, {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify(form)
+            });
+            const j = await r.json().catch(() => ({}));
+            if (!r.ok) throw new Error(j.detail || `HTTP ${r.status}`);
+            window.location.href = "/";
+        } catch (err) {
+            setMsg(String(err.message || err));
+            setBusy(false);
+        }
+    }
+
+    return (
+        <Layout>
+            <div style={{ maxWidth: 400, margin: "40px auto" }}>
+                <Card title={isReg ? "Create Account" : "Login"} subtitle="Access recon-hub features">
+                    <form onSubmit={submit} style={{ display: "grid", gap: 14 }}>
+                        <input
+                            style={input}
+                            placeholder="Username"
+                            value={form.username}
+                            onChange={e => setForm({...form, username: e.target.value})}
+                        />
+                        <input
+                            style={input}
+                            type="password"
+                            placeholder="Password"
+                            value={form.password}
+                            onChange={e => setForm({...form, password: e.target.value})}
+                        />
+                        {msg && <div style={{ color: "#ff6b6b", fontSize: 12 }}>{msg}</div>}
+                        <button type="submit" style={btn} disabled={busy}>
+                            {busy ? "Wait..." : (isReg ? "Sign Up" : "Log In")}
+                        </button>
+                        <div style={{ textAlign: "center", fontSize: 12, marginTop: 10 }}>
+                            <a href="#" style={{ color: "#5aa0ff" }} onClick={(e) => { e.preventDefault(); setIsReg(!isReg); setMsg(""); setForm({username: "", password: ""}); }}>
+                                {isReg ? "Already have an account? Log In" : "Need an account? Sign Up"}
+                            </a>
+                        </div>
+                    </form>
+                </Card>
+            </div>
+        </Layout>
+    );
+}
+
 /* ---------------- Router ---------------- */
+
 
 export default function App() {
     return (
@@ -1345,6 +1413,7 @@ export default function App() {
                 <Route path="/reports" element={<Reports />} />
                 <Route path="/research" element={<Research />} />
                 <Route path="/admin/health" element={<Admin />} />
+                <Route path="/login" element={<Login />} />
                 <Route path="/calc" element={<Navigate to="/kg-calc.html" replace />} />
                 <Route path="*" element={<Navigate to="/" replace />} />
             </Routes>

@@ -26,6 +26,14 @@ class KGConnectBody(BaseModel):
     kingdom_id: int = Field(..., gt=0)
     token: str = Field(..., min_length=8)
 
+class AuthLoginBody(BaseModel):
+    username: str = Field(..., min_length=3)
+    password: str = Field(..., min_length=6)
+
+from passlib.context import CryptContext
+import uuid
+pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+
 
 class AllianceSwitchBody(BaseModel):
     alliance_id: int = Field(..., gt=0)
@@ -371,7 +379,7 @@ def _has_premium_access(user: Dict[str, Any]) -> bool:
 def _get_current_user(request: Request) -> Dict[str, Any]:
     token = request.cookies.get(JWT_COOKIE_NAME, "")
     if not token:
-        raise HTTPException(status_code=401, detail="Not authenticated. The frontend should have initialized a guest session.")
+        raise HTTPException(status_code=401, detail="Not authenticated")
     
     claims = _decode_session_jwt(token)
     uid = str(claims.get("sub") or "")
@@ -1075,54 +1083,75 @@ def _aggregate_effects(settlements: List[Dict[str, Any]]) -> List[Dict[str, Any]
     return out
 
 
-@router.get("/auth/discord/login")
-def auth_discord_login():
-    query = urlencode(
-        {
-            "client_id": _discord_client_id(),
-            "redirect_uri": _discord_redirect_uri(),
-            "response_type": "code",
-            "scope": _auth_scope(),
-            "prompt": "none",
-        }
-    )
-    return RedirectResponse(url=f"{DISCORD_API_BASE}/oauth2/authorize?{query}", status_code=302)
-
-
-@router.get("/auth/discord/callback")
-def auth_discord_callback(code: str):
-    token_url = f"{DISCORD_API_BASE}/oauth2/token"
-    me_url = f"{DISCORD_API_BASE}/users/@me"
-
-    data = {
-        "client_id": _discord_client_id(),
-        "client_secret": _discord_client_secret(),
-        "grant_type": "authorization_code",
-        "code": code,
-        "redirect_uri": _discord_redirect_uri(),
-    }
-    headers = {"Content-Type": "application/x-www-form-urlencoded"}
-
+@router.post("/auth/register")
+def auth_register(body: AuthLoginBody):
+    conn = _connect()
     try:
-        with httpx.Client(timeout=20.0) as client:
-            tr = client.post(token_url, data=data, headers=headers)
-            tr.raise_for_status()
-            tok = tr.json()
-            access_token = tok.get("access_token")
-            if not access_token:
-                raise HTTPException(status_code=401, detail="Discord login failed (no access token)")
+        with conn.cursor() as cur:
+            # Check if discord_username exists
+            cur.execute("SELECT discord_user_id FROM public.app_users WHERE LOWER(discord_username) = LOWER(%s)", (body.username.strip(),))
+            if cur.fetchone():
+                raise HTTPException(status_code=400, detail="Username already exists")
+            
+            hashed = pwd_context.hash(body.password)
+            user_id = str(uuid.uuid4())
+            uname = body.username.strip()
+            
+            cur.execute(
+                """
+                INSERT INTO public.app_users (discord_user_id, discord_username, password_hash, created_at, updated_at)
+                VALUES (%s, %s, %s, now(), now())
+                """,
+                (user_id, uname, hashed)
+            )
+        conn.commit()
+    finally:
+        conn.close()
 
-            ur = client.get(me_url, headers={"Authorization": f"Bearer {access_token}"})
-            ur.raise_for_status()
-            user = ur.json()
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(status_code=502, detail=f"Discord auth failed: {repr(e)}")
+    # Log them in automatically
+    payload = {
+        "sub": user_id,
+        "name": uname,
+        "avatar": None,
+        "iat": int(datetime.utcnow().timestamp()),
+        "exp": int((datetime.utcnow() + timedelta(hours=_jwt_exp_hours())).timestamp()),
+    }
+    jwt_token = jwt.encode(payload, _jwt_secret(), algorithm="HS256")
+    
+    resp = JSONResponse(content={"ok": True, "message": "Account created"})
+    resp.set_cookie(
+        key=JWT_COOKIE_NAME,
+        value=jwt_token,
+        httponly=True,
+        secure=_session_secure_cookie(),
+        samesite="lax",
+        max_age=_jwt_exp_hours() * 3600,
+        path="/",
+    )
+    return resp
 
-    jwt_token = _create_session_jwt(user)
-    redirect_to = f"{_frontend_url()}/settlements"
-    resp = RedirectResponse(url=redirect_to, status_code=302)
+@router.post("/auth/login")
+def auth_login(body: AuthLoginBody):
+    conn = _connect()
+    try:
+        with conn.cursor(row_factory=dict_row) as cur:
+            cur.execute("SELECT discord_user_id, discord_username, password_hash FROM public.app_users WHERE LOWER(discord_username) = LOWER(%s)", (body.username.strip(),))
+            user = cur.fetchone()
+            if not user or not user["password_hash"] or not pwd_context.verify(body.password, user["password_hash"]):
+                raise HTTPException(status_code=401, detail="Invalid username or password")
+    finally:
+        conn.close()
+
+    payload = {
+        "sub": user["discord_user_id"],
+        "name": user["discord_username"],
+        "avatar": None,
+        "iat": int(datetime.utcnow().timestamp()),
+        "exp": int((datetime.utcnow() + timedelta(hours=_jwt_exp_hours())).timestamp()),
+    }
+    jwt_token = jwt.encode(payload, _jwt_secret(), algorithm="HS256")
+    
+    resp = JSONResponse(content={"ok": True, "message": "Logged in"})
     resp.set_cookie(
         key=JWT_COOKIE_NAME,
         value=jwt_token,
@@ -1522,43 +1551,11 @@ async def billing_paypal_webhook(request: Request):
 def auth_me(request: Request, response: Response):
     token = request.cookies.get(JWT_COOKIE_NAME, "")
     if not token:
-        import uuid
-        guest_id = f"guest_{uuid.uuid4().hex}"
-        now = datetime.utcnow()
-        payload = {
-            "sub": guest_id,
-            "name": "Guest",
-            "avatar": None,
-            "iat": int(now.timestamp()),
-            "exp": int((now + timedelta(hours=_jwt_exp_hours())).timestamp()),
-        }
-        token = jwt.encode(payload, _jwt_secret(), algorithm="HS256")
-        response.set_cookie(
-            key=JWT_COOKIE_NAME,
-            value=token,
-            httponly=True,
-            secure=_session_secure_cookie(),
-            samesite="lax",
-            max_age=_jwt_exp_hours() * 3600,
-            path="/",
-        )
-        return {
-            "ok": True, 
-            "authenticated": True, 
-            "user": {
-                "discord_user_id": guest_id,
-                "discord_username": "Guest",
-                "avatar": None,
-                "is_admin": False,
-                "is_premium": False,
-                "has_premium_access": False,
-            }
-        }
+        return {"ok": True, "authenticated": False}
     try:
         claims = _decode_session_jwt(token)
         uid = str(claims.get("sub") or "")
         uname = str(claims.get("name") or "")
-        _ensure_app_user(uid, uname)
         actx = _load_alliance_context(uid)
         pctx = _load_premium_context(uid)
         return {
@@ -1570,157 +1567,10 @@ def auth_me(request: Request, response: Response):
                 "avatar": claims.get("avatar"),
                 "is_admin": uid in _admin_user_ids(),
                 "is_premium": bool(pctx.get("is_premium") or False),
-                "has_premium_access": (uid in _admin_user_ids()) or bool(pctx.get("is_premium") or False),
-                "premium_tier": pctx.get("premium_tier"),
-                "premium_since": pctx.get("premium_since"),
-                "premium_expires_at": pctx.get("premium_expires_at"),
-                "premium_source": pctx.get("premium_source"),
-                "active_alliance_id": actx.get("active_alliance_id"),
-                "alliances": [
-                    {
-                        "id": int(m["id"]),
-                        "slug": str(m["slug"]),
-                        "name": str(m["name"]),
-                        "role": str(m["role"] or "member"),
-                        "status": str(m["status"] or "active"),
-                    }
-                    for m in (actx.get("memberships") or [])
-                ],
+                "has_premium_access": bool(uid in _admin_user_ids() or pctx.get("is_premium")),
             },
+            "alliance": actx,
         }
-    except HTTPException:
+    except Exception:
         return {"ok": True, "authenticated": False}
 
-
-@router.get("/api/alliance/me")
-def alliance_me(request: Request):
-    user = _get_current_user(request)
-    _ensure_app_user(user["discord_user_id"], user["discord_username"])
-    actx = _load_alliance_context(user["discord_user_id"])
-    return {
-        "ok": True,
-        "active_alliance_id": actx.get("active_alliance_id"),
-        "alliances": [
-            {
-                "id": int(m["id"]),
-                "slug": str(m["slug"]),
-                "name": str(m["name"]),
-                "role": str(m["role"] or "member"),
-                "status": str(m["status"] or "active"),
-            }
-            for m in (actx.get("memberships") or [])
-        ],
-    }
-
-
-@router.post("/api/alliance/switch")
-def alliance_switch(body: AllianceSwitchBody, request: Request):
-    user = _get_current_user(request)
-    _ensure_app_user(user["discord_user_id"], user["discord_username"])
-
-    conn = _connect()
-    try:
-        with conn.cursor() as cur:
-            cur.execute(
-                """
-                SELECT 1
-                FROM public.alliance_memberships
-                WHERE discord_user_id = %s
-                  AND alliance_id = %s
-                  AND status = 'active'
-                """,
-                (user["discord_user_id"], body.alliance_id),
-            )
-            if not cur.fetchone():
-                raise HTTPException(status_code=403, detail="Not a member of that alliance")
-
-            cur.execute(
-                """
-                INSERT INTO public.user_active_alliance
-                  (discord_user_id, alliance_id, updated_at)
-                VALUES
-                  (%s, %s, now())
-                ON CONFLICT (discord_user_id) DO UPDATE SET
-                  alliance_id = EXCLUDED.alliance_id,
-                  updated_at = now()
-                """,
-                (user["discord_user_id"], body.alliance_id),
-            )
-        conn.commit()
-    finally:
-        conn.close()
-
-    actx = _load_alliance_context(user["discord_user_id"])
-    return {
-        "ok": True,
-        "active_alliance_id": actx.get("active_alliance_id"),
-    }
-
-
-@router.get("/api/kg/connection")
-def kg_connection(request: Request):
-    user = _get_current_user(request)
-    row = _load_user_kg_connection(user["discord_user_id"])
-    if not row:
-        return {"ok": True, "connected": False}
-    return {
-        "ok": True,
-        "connected": True,
-        "connection": {
-            "account_id": int(row["account_id"]),
-            "kingdom_id": int(row["kingdom_id"]),
-            "created_at": row["created_at"].isoformat() if row.get("created_at") else None,
-            "updated_at": row["updated_at"].isoformat() if row.get("updated_at") else None,
-        },
-    }
-
-
-@router.post("/api/kg/connect")
-def kg_connect(body: KGConnectBody, request: Request):
-    user = _get_current_user(request)
-    _upsert_user_kg_connection(
-        user["discord_user_id"],
-        user["discord_username"],
-        body.account_id,
-        body.kingdom_id,
-        body.token,
-    )
-
-    return {"ok": True, "connected": True}
-
-
-@router.delete("/api/kg/connection")
-def kg_disconnect(request: Request):
-    user = _get_current_user(request)
-    conn = _connect()
-    try:
-        with conn.cursor() as cur:
-            cur.execute(
-                "DELETE FROM public.user_kg_connections WHERE discord_user_id = %s",
-                (user["discord_user_id"],),
-            )
-        conn.commit()
-    finally:
-        conn.close()
-    return {"ok": True, "connected": False}
-
-
-@router.get("/api/kg/settlements")
-def kg_settlements(request: Request):
-    user = _get_current_user(request)
-    conn_row = _require_user_kg_connection(user["discord_user_id"])
-    settlements = _fetch_settlements_live(conn_row)
-    return {"ok": True, "settlements": settlements}
-
-
-@router.get("/api/kg/settlement-effects")
-def kg_settlement_effects(request: Request):
-    user = _get_current_user(request)
-    conn_row = _require_user_kg_connection(user["discord_user_id"])
-    settlements = _fetch_settlements_live(conn_row)
-    effects = _aggregate_effects(settlements)
-    return {
-        "ok": True,
-        "settlements_count": len(settlements),
-        "effects": effects,
-    }
