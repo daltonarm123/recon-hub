@@ -9,11 +9,12 @@ from urllib.parse import urlencode
 import httpx
 import jwt
 import psycopg
+import bcrypt
 from cryptography.fernet import Fernet, InvalidToken
 from fastapi import APIRouter, HTTPException, Request, Response
-
-import bcrypt
 from fastapi.responses import RedirectResponse, JSONResponse
+from psycopg.rows import dict_row
+from pydantic import BaseModel, Field
 
 class AuthLoginBody(BaseModel):
     username: str = Field(..., min_length=3)
@@ -28,9 +29,6 @@ def verify_password(plain_password: str, hashed_password: str) -> bool:
         return bcrypt.checkpw(plain_password.encode("utf-8"), hashed_password.encode("utf-8"))
     except Exception:
         return False
-
-from psycopg.rows import dict_row
-from pydantic import BaseModel, Field
 
 router = APIRouter()
 
