@@ -11,24 +11,7 @@ import jwt
 import psycopg
 from cryptography.fernet import Fernet, InvalidToken
 from fastapi import APIRouter, HTTPException, Request, Response
-
-import bcrypt
-from fastapi.responses import RedirectResponse, JSONResponse
-
-class AuthLoginBody(BaseModel):
-    username: str = Field(..., min_length=3)
-    password: str = Field(..., min_length=6)
-
-def hash_password(password: str) -> str:
-    salt = bcrypt.gensalt()
-    return bcrypt.hashpw(password.encode("utf-8"), salt).decode("utf-8")
-
-def verify_password(plain_password: str, hashed_password: str) -> bool:
-    try:
-        return bcrypt.checkpw(plain_password.encode("utf-8"), hashed_password.encode("utf-8"))
-    except Exception:
-        return False
-
+from fastapi.responses import RedirectResponse
 from psycopg.rows import dict_row
 from pydantic import BaseModel, Field
 
@@ -388,7 +371,7 @@ def _has_premium_access(user: Dict[str, Any]) -> bool:
 def _get_current_user(request: Request) -> Dict[str, Any]:
     token = request.cookies.get(JWT_COOKIE_NAME, "")
     if not token:
-        raise HTTPException(status_code=401, detail="Not authenticated.")
+        raise HTTPException(status_code=401, detail="Not authenticated. The frontend should have initialized a guest session.")
     
     claims = _decode_session_jwt(token)
     uid = str(claims.get("sub") or "")
@@ -1092,41 +1075,54 @@ def _aggregate_effects(settlements: List[Dict[str, Any]]) -> List[Dict[str, Any]
     return out
 
 
+@router.get("/auth/discord/login")
+def auth_discord_login():
+    query = urlencode(
+        {
+            "client_id": _discord_client_id(),
+            "redirect_uri": _discord_redirect_uri(),
+            "response_type": "code",
+            "scope": _auth_scope(),
+            "prompt": "none",
+        }
+    )
+    return RedirectResponse(url=f"{DISCORD_API_BASE}/oauth2/authorize?{query}", status_code=302)
 
-@router.post("/auth/register")
-def auth_register(body: AuthLoginBody):
-    conn = _connect()
-    try:
-        with conn.cursor() as cur:
-            cur.execute("SELECT discord_user_id FROM public.app_users WHERE LOWER(discord_username) = LOWER(%s)", (body.username.strip(),))
-            if cur.fetchone():
-                raise HTTPException(status_code=400, detail="Username already exists")
-            
-            hashed = hash_password(body.password)
-            import uuid
-            user_id = str(uuid.uuid4())
-            uname = body.username.strip()
-            
-            cur.execute(
-                """
-                INSERT INTO public.app_users (discord_user_id, discord_username, password_hash, created_at, updated_at)
-                VALUES (%s, %s, %s, now(), now())
-                """,
-                (user_id, uname, hashed)
-            )
-        conn.commit()
-    finally:
-        conn.close()
 
-    payload = {
-        "sub": user_id,
-        "name": uname,
-        "avatar": None,
-        "iat": int(datetime.utcnow().timestamp()),
-        "exp": int((datetime.utcnow() + timedelta(hours=_jwt_exp_hours())).timestamp()),
+@router.get("/auth/discord/callback")
+def auth_discord_callback(code: str):
+    token_url = f"{DISCORD_API_BASE}/oauth2/token"
+    me_url = f"{DISCORD_API_BASE}/users/@me"
+
+    data = {
+        "client_id": _discord_client_id(),
+        "client_secret": _discord_client_secret(),
+        "grant_type": "authorization_code",
+        "code": code,
+        "redirect_uri": _discord_redirect_uri(),
     }
-    jwt_token = jwt.encode(payload, _jwt_secret(), algorithm="HS256")
-    resp = JSONResponse(content={"ok": True, "message": "Account created"})
+    headers = {"Content-Type": "application/x-www-form-urlencoded"}
+
+    try:
+        with httpx.Client(timeout=20.0) as client:
+            tr = client.post(token_url, data=data, headers=headers)
+            tr.raise_for_status()
+            tok = tr.json()
+            access_token = tok.get("access_token")
+            if not access_token:
+                raise HTTPException(status_code=401, detail="Discord login failed (no access token)")
+
+            ur = client.get(me_url, headers={"Authorization": f"Bearer {access_token}"})
+            ur.raise_for_status()
+            user = ur.json()
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Discord auth failed: {repr(e)}")
+
+    jwt_token = _create_session_jwt(user)
+    redirect_to = f"{_frontend_url()}/settlements"
+    resp = RedirectResponse(url=redirect_to, status_code=302)
     resp.set_cookie(
         key=JWT_COOKIE_NAME,
         value=jwt_token,
@@ -1138,38 +1134,6 @@ def auth_register(body: AuthLoginBody):
     )
     return resp
 
-@router.post("/auth/login")
-def auth_login(body: AuthLoginBody):
-    conn = _connect()
-    try:
-        with conn.cursor(row_factory=dict_row) as cur:
-            cur.execute("SELECT discord_user_id, discord_username, password_hash FROM public.app_users WHERE LOWER(discord_username) = LOWER(%s)", (body.username.strip(),))
-            user = cur.fetchone()
-            if not user or not user["password_hash"] or not verify_password(body.password, user["password_hash"]):
-                raise HTTPException(status_code=401, detail="Invalid username or password")
-    finally:
-        conn.close()
-
-    payload = {
-        "sub": user["discord_user_id"],
-        "name": user["discord_username"],
-        "avatar": None,
-        "iat": int(datetime.utcnow().timestamp()),
-        "exp": int((datetime.utcnow() + timedelta(hours=_jwt_exp_hours())).timestamp()),
-    }
-    jwt_token = jwt.encode(payload, _jwt_secret(), algorithm="HS256")
-    
-    resp = JSONResponse(content={"ok": True, "message": "Logged in"})
-    resp.set_cookie(
-        key=JWT_COOKIE_NAME,
-        value=jwt_token,
-        httponly=True,
-        secure=_session_secure_cookie(),
-        samesite="lax",
-        max_age=_jwt_exp_hours() * 3600,
-        path="/",
-    )
-    return resp
 
 @router.post("/auth/logout")
 def auth_logout():
