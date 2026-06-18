@@ -18,6 +18,17 @@ import "./App.css";
 
 const API_BASE = ""; // same-origin
 
+function timeAgo(dateString) {
+    if (!dateString) return "—";
+    const d = new Date(dateString);
+    const now = new Date();
+    const diff = Math.floor((now - d) / 1000); // seconds
+    if (diff < 60) return "Just now";
+    if (diff < 3600) return `${Math.floor(diff / 60)}m ago`;
+    if (diff < 86400) return `${Math.floor(diff / 3600)}h ago`;
+    return `${Math.floor(diff / 86400)}d ago`;
+}
+
 function useFetchJson(url, deps = []) {
     const [data, setData] = useState(null);
     const [err, setErr] = useState("");
@@ -402,10 +413,8 @@ function Kingdoms() {
                                                     </button>
                                                 </td>
                                                 <td style={td}>{k.report_count ?? 0}</td>
-                                                <td style={td}>
-                                                    {k.latest_report_at
-                                                        ? new Date(k.latest_report_at).toLocaleString()
-                                                        : "—"}
+                                                <td style={td} title={k.latest_report_at ? new Date(k.latest_report_at).toLocaleString() : ""}>
+                                                    {timeAgo(k.latest_report_at)}
                                                 </td>
                                             </tr>
                                         ))}
@@ -461,10 +470,8 @@ function KingdomDetail() {
                             <tbody>
                                 {(data?.reports || []).map((r) => (
                                     <tr key={r.id}>
-                                        <td style={td}>
-                                            {r.created_at
-                                                ? new Date(r.created_at).toLocaleString()
-                                                : "—"}
+                                        <td style={td} title={r.created_at ? new Date(r.created_at).toLocaleString() : ""}>
+                                            {timeAgo(r.created_at)}
                                         </td>
                                         <td style={td}>{r.alliance || "—"}</td>
                                         <td style={td}>
@@ -1107,8 +1114,8 @@ function TrackedSettlements() {
                                         <td style={td}>{r.sightings ?? 0}</td>
                                         <td style={td}>{r.failed_take_attempts ?? 0}</td>
                                         <td style={td}>{r.captures ?? 0}</td>
-                                        <td style={td}>
-                                            {r.last_seen_at ? new Date(r.last_seen_at).toLocaleString() : "—"}
+                                        <td style={td} title={r.last_seen_at ? new Date(r.last_seen_at).toLocaleString() : ""}>
+                                            {timeAgo(r.last_seen_at)}
                                         </td>
                                     </tr>
                                 ))}
