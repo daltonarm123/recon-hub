@@ -2,6 +2,7 @@ import os
 import re
 import gzip
 import json
+import hashlib
 import time
 import threading
 import logging
@@ -389,8 +390,21 @@ def ensure_recon_tables():
                     attack_result TEXT,
                     gains_json JSONB NOT NULL DEFAULT '{}'::jsonb,
                     casualties_json JSONB NOT NULL DEFAULT '{}'::jsonb,
-                    raw_text TEXT NOT NULL
+                    raw_text TEXT NOT NULL,
+                    report_hash TEXT
                 );
+                """
+            )
+            cur.execute(
+                """
+                ALTER TABLE public.attack_reports
+                ADD COLUMN IF NOT EXISTS report_hash TEXT;
+                """
+            )
+            cur.execute(
+                """
+                CREATE UNIQUE INDEX IF NOT EXISTS attack_reports_report_hash_uidx
+                ON public.attack_reports (report_hash);
                 """
             )
             cur.execute(
@@ -1184,6 +1198,11 @@ def _load_raw_text(row: Dict[str, Any]) -> str:
     return ""
 
 
+def _report_hash(raw_text: str) -> str:
+    normalized = re.sub(r"\r\n?", "\n", str(raw_text or "").strip())
+    return hashlib.sha256(normalized.encode("utf-8")).hexdigest()
+
+
 # -------------------------
 # API: Kingdom list
 # -------------------------
@@ -1975,6 +1994,7 @@ def ingest_report(body: RawReportBody):
         raise HTTPException(status_code=400, detail="raw_text is empty")
 
     is_attack = bool(re.search(r"^\s*Attack Report:\s*", raw_text, flags=re.I | re.M))
+    report_hash = _report_hash(raw_text)
 
     conn = _connect()
     try:
@@ -1988,9 +2008,10 @@ def ingest_report(body: RawReportBody):
                 cur.execute(
                     """
                     INSERT INTO public.attack_reports
-                      (observed_at, target_kingdom, target_networth, attack_result, gains_json, casualties_json, raw_text, created_at)
+                      (observed_at, target_kingdom, target_networth, attack_result, gains_json, casualties_json, raw_text, report_hash, created_at)
                     VALUES
-                      (%s, %s, %s, %s, %s::jsonb, %s::jsonb, %s, now())
+                      (%s, %s, %s, %s, %s::jsonb, %s::jsonb, %s, %s, now())
+                    ON CONFLICT (report_hash) DO NOTHING
                     RETURNING id, created_at
                     """,
                     (
@@ -2001,9 +2022,27 @@ def ingest_report(body: RawReportBody):
                         json.dumps(parsed.get("gains") or {}),
                         json.dumps(parsed.get("casualties") or {}),
                         raw_text,
+                        report_hash,
                     ),
                 )
                 stored = cur.fetchone()
+
+                if not stored:
+                    cur.execute(
+                        "SELECT id, created_at FROM public.attack_reports WHERE report_hash = %s",
+                        (report_hash,),
+                    )
+                    stored = cur.fetchone()
+                    conn.commit()
+                    return {
+                        "ok": True,
+                        "report_type": "attack",
+                        "stored": stored,
+                        "parsed": parsed,
+                        "settlement_events": 0,
+                        "auto_known_hit_inserted": False,
+                        "duplicate": True,
+                    }
 
                 events = 0
                 for s in parsed.get("settlement_mentions") or []:
@@ -2048,9 +2087,10 @@ def ingest_report(body: RawReportBody):
             cur.execute(
                 """
                 INSERT INTO public.spy_reports
-                  (created_at, kingdom, alliance, defense_power, castles, raw)
+                  (created_at, kingdom, alliance, defense_power, castles, raw, report_hash)
                 VALUES
-                  (now(), %s, %s, %s, %s, %s)
+                  (now(), %s, %s, %s, %s, %s, %s)
+                ON CONFLICT (report_hash) DO NOTHING
                 RETURNING id, created_at
                 """,
                 (
@@ -2059,9 +2099,26 @@ def ingest_report(body: RawReportBody):
                     parsed.get("defender_dp"),
                     parsed.get("castles"),
                     raw_text,
+                    report_hash,
                 ),
             )
             stored = cur.fetchone()
+
+            if not stored:
+                cur.execute(
+                    "SELECT id, created_at FROM public.spy_reports WHERE report_hash = %s",
+                    (report_hash,),
+                )
+                stored = cur.fetchone()
+                conn.commit()
+                return {
+                    "ok": True,
+                    "report_type": "spy",
+                    "stored": stored,
+                    "parsed": parsed,
+                    "settlement_events": 0,
+                    "duplicate": True,
+                }
 
             events = 0
             for s in _parse_settlement_mentions(raw_text):

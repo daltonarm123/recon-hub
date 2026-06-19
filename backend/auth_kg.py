@@ -1556,37 +1556,10 @@ async def billing_paypal_webhook(request: Request):
 def auth_me(request: Request, response: Response):
     token = request.cookies.get(JWT_COOKIE_NAME, "")
     if not token:
-        import uuid
-        guest_id = f"guest_{uuid.uuid4().hex}"
-        now = datetime.utcnow()
-        payload = {
-            "sub": guest_id,
-            "name": "Guest",
-            "avatar": None,
-            "iat": int(now.timestamp()),
-            "exp": int((now + timedelta(hours=_jwt_exp_hours())).timestamp()),
-        }
-        token = jwt.encode(payload, _jwt_secret(), algorithm="HS256")
-        response.set_cookie(
-            key=JWT_COOKIE_NAME,
-            value=token,
-            httponly=True,
-            secure=_session_secure_cookie(),
-            samesite="lax",
-            max_age=_jwt_exp_hours() * 3600,
-            path="/",
-        )
         return {
-            "ok": True, 
-            "authenticated": True, 
-            "user": {
-                "discord_user_id": guest_id,
-                "discord_username": "Guest",
-                "avatar": None,
-                "is_admin": False,
-                "is_premium": False,
-                "has_premium_access": False,
-            }
+            "ok": True,
+            "authenticated": False,
+            "user": None,
         }
     try:
         claims = _decode_session_jwt(token)

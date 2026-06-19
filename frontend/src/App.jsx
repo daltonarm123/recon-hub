@@ -1350,6 +1350,7 @@ function Login() {
             const r = await fetch(url, {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
+                credentials: "include",
                 body: JSON.stringify(form)
             });
             const j = await r.json().catch(() => ({}));
