@@ -5,7 +5,9 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "build": "vite build",
+    "clean:backend-static": "rm -rf ../backend/static/assets",
+    "build": "npm run clean:backend-static && vite build --mode backend",
+    "build:local": "vite build",
     "lint": "eslint .",
     "preview": "vite preview"
   },

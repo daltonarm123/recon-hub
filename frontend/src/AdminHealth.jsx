@@ -1,5 +1,15 @@
 import { useEffect, useState } from "react";
 
+async function fetchAdminUsers(searchTerm) {
+  const r = await fetch(`/api/admin/users?limit=500&search=${encodeURIComponent(searchTerm)}`, {
+    cache: "no-store",
+    credentials: "include",
+  });
+  const j = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(j?.detail || `HTTP ${r.status}`);
+  return Array.isArray(j?.users) ? j.users : [];
+}
+
 export default function AdminHealth() {
   const [overview, setOverview] = useState(null);
   const [err, setErr] = useState("");
@@ -96,13 +106,7 @@ export default function AdminHealth() {
     setUsersLoading(true);
     setUsersErr("");
     try {
-      const r = await fetch(`/api/admin/users?limit=500&search=${encodeURIComponent(userSearch)}`, {
-        cache: "no-store",
-        credentials: "include",
-      });
-      const j = await r.json().catch(() => ({}));
-      if (!r.ok) throw new Error(j?.detail || `HTTP ${r.status}`);
-      setUsers(Array.isArray(j?.users) ? j.users : []);
+      setUsers(await fetchAdminUsers(userSearch));
     } catch (e) {
       setUsers([]);
       setUsersErr(e?.message || "Failed to load users");
@@ -161,7 +165,7 @@ export default function AdminHealth() {
     }
   }
 
-  function useUser(u) {
+  function applyUser(u) {
     setAssignForm((f) => ({
       ...f,
       discord_user_id: u?.discord_user_id || "",
@@ -204,7 +208,15 @@ export default function AdminHealth() {
     loadPremiumUsers();
     loadNotes();
     loadAlliances();
-    loadUsers();
+    setUsersLoading(true);
+    setUsersErr("");
+    fetchAdminUsers("")
+      .then((rows) => setUsers(rows))
+      .catch((e) => {
+        setUsers([]);
+        setUsersErr(e?.message || "Failed to load users");
+      })
+      .finally(() => setUsersLoading(false));
   }, []);
 
   function Metric({ label, value }) {
@@ -260,8 +272,8 @@ export default function AdminHealth() {
               <div style={{ fontSize: 12, opacity: 0.75 }}>No premium users yet.</div>
             ) : null}
             {!premiumLoading && premiumUsers.length > 0 ? (
-              <div style={{ overflowX: "auto" }}>
-                <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
+              <div className="table-wrap">
+                <table className="data-table" style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
                   <thead>
                     <tr>
                       <th style={th}>Username</th>
@@ -275,12 +287,12 @@ export default function AdminHealth() {
                   <tbody>
                     {premiumUsers.map((u) => (
                       <tr key={u.discord_user_id}>
-                        <td style={td}>{u.discord_username || "-"}</td>
-                        <td style={td}>{u.discord_user_id}</td>
-                        <td style={td}>{u.premium_tier || "premium"}</td>
-                        <td style={td}>{u.premium_since ? new Date(u.premium_since).toLocaleString() : "-"}</td>
-                        <td style={td}>{u.premium_expires_at ? new Date(u.premium_expires_at).toLocaleString() : "-"}</td>
-                        <td style={td}>{u.premium_source || "-"}</td>
+                        <td data-label="Username" style={td}>{u.discord_username || "-"}</td>
+                        <td data-label="Discord ID" style={td}>{u.discord_user_id}</td>
+                        <td data-label="Tier" style={td}>{u.premium_tier || "premium"}</td>
+                        <td data-label="Since" style={td}>{u.premium_since ? new Date(u.premium_since).toLocaleString() : "-"}</td>
+                        <td data-label="Expires" style={td}>{u.premium_expires_at ? new Date(u.premium_expires_at).toLocaleString() : "-"}</td>
+                        <td data-label="Source" style={td}>{u.premium_source || "-"}</td>
                       </tr>
                     ))}
                   </tbody>
@@ -297,10 +309,20 @@ export default function AdminHealth() {
             <div style={line}>Last NW Tick: {overview?.latest?.nw_tick_at || "-"}</div>
           </div>
 
+          <div style={panel}>
+            <div style={{ fontWeight: 700, marginBottom: 6 }}>KG Rankings Poller</div>
+            <div style={line}>Enabled: {overview?.rankings_poller?.enabled ? "Yes" : "No"}</div>
+            <div style={line}>World ID: {overview?.rankings_poller?.world_id || "-"}</div>
+            <div style={line}>Credential Sets Configured: {overview?.rankings_poller?.credential_sets_configured ?? 0}</div>
+            <div style={line}>KG Cookie Present: {overview?.rankings_poller?.has_cookie ? "Yes" : "No"}</div>
+            <div style={line}>Custom User Agent Present: {overview?.rankings_poller?.has_user_agent ? "Yes" : "No"}</div>
+            <div style={{ ...line, marginTop: 6 }}>{overview?.rankings_poller?.note || "-"}</div>
+          </div>
+
           <div style={panel} id="alliance-access-control">
             <div style={{ fontWeight: 700, marginBottom: 8 }}>Top NW Snapshot</div>
-            <div style={{ overflowX: "auto" }}>
-              <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
+            <div className="table-wrap">
+              <table className="data-table" style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
                 <thead>
                   <tr>
                     <th style={th}>Rank</th>
@@ -312,10 +334,10 @@ export default function AdminHealth() {
                 <tbody>
                   {(overview?.top_nw_latest || []).map((r) => (
                     <tr key={`${r.kingdom}:${r.rank}`}>
-                      <td style={td}>{r.rank}</td>
-                      <td style={td}>{r.kingdom}</td>
-                      <td style={td}>{Number(r.networth || 0).toLocaleString()}</td>
-                      <td style={td}>{r.updated_at ? new Date(r.updated_at).toLocaleString() : "-"}</td>
+                      <td data-label="Rank" style={td}>{r.rank}</td>
+                      <td data-label="Kingdom" style={td}>{r.kingdom}</td>
+                      <td data-label="Networth" style={td}>{Number(r.networth || 0).toLocaleString()}</td>
+                      <td data-label="Updated" style={td}>{r.updated_at ? new Date(r.updated_at).toLocaleString() : "-"}</td>
                     </tr>
                   ))}
                 </tbody>
@@ -392,8 +414,8 @@ export default function AdminHealth() {
             </div>
             {usersErr ? <div style={{ marginTop: 8, fontSize: 12, color: "#ff8b8b" }}>Users: {usersErr}</div> : null}
 
-            <div style={{ marginTop: 10, overflowX: "auto" }}>
-              <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
+            <div className="table-wrap" style={{ marginTop: 10 }}>
+              <table className="data-table" style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
                 <thead>
                   <tr>
                     <th style={th}>Username</th>
@@ -407,17 +429,17 @@ export default function AdminHealth() {
                 <tbody>
                   {(users || []).map((u) => (
                     <tr key={u.discord_user_id}>
-                      <td style={td}>{u.discord_username || "-"}</td>
-                      <td style={td}>{u.discord_user_id}</td>
-                      <td style={td}>
+                      <td data-label="Username" style={td}>{u.discord_username || "-"}</td>
+                      <td data-label="Discord ID" style={td}>{u.discord_user_id}</td>
+                      <td data-label="Active Alliance" style={td}>
                         {u.active_alliance_id || "-"}
                       </td>
-                      <td style={td}>
+                      <td data-label="Memberships" style={td}>
                         {(u.memberships || []).map((m) => `${m.alliance_name}:${m.role}`).join(", ") || "-"}
                       </td>
-                      <td style={td}>{u.updated_at ? new Date(u.updated_at).toLocaleString() : "-"}</td>
-                      <td style={td}>
-                        <button style={btn} onClick={() => useUser(u)}>
+                      <td data-label="Last Seen" style={td}>{u.updated_at ? new Date(u.updated_at).toLocaleString() : "-"}</td>
+                      <td data-label="Use" style={td}>
+                        <button style={btn} onClick={() => applyUser(u)}>
                           Use
                         </button>
                       </td>

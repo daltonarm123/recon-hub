@@ -7,6 +7,8 @@ from typing import List, Optional, Tuple
 import psycopg
 from psycopg.rows import dict_row
 
+from db_dsn import resolve_database_dsn
+
 KG_TICK_DELAY_SECONDS = float(os.getenv("KG_TICK_DELAY_SECONDS", "45"))
 MAX_SOURCE_AGE_SECONDS = int(os.getenv("NW_MAX_SOURCE_AGE_SECONDS", "540"))
 SOURCE_WAIT_TIMEOUT_SECONDS = int(os.getenv("NW_SOURCE_WAIT_TIMEOUT_SECONDS", "120"))
@@ -35,10 +37,7 @@ def _sleep_until(dt: datetime):
 
 
 def _get_dsn() -> str:
-    dsn = os.getenv("DATABASE_URL") or os.getenv("POSTGRES_URL") or ""
-    if not dsn:
-        raise RuntimeError("DATABASE_URL is not set")
-    return dsn
+    return resolve_database_dsn()
 
 
 def _connect() -> psycopg.Connection:

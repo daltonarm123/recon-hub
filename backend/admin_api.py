@@ -8,16 +8,18 @@ from fastapi import APIRouter, HTTPException, Request
 from psycopg.rows import dict_row
 from pydantic import BaseModel, Field
 
+from db_dsn import resolve_database_dsn
+
 router = APIRouter()
 
 JWT_COOKIE_NAME = "rh_session"
 
 
 def _get_dsn() -> str:
-    dsn = os.getenv("DATABASE_URL") or os.getenv("POSTGRES_URL") or ""
-    if not dsn:
-        raise HTTPException(status_code=500, detail="DATABASE_URL is not set")
-    return dsn
+    try:
+        return resolve_database_dsn()
+    except RuntimeError as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
 
 
 def _connect() -> psycopg.Connection:
@@ -45,6 +47,19 @@ def _admin_user_ids() -> set[str]:
     return {x.strip() for x in raw.split(",") if x.strip()}
 
 
+def _admin_usernames() -> set[str]:
+    raw = os.getenv("ADMIN_USERNAMES", "").strip()
+    names = {"elixer"}
+    if raw:
+        names.update(x.strip().lower() for x in raw.split(",") if x.strip())
+    return names
+
+
+def _is_admin_identity(user_id: str, username: str) -> bool:
+    uname = str(username or "").strip().lower()
+    return user_id in _admin_user_ids() or uname in _admin_usernames()
+
+
 def _require_admin(request: Request) -> Dict[str, Any]:
     token = request.cookies.get(JWT_COOKIE_NAME, "")
     if not token:
@@ -53,12 +68,13 @@ def _require_admin(request: Request) -> Dict[str, Any]:
     uid = str(claims.get("sub") or "")
     if not uid:
         raise HTTPException(status_code=401, detail="Invalid session")
-    is_admin = uid in _admin_user_ids()
+    username = str(claims.get("name") or "")
+    is_admin = _is_admin_identity(uid, username)
     if not is_admin:
         raise HTTPException(status_code=403, detail="Admin access required")
     return {
         "discord_user_id": uid,
-        "discord_username": str(claims.get("name") or ""),
+        "discord_username": username,
         "is_admin": is_admin,
     }
 
@@ -91,6 +107,35 @@ def _as_utc_aware(ts: Optional[datetime]) -> Optional[datetime]:
     if ts.tzinfo is None:
         return ts.replace(tzinfo=timezone.utc)
     return ts.astimezone(timezone.utc)
+
+
+def _bool_env(name: str, default_value: bool) -> bool:
+    raw = str(os.getenv(name, "")).strip().lower()
+    if not raw:
+        return default_value
+    return raw in {"1", "true", "yes", "on"}
+
+
+def _rankings_poller_diag() -> Dict[str, Any]:
+    raw_json = str(os.getenv("KG_POLLER_CREDENTIALS_JSON") or "").strip()
+    has_direct_triplet = all(
+        str(os.getenv(key) or "").strip()
+        for key in ("KG_POLLER_ACCOUNT_ID", "KG_POLLER_TOKEN", "KG_POLLER_KINGDOM_ID")
+    )
+    configured_credential_sets = 0
+    if raw_json:
+        configured_credential_sets += 1
+    if has_direct_triplet:
+        configured_credential_sets += 1
+
+    return {
+        "enabled": _bool_env("ENABLE_RANKINGS_POLLER", True),
+        "world_id": str(os.getenv("KG_WORLD_ID") or "1").strip() or "1",
+        "credential_sets_configured": configured_credential_sets,
+        "has_cookie": bool(str(os.getenv("KG_COOKIE") or "").strip()),
+        "has_user_agent": bool(str(os.getenv("KG_USER_AGENT") or "").strip()),
+        "note": "Use a dedicated KG account/token for the poller. Site logout does not refresh or revoke this token.",
+    }
 
 
 class AdminNoteBody(BaseModel):
@@ -188,6 +233,7 @@ def admin_overview(request: Request):
             "counts": counts,
             "latest": {k: (v.isoformat() if v else None) for k, v in latest.items()},
             "health": health,
+            "rankings_poller": _rankings_poller_diag(),
             "top_nw_latest": top,
             "notes": [
                 "Admin access is controlled by DEV_USER_IDS.",

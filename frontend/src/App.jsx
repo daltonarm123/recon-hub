@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from "react";
+import React, { Suspense, lazy, useDeferredValue, useEffect, useMemo, useState } from "react";
 import {
     BrowserRouter,
     Routes,
@@ -12,9 +12,10 @@ import {
 } from "react-router-dom";
 
 import BackendBadge from "./BackendBadge";
-import AdminHealth from "./AdminHealth";
-import NWChart from "./NWChart";
 import "./App.css";
+
+const AdminHealth = lazy(() => import("./AdminHealth"));
+const NWChart = lazy(() => import("./NWChart"));
 
 const API_BASE = ""; // same-origin
 
@@ -35,22 +36,34 @@ function useFetchJson(url, deps = []) {
     const [loading, setLoading] = useState(false);
 
     useEffect(() => {
+        if (!url) {
+            setData(null);
+            setErr("");
+            setLoading(false);
+            return undefined;
+        }
+
         let alive = true;
+        const controller = new AbortController();
         setLoading(true);
         setErr("");
 
-        fetch(url, { credentials: "include" })
+        fetch(url, { credentials: "include", signal: controller.signal })
             .then(async (r) => {
                 const j = await r.json().catch(() => ({}));
                 if (!r.ok) throw new Error(j?.detail || `HTTP ${r.status}`);
                 return j;
             })
             .then((j) => alive && setData(j))
-            .catch((e) => alive && setErr(String(e.message || e)))
+            .catch((e) => {
+                if (!alive || e?.name === "AbortError") return;
+                setErr(String(e.message || e));
+            })
             .finally(() => alive && setLoading(false));
 
         return () => {
             alive = false;
+            controller.abort();
         };
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, deps);
@@ -64,22 +77,38 @@ function useFetchText(url, deps = []) {
     const [loading, setLoading] = useState(false);
 
     useEffect(() => {
+        if (!url) {
+            setData("");
+            setErr("");
+            setLoading(false);
+            return undefined;
+        }
+
         let alive = true;
+        const controller = new AbortController();
         setLoading(true);
         setErr("");
 
-        fetch(url, { headers: { Accept: "text/plain" }, credentials: "include" })
+        fetch(url, {
+            headers: { Accept: "text/plain" },
+            credentials: "include",
+            signal: controller.signal,
+        })
             .then(async (r) => {
                 const t = await r.text();
                 if (!r.ok) throw new Error(t || `HTTP ${r.status}`);
                 return t;
             })
             .then((t) => alive && setData(t))
-            .catch((e) => alive && setErr(String(e.message || e)))
+            .catch((e) => {
+                if (!alive || e?.name === "AbortError") return;
+                setErr(String(e.message || e));
+            })
             .finally(() => alive && setLoading(false));
 
         return () => {
             alive = false;
+            controller.abort();
         };
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, deps);
@@ -93,7 +122,6 @@ function useAuthMe(refreshKey = 0) {
 
     useEffect(() => {
         let alive = true;
-        setLoading(true);
         fetch(`${API_BASE}/auth/me`, { credentials: "include" })
             .then((r) => r.json().catch(() => ({ authenticated: false })))
             .then((j) => {
@@ -115,6 +143,36 @@ function useAuthMe(refreshKey = 0) {
     }, [refreshKey]);
 
     return { data, loading };
+}
+
+function KVTable({ obj, formatValue = (value) => value }) {
+    const entries = Object.entries(obj || {});
+    if (entries.length === 0) {
+        return <div style={{ color: "rgba(231,236,255,.65)", fontSize: 12 }}>—</div>;
+    }
+
+    return (
+        <div style={{ overflowX: "auto" }}>
+            <table style={{ ...table, minWidth: 360 }}>
+                <thead>
+                    <tr>
+                        <th style={th}>Name</th>
+                        <th style={th}>Value</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {entries
+                        .sort((a, b) => String(a[0]).localeCompare(String(b[0])))
+                        .map(([k, v]) => (
+                            <tr key={k}>
+                                <td style={td}>{k}</td>
+                                <td style={td}>{formatValue(v)}</td>
+                            </tr>
+                        ))}
+                </tbody>
+            </table>
+        </div>
+    );
 }
 
 const navLink = {
@@ -177,6 +235,9 @@ function Layout({ children }) {
     return (
         <div style={{ minHeight: "100vh", background: "transparent", color: "var(--rh-text)" }}>
             <div style={{ maxWidth: 1240, margin: "0 auto", padding: 20 }}>
+                <a className="skip-link" href="#main-content">
+                    Skip to content
+                </a>
                 <header
                     style={{
                         display: "flex",
@@ -261,7 +322,7 @@ function Layout({ children }) {
                         margin: "14px 0",
                     }}
                 />
-                {children}
+                <main id="main-content">{children}</main>
             </div>
         </div>
     );
@@ -304,14 +365,96 @@ function Card({ title, subtitle, children, right }) {
     );
 }
 
+function EmptyState({ title, body, action }) {
+    return (
+        <div className="empty-state">
+            <div style={{ fontWeight: 800, fontFamily: "var(--rh-head)", letterSpacing: 0.2 }}>{title}</div>
+            <div style={{ fontSize: 13, color: "var(--rh-muted)", lineHeight: 1.45 }}>{body}</div>
+            {action ? <div>{action}</div> : null}
+        </div>
+    );
+}
+
+function QuickLinkCard({ to, title, description, meta }) {
+    return (
+        <Link className="quick-link-card" to={to}>
+            <div style={{ fontWeight: 800, fontFamily: "var(--rh-head)", letterSpacing: 0.25 }}>{title}</div>
+            <div style={{ fontSize: 13, color: "var(--rh-muted)", lineHeight: 1.45 }}>{description}</div>
+            <div style={{ fontSize: 11, textTransform: "uppercase", letterSpacing: 0.45, color: "var(--rh-accent)" }}>{meta}</div>
+        </Link>
+    );
+}
+
 /* ---------------- Dashboard ---------------- */
 
 function Dashboard() {
     return (
         <Layout>
-            <Card title="Status" subtitle="Service availability">
-                <BackendBadge />
-            </Card>
+            <div style={{ display: "grid", gap: 14 }}>
+                <Card title="Command Center" subtitle="Fast paths into the data views and KG tooling you use the most.">
+                    <div className="dashboard-hero">
+                        <div style={{ display: "grid", gap: 12 }}>
+                            <div>
+                                <div style={{ fontSize: 28, fontFamily: "var(--rh-head)", fontWeight: 800, lineHeight: 1.1 }}>
+                                    Recon Hub keeps the recon loop tight.
+                                </div>
+                                <div style={{ marginTop: 8, fontSize: 14, color: "var(--rh-muted)", lineHeight: 1.5, maxWidth: 680 }}>
+                                    Ingest reports, inspect kingdom history, monitor settlement drift, and jump into KG utilities without hunting through raw endpoints.
+                                </div>
+                            </div>
+
+                            <div className="dashboard-actions">
+                                <Link style={{ ...btn, textDecoration: "none" }} to="/reports">
+                                    Paste a Report
+                                </Link>
+                                <Link style={{ ...btnGhost, textDecoration: "none" }} to="/nwot">
+                                    Open NWOT
+                                </Link>
+                                <Link style={{ ...btnGhost, textDecoration: "none" }} to="/settlements">
+                                    Connect KG
+                                </Link>
+                            </div>
+                        </div>
+
+                        <div className="dashboard-status-panel">
+                            <div style={{ fontSize: 12, textTransform: "uppercase", letterSpacing: 0.5, color: "var(--rh-muted)" }}>
+                                Service Health
+                            </div>
+                            <BackendBadge />
+                            <div style={{ fontSize: 12, color: "var(--rh-muted)", lineHeight: 1.45 }}>
+                                Use this as the landing page to verify backend reachability before opening heavier data views.
+                            </div>
+                        </div>
+                    </div>
+                </Card>
+
+                <div className="quick-link-grid">
+                    <QuickLinkCard
+                        to="/reports"
+                        title="Reports"
+                        description="Paste spy or attack reports and turn them into searchable kingdom and settlement data."
+                        meta="Ingest + parse"
+                    />
+                    <QuickLinkCard
+                        to="/kingdoms"
+                        title="Kingdoms"
+                        description="Search alliance-grouped kingdoms, inspect freshness, and jump directly to stored report history."
+                        meta="Search + drill in"
+                    />
+                    <QuickLinkCard
+                        to="/nwot"
+                        title="NWOT"
+                        description="Filter kingdoms quickly and view networth history without reloading the page on every keystroke."
+                        meta="Trend view"
+                    />
+                    <QuickLinkCard
+                        to="/tracked-settlements"
+                        title="Tracked Settlements"
+                        description="Watch sightings, failed takes, captures, and the latest observed levels in one place."
+                        meta="Live tracking"
+                    />
+                </div>
+            </div>
         </Layout>
     );
 }
@@ -320,12 +463,13 @@ function Dashboard() {
 
 function Kingdoms() {
     const [search, setSearch] = useState("");
+    const deferredSearch = useDeferredValue(search);
     const query = useMemo(
         () =>
             `${API_BASE}/api/kingdoms?search=${encodeURIComponent(
-                search
+                deferredSearch
             )}&limit=500`,
-        [search]
+        [deferredSearch]
     );
     const { data, err, loading } = useFetchJson(query, [query]);
     const nav = useNavigate();
@@ -389,8 +533,8 @@ function Kingdoms() {
                                 Alliance: {alliance}
                             </div>
 
-                            <div style={{ overflowX: "auto" }}>
-                                <table style={table}>
+                            <div className="table-wrap">
+                                <table className="data-table" style={table}>
                                     <thead>
                                         <tr>
                                             <th style={th}>Kingdom</th>
@@ -401,7 +545,7 @@ function Kingdoms() {
                                     <tbody>
                                         {items.map((k) => (
                                             <tr key={`${alliance}:${k.name}`}>
-                                                <td style={td}>
+                                                <td data-label="Kingdom" style={td}>
                                                     <button
                                                         style={linkBtn}
                                                         onClick={() =>
@@ -412,8 +556,8 @@ function Kingdoms() {
                                                         {k.name}
                                                     </button>
                                                 </td>
-                                                <td style={td}>{k.report_count ?? 0}</td>
-                                                <td style={td} title={k.latest_report_at ? new Date(k.latest_report_at).toLocaleString() : ""}>
+                                                <td data-label="Reports" style={td}>{k.report_count ?? 0}</td>
+                                                <td data-label="Latest" style={td} title={k.latest_report_at ? new Date(k.latest_report_at).toLocaleString() : ""}>
                                                     {timeAgo(k.latest_report_at)}
                                                 </td>
                                             </tr>
@@ -455,8 +599,8 @@ function KingdomDetail() {
                     {loading ? <div>Loading…</div> : null}
                     {err ? <div style={{ color: "#ff6b6b" }}>{err}</div> : null}
 
-                    <div style={{ overflowX: "auto" }}>
-                        <table style={table}>
+                    <div className="table-wrap">
+                        <table className="data-table" style={table}>
                             <thead>
                                 <tr>
                                     <th style={th}>Date</th>
@@ -470,20 +614,20 @@ function KingdomDetail() {
                             <tbody>
                                 {(data?.reports || []).map((r) => (
                                     <tr key={r.id}>
-                                        <td style={td} title={r.created_at ? new Date(r.created_at).toLocaleString() : ""}>
+                                        <td data-label="Date" style={td} title={r.created_at ? new Date(r.created_at).toLocaleString() : ""}>
                                             {timeAgo(r.created_at)}
                                         </td>
-                                        <td style={td}>{r.alliance || "—"}</td>
-                                        <td style={td}>
+                                        <td data-label="Alliance" style={td}>{r.alliance || "—"}</td>
+                                        <td data-label="Defender DP" style={td}>
                                             {r.defender_dp
                                                 ? Number(r.defender_dp).toLocaleString()
                                                 : "—"}
                                         </td>
-                                        <td style={td}>{r.castles ?? "—"}</td>
-                                        <td style={td}>
+                                        <td data-label="Castles" style={td}>{r.castles ?? "—"}</td>
+                                        <td data-label="Troops Keys" style={td}>
                                             {r.troops ? Object.keys(r.troops).length : 0}
                                         </td>
-                                        <td style={td}>
+                                        <td data-label="View" style={td}>
                                             <button
                                                 style={linkBtn}
                                                 onClick={() => nav(`/spy-reports/${r.id}`)}
@@ -548,37 +692,6 @@ function SpyReportView() {
         if (x === null || x === undefined || x === "") return "—";
         const n = Number(x);
         return Number.isFinite(n) ? n.toLocaleString() : String(x);
-    }
-
-    function KVTable({ obj }) {
-        const entries = Object.entries(obj || {});
-        if (entries.length === 0) {
-            return (
-                <div style={{ color: "rgba(231,236,255,.65)", fontSize: 12 }}>—</div>
-            );
-        }
-        return (
-            <div style={{ overflowX: "auto" }}>
-                <table style={{ ...table, minWidth: 360 }}>
-                    <thead>
-                        <tr>
-                            <th style={th}>Name</th>
-                            <th style={th}>Value</th>
-                        </tr>
-                    </thead>
-                    <tbody>
-                        {entries
-                            .sort((a, b) => String(a[0]).localeCompare(String(b[0])))
-                            .map(([k, v]) => (
-                                <tr key={k}>
-                                    <td style={td}>{k}</td>
-                                    <td style={td}>{fmtNum(v)}</td>
-                                </tr>
-                            ))}
-                    </tbody>
-                </table>
-            </div>
-        );
     }
 
     return (
@@ -654,11 +767,11 @@ function SpyReportView() {
                     >
                         <div>
                             <div style={{ fontWeight: 800, marginBottom: 8 }}>Troops</div>
-                            <KVTable obj={troops} />
+                            <KVTable obj={troops} formatValue={fmtNum} />
                         </div>
                         <div>
                             <div style={{ fontWeight: 800, marginBottom: 8 }}>Resources</div>
-                            <KVTable obj={resources} />
+                            <KVTable obj={resources} formatValue={fmtNum} />
                         </div>
                     </div>
 
@@ -722,6 +835,13 @@ function Reports() {
         }
     }
 
+    function handleRawKeyDown(e) {
+        if ((e.metaKey || e.ctrlKey) && e.key === "Enter" && raw.trim() && !busy) {
+            e.preventDefault();
+            ingest();
+        }
+    }
+
     return (
         <Layout>
             <div style={{ display: "grid", gap: 14 }}>
@@ -732,6 +852,7 @@ function Reports() {
                     <textarea
                         value={raw}
                         onChange={(e) => setRaw(e.target.value)}
+                        onKeyDown={handleRawKeyDown}
                         placeholder="Paste the full KG Spy Report text here…"
                         style={{
                             ...input,
@@ -764,6 +885,10 @@ function Reports() {
                                 {msg}
                             </div>
                         ) : null}
+                    </div>
+
+                    <div style={{ marginTop: 10, fontSize: 12, color: "rgba(231,236,255,.65)" }}>
+                        Shortcut: press Ctrl/Cmd + Enter to parse and save.
                     </div>
 
                     <div style={{ marginTop: 10, fontSize: 12, color: "rgba(231,236,255,.65)" }}>
@@ -978,8 +1103,8 @@ function Settlements() {
                                 <div style={{ fontSize: 12, opacity: 0.8, margin: "6px 0" }}>
                                     Buildings: {Array.isArray(s.buildings) ? s.buildings.length : 0}
                                 </div>
-                                <div style={{ overflowX: "auto" }}>
-                                    <table style={table}>
+                                <div className="table-wrap">
+                                    <table className="data-table" style={table}>
                                         <thead>
                                             <tr>
                                                 <th style={th}>Building Type</th>
@@ -990,9 +1115,9 @@ function Settlements() {
                                         <tbody>
                                             {(s.buildings || []).map((b, idx) => (
                                                 <tr key={`${s.settlement_id}:${idx}`}>
-                                                    <td style={td}>{b.building_type}</td>
-                                                    <td style={td}>{b.level}</td>
-                                                    <td style={td}>{b.effect_text || "-"}</td>
+                                                    <td data-label="Building Type" style={td}>{b.building_type}</td>
+                                                    <td data-label="Level" style={td}>{b.level}</td>
+                                                    <td data-label="Effect" style={td}>{b.effect_text || "-"}</td>
                                                 </tr>
                                             ))}
                                         </tbody>
@@ -1020,8 +1145,8 @@ function SettlementEffects() {
                 {effects.loading ? <div>Loading effects...</div> : null}
                 {effects.err ? <div style={{ color: "#ff6b6b" }}>{effects.err}</div> : null}
                 {Array.isArray(effects.data?.effects) && effects.data.effects.length > 0 ? (
-                    <div style={{ overflowX: "auto" }}>
-                        <table style={table}>
+                    <div className="table-wrap">
+                        <table className="data-table" style={table}>
                             <thead>
                                 <tr>
                                     <th style={th}>Effect</th>
@@ -1035,12 +1160,12 @@ function SettlementEffects() {
                             <tbody>
                                 {effects.data.effects.map((e) => (
                                     <tr key={e.effect_key}>
-                                        <td style={td}>{e.label}</td>
-                                        <td style={td}>{e.total_pct}</td>
-                                        <td style={td}>{e.cap_pct ?? "-"}</td>
-                                        <td style={td}>{e.applied_pct}</td>
-                                        <td style={td}>{e.cap_reached ? "Yes" : "No"}</td>
-                                        <td style={td}>{e.building_count}</td>
+                                        <td data-label="Effect" style={td}>{e.label}</td>
+                                        <td data-label="Total %" style={td}>{e.total_pct}</td>
+                                        <td data-label="Cap %" style={td}>{e.cap_pct ?? "-"}</td>
+                                        <td data-label="Applied %" style={td}>{e.applied_pct}</td>
+                                        <td data-label="Cap Hit" style={td}>{e.cap_reached ? "Yes" : "No"}</td>
+                                        <td data-label="Buildings" style={td}>{e.building_count}</td>
                                     </tr>
                                 ))}
                             </tbody>
@@ -1059,6 +1184,7 @@ function SettlementEffects() {
 function TrackedSettlements() {
     const [search, setSearch] = useState("");
     const [tick, setTick] = useState(0);
+    const deferredSearch = useDeferredValue(search);
 
     useEffect(() => {
         const id = setInterval(() => setTick((x) => x + 1), 10000);
@@ -1068,9 +1194,9 @@ function TrackedSettlements() {
     const url = useMemo(
         () =>
             `${API_BASE}/api/settlements/tracked?kingdom=${encodeURIComponent(
-                search
+                deferredSearch
             )}&limit=1000&r=${tick}`,
-        [search, tick]
+        [deferredSearch, tick]
     );
     const tracked = useFetchJson(url, [url]);
 
@@ -1092,8 +1218,8 @@ function TrackedSettlements() {
                     {tracked.loading ? <div>Loading…</div> : null}
                     {tracked.err ? <div style={{ color: "#ff6b6b" }}>{tracked.err}</div> : null}
 
-                    <div style={{ overflowX: "auto" }}>
-                        <table style={table}>
+                    <div className="table-wrap">
+                        <table className="data-table" style={table}>
                             <thead>
                                 <tr>
                                     <th style={th}>Kingdom</th>
@@ -1108,13 +1234,13 @@ function TrackedSettlements() {
                             <tbody>
                                 {(tracked.data?.items || []).map((r) => (
                                     <tr key={`${r.kingdom}:${r.settlement_name}`}>
-                                        <td style={td}>{r.kingdom}</td>
-                                        <td style={td}>{r.settlement_name}</td>
-                                        <td style={td}>{r.latest_level ?? "—"}</td>
-                                        <td style={td}>{r.sightings ?? 0}</td>
-                                        <td style={td}>{r.failed_take_attempts ?? 0}</td>
-                                        <td style={td}>{r.captures ?? 0}</td>
-                                        <td style={td} title={r.last_seen_at ? new Date(r.last_seen_at).toLocaleString() : ""}>
+                                        <td data-label="Kingdom" style={td}>{r.kingdom}</td>
+                                        <td data-label="Settlement" style={td}>{r.settlement_name}</td>
+                                        <td data-label="Latest Lvl" style={td}>{r.latest_level ?? "—"}</td>
+                                        <td data-label="Sightings" style={td}>{r.sightings ?? 0}</td>
+                                        <td data-label="Failed Takes" style={td}>{r.failed_take_attempts ?? 0}</td>
+                                        <td data-label="Captures" style={td}>{r.captures ?? 0}</td>
+                                        <td data-label="Last Seen" style={td} title={r.last_seen_at ? new Date(r.last_seen_at).toLocaleString() : ""}>
                                             {timeAgo(r.last_seen_at)}
                                         </td>
                                     </tr>
@@ -1201,16 +1327,17 @@ function NWOT() {
     const [search, setSearch] = useState("");
     const [selected, setSelected] = useState("Galileo");
     const [hours, setHours] = useState(24);
+    const deferredSearch = useDeferredValue(search);
 
     const kingdomsUrl = useMemo(() => `${API_BASE}/api/nw/kingdoms?limit=300`, []);
     const kingdoms = useFetchJson(kingdomsUrl, [kingdomsUrl]);
 
     const filtered = useMemo(() => {
         const list = kingdoms.data?.kingdoms || [];
-        const s = search.trim().toLowerCase();
+        const s = deferredSearch.trim().toLowerCase();
         if (!s) return list;
         return list.filter((k) => String(k.kingdom || "").toLowerCase().includes(s));
-    }, [kingdoms.data, search]);
+    }, [deferredSearch, kingdoms.data]);
 
     const historyUrl = useMemo(() => {
         if (!selected) return "";
@@ -1314,7 +1441,9 @@ function NWOT() {
                             </div>
 
                             {Array.isArray(history.data) && history.data.length > 0 ? (
-                                <NWChart data={history.data} />
+                                <Suspense fallback={<div style={{ fontSize: 12, color: "var(--rh-muted)" }}>Loading chart…</div>}>
+                                    <NWChart data={history.data} />
+                                </Suspense>
                             ) : (
                                 <div style={{ fontSize: 12, color: "rgba(231,236,255,.65)" }}>
                                     No history points yet for this kingdom/time range.
@@ -1341,7 +1470,9 @@ function Login() {
             setMsg("Username & password required.");
             return;
         }
-        setMsg("");
+                    <Suspense fallback={<div style={{ fontSize: 12, color: "var(--rh-muted)" }}>Loading admin tools…</div>}>
+                        <AdminHealth />
+                    </Suspense>
         setBusy(true);
 
         const url = isReg ? `${API_BASE}/auth/register` : `${API_BASE}/auth/login`;
@@ -1396,6 +1527,24 @@ function Login() {
     );
 }
 
+function NotFound() {
+    return (
+        <Layout>
+            <Card title="Page not found" subtitle="This route does not exist in Recon Hub.">
+                <EmptyState
+                    title="Nothing is mapped here yet."
+                    body="Use the dashboard to jump back into the core views instead of being redirected without context."
+                    action={
+                        <Link style={{ ...btn, textDecoration: "none" }} to="/">
+                            Return to Dashboard
+                        </Link>
+                    }
+                />
+            </Card>
+        </Layout>
+    );
+}
+
 /* ---------------- Router ---------------- */
 
 
@@ -1416,7 +1565,7 @@ export default function App() {
                 <Route path="/admin/health" element={<Admin />} />
                 <Route path="/login" element={<Login />} />
                 <Route path="/calc" element={<Navigate to="/kg-calc.html" replace />} />
-                <Route path="*" element={<Navigate to="/" replace />} />
+                <Route path="*" element={<NotFound />} />
             </Routes>
         </BrowserRouter>
     );

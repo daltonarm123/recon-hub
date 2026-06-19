@@ -1,9 +1,11 @@
-import React, { useEffect, useMemo } from "react";
+import React, { useEffect, useMemo, useRef } from "react";
 import * as am5 from "@amcharts/amcharts5";
 import * as am5xy from "@amcharts/amcharts5/xy";
 import am5themes_Animated from "@amcharts/amcharts5/themes/Animated";
 
 export default function NWChart({ data }) {
+  const wrapperRef = useRef(null);
+
   // Convert API points: {t, v} -> chart points: {date, value}
   const chartData = useMemo(() => {
     if (!Array.isArray(data)) return [];
@@ -23,7 +25,7 @@ export default function NWChart({ data }) {
     el.style.height = "500px";
 
     // Attach to placeholder wrapper
-    const wrapper = document.getElementById("nw-chart-wrapper");
+    const wrapper = wrapperRef.current;
     if (!wrapper) return;
     wrapper.innerHTML = "";
     wrapper.appendChild(el);
@@ -69,6 +71,17 @@ export default function NWChart({ data }) {
       })
     );
 
+    series.strokes.template.setAll({
+      stroke: am5.color(0xc59a52),
+      strokeWidth: 3,
+    });
+
+    series.fills.template.setAll({
+      fill: am5.color(0xc59a52),
+      fillOpacity: 0.18,
+      visible: true,
+    });
+
     series.data.setAll(chartData);
 
     // Cursor (hover + zoom feel)
@@ -85,5 +98,5 @@ export default function NWChart({ data }) {
   }, [chartData]);
 
   // Wrapper div (no fixed id chartdiv collisions)
-  return <div id="nw-chart-wrapper" style={{ width: "100%" }} />;
+  return <div ref={wrapperRef} style={{ width: "100%" }} />;
 }

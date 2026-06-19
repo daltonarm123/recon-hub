@@ -10,6 +10,8 @@ import httpx
 import psycopg
 from psycopg.rows import dict_row
 
+from db_dsn import resolve_database_dsn
+
 KG_RANKINGS_URL = os.getenv(
     "KG_RANKINGS_URL",
     "https://www.kingdomgame.net/WebService/Kingdoms.asmx/GetKingdomRankings",
@@ -51,10 +53,7 @@ def _log(msg: str):
 # DB helpers
 # -------------------------
 def _dsn() -> str:
-    dsn = os.getenv("DATABASE_URL") or os.getenv("POSTGRES_URL") or ""
-    if not dsn:
-        raise RuntimeError("DATABASE_URL is not set")
-    return dsn
+    return resolve_database_dsn()
 
 
 def _connect():

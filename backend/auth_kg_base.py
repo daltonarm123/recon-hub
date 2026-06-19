@@ -15,6 +15,8 @@ from fastapi.responses import RedirectResponse
 from psycopg.rows import dict_row
 from pydantic import BaseModel, Field
 
+from db_dsn import resolve_database_dsn
+
 router = APIRouter()
 
 DISCORD_API_BASE = "https://discord.com/api"
@@ -40,10 +42,10 @@ class PayPalCaptureBody(BaseModel):
 
 
 def _get_dsn() -> str:
-    dsn = os.getenv("DATABASE_URL") or os.getenv("POSTGRES_URL") or ""
-    if not dsn:
-        raise HTTPException(status_code=500, detail="DATABASE_URL is not set")
-    return dsn
+    try:
+        return resolve_database_dsn()
+    except RuntimeError as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
 
 
 def _connect() -> psycopg.Connection:

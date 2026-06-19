@@ -3,6 +3,7 @@ import re
 import gzip
 import json
 import hashlib
+import asyncio
 import time
 import threading
 import logging
@@ -26,18 +27,113 @@ from nw_poll import start_nw_poller
 from rankings_poll import start_rankings_poller
 from auth_kg import router as auth_kg_router, ensure_auth_tables
 from admin_api import router as admin_router, ensure_admin_tables
+from db_dsn import resolve_database_dsn
 
 BASE_DIR = Path(__file__).resolve().parent
 STATIC_DIR = BASE_DIR / "static"
 logger = logging.getLogger("recon_hub.startup")
 
 
+def _int_env(name: str, default_value: int) -> int:
+    try:
+        value = int(str(os.getenv(name, str(default_value))).strip())
+    except Exception:
+        logger.warning("Invalid %s value; using default %s", name, default_value)
+        return default_value
+    return value if value > 0 else default_value
+
+
+def _bool_env(name: str, default_value: bool) -> bool:
+    raw = str(os.getenv(name, "")).strip().lower()
+    if not raw:
+        return default_value
+    return raw in {"1", "true", "yes", "on"}
+
+
+def _start_optional_service(name: str, starter, *args, **kwargs):
+    try:
+        starter(*args, **kwargs)
+        logger.info("Started background service: %s", name)
+    except Exception:
+        logger.exception("Failed to start background service: %s", name)
+
+
+def _index_response() -> FileResponse:
+    return FileResponse(
+        str(STATIC_DIR / "index.html"),
+        headers={
+            "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
+            "Pragma": "no-cache",
+            "Expires": "0",
+        },
+    )
+
+
+def _db_connect_timeout_seconds() -> int:
+    return _int_env("DB_CONNECT_TIMEOUT_SECONDS", 5)
+
+
+def _db_statement_timeout_ms() -> int:
+    return _int_env("DB_STATEMENT_TIMEOUT_MS", 15000)
+
+
+def _is_api_request(request: Request) -> bool:
+    path = request.url.path
+    return path.startswith("/api/") or path.startswith("/auth/")
+
+
+def _error_code_for_status(status_code: int) -> str:
+    if status_code == 400:
+        return "bad_request"
+    if status_code == 401:
+        return "unauthorized"
+    if status_code == 403:
+        return "forbidden"
+    if status_code == 404:
+        return "not_found"
+    if status_code == 408:
+        return "request_timeout"
+    if status_code == 409:
+        return "conflict"
+    if status_code == 422:
+        return "validation_error"
+    if status_code == 429:
+        return "rate_limited"
+    if status_code >= 500:
+        return "server_error"
+    return "request_error"
+
+
+def _api_error_content(status_code: int, detail: Any, code: Optional[str] = None) -> Dict[str, Any]:
+    message = detail if isinstance(detail, str) else str(detail or "Request failed")
+    return {
+        "ok": False,
+        "detail": message,
+        "error": {
+            "code": code or _error_code_for_status(status_code),
+            "message": message,
+            "status": int(status_code),
+        },
+    }
+
+
+def _db_exception_to_http(exc: Exception) -> HTTPException:
+    if isinstance(exc, psycopg.errors.QueryCanceled):
+        return HTTPException(status_code=504, detail="Database query timed out")
+    if isinstance(exc, psycopg.OperationalError):
+        return HTTPException(status_code=503, detail="Database unavailable")
+    return HTTPException(status_code=503, detail="Database operation failed")
+
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     world_id = os.getenv("KG_WORLD_ID", "1")
-    rankings_seconds = int(os.getenv("RANKINGS_POLL_SECONDS", "900"))
-    nw_seconds = int(os.getenv("NW_POLL_SECONDS", "240"))
+    rankings_seconds = _int_env("RANKINGS_POLL_SECONDS", 900)
+    nw_seconds = _int_env("NW_POLL_SECONDS", 240)
+    enable_rankings_poller = _bool_env("ENABLE_RANKINGS_POLLER", True)
+    enable_nw_poller = _bool_env("ENABLE_NW_POLLER", True)
+    enable_settlement_observer = _bool_env("ENABLE_SETTLEMENT_OBSERVER", True)
 
     def _init_db():
         try:
@@ -56,13 +152,25 @@ async def lifespan(app: FastAPI):
     threading.Thread(target=_init_db, daemon=True, name="db-init").start()
     logger.info("DB initialization started in background thread; HTTP server is ready")
 
-    try:
-        # start_rankings_poller(poll_seconds=rankings_seconds, world_id=world_id)
-        start_nw_poller(poll_seconds=nw_seconds)
-        start_settlement_observer()
-    except Exception:
-        # Keep the HTTP process alive so static pages and health endpoints stay reachable.
-        logger.exception("Startup initialization failed; continuing without background services")
+    if enable_rankings_poller:
+        _start_optional_service(
+            "rankings_poller",
+            start_rankings_poller,
+            poll_seconds=rankings_seconds,
+            world_id=world_id,
+        )
+    else:
+        logger.info("Background service disabled by env: rankings_poller")
+
+    if enable_nw_poller:
+        _start_optional_service("nw_poller", start_nw_poller, poll_seconds=nw_seconds)
+    else:
+        logger.info("Background service disabled by env: nw_poller")
+
+    if enable_settlement_observer:
+        _start_optional_service("settlement_observer", start_settlement_observer)
+    else:
+        logger.info("Background service disabled by env: settlement_observer")
     yield
 
 
@@ -75,6 +183,43 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+@app.exception_handler(HTTPException)
+async def http_exception_handler(request: Request, exc: HTTPException):
+    if _is_api_request(request):
+        return JSONResponse(
+            status_code=exc.status_code,
+            content=_api_error_content(exc.status_code, exc.detail),
+        )
+    return JSONResponse(status_code=exc.status_code, content={"detail": exc.detail})
+
+
+@app.exception_handler(psycopg.Error)
+async def psycopg_exception_handler(request: Request, exc: psycopg.Error):
+    logger.exception("Database error while handling %s", request.url.path)
+    http_exc = _db_exception_to_http(exc)
+    if _is_api_request(request):
+        return JSONResponse(
+            status_code=http_exc.status_code,
+            content=_api_error_content(
+                http_exc.status_code,
+                http_exc.detail,
+                code="database_timeout" if http_exc.status_code == 504 else "database_error",
+            ),
+        )
+    return JSONResponse(status_code=http_exc.status_code, content={"detail": http_exc.detail})
+
+
+@app.exception_handler(Exception)
+async def unhandled_exception_handler(request: Request, exc: Exception):
+    logger.exception("Unhandled error while handling %s", request.url.path)
+    if _is_api_request(request):
+        return JSONResponse(
+            status_code=500,
+            content=_api_error_content(500, "Internal server error", code="internal_error"),
+        )
+    return JSONResponse(status_code=500, content={"detail": "Internal server error"})
 
 @app.get("/api/routes")
 def list_routes():
@@ -90,8 +235,11 @@ def list_routes():
 # -------------------------
 # Static (SPA + assets)
 # -------------------------
-if (STATIC_DIR / "assets").exists():
-    app.mount("/assets", StaticFiles(directory=str(STATIC_DIR / "assets")), name="assets")
+app.mount(
+    "/assets",
+    StaticFiles(directory=str(STATIC_DIR / "assets"), check_dir=False),
+    name="assets",
+)
 
 
 @app.get("/")
@@ -99,7 +247,7 @@ def root():
     index_path = STATIC_DIR / "index.html"
     if not index_path.exists():
         return JSONResponse({"ok": True, "service": "recon-hub", "note": "static index.html not found"})
-    return FileResponse(str(index_path))
+    return _index_response()
 
 
 @app.get("/calc")
@@ -124,7 +272,14 @@ def serve_calc():
 
 @app.get("/api/status")
 def status():
-    return {"ok": True, "service": "recon-hub", "ts": datetime.utcnow().isoformat() + "Z"}
+    index_path = STATIC_DIR / "index.html"
+    assets_path = STATIC_DIR / "assets"
+    return {
+        "ok": True,
+        "service": "recon-hub",
+        "ts": datetime.utcnow().isoformat() + "Z",
+        "frontend_ready": index_path.exists() and assets_path.exists(),
+    }
 
 
 @app.get("/healthz")
@@ -136,14 +291,25 @@ def healthz():
 # Postgres helpers
 # -------------------------
 def _get_dsn() -> str:
-    dsn = os.getenv("DATABASE_URL") or os.getenv("POSTGRES_URL") or ""
-    if not dsn:
-        raise HTTPException(status_code=500, detail="DATABASE_URL is not set")
-    return dsn
+    try:
+        return resolve_database_dsn()
+    except RuntimeError as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
 
 
 def _connect() -> psycopg.Connection:
-    return psycopg.connect(_get_dsn(), row_factory=dict_row)
+    connect_kwargs: Dict[str, Any] = {
+        "row_factory": dict_row,
+        "connect_timeout": _db_connect_timeout_seconds(),
+    }
+    statement_timeout_ms = _db_statement_timeout_ms()
+    if statement_timeout_ms > 0:
+        connect_kwargs["options"] = f"-c statement_timeout={statement_timeout_ms}"
+    try:
+        return psycopg.connect(_get_dsn(), **connect_kwargs)
+    except psycopg.OperationalError as exc:
+        logger.exception("Database connect failed")
+        raise _db_exception_to_http(exc) from exc
 
 
 JWT_COOKIE_NAME = "rh_session"
@@ -170,6 +336,19 @@ def _admin_user_ids() -> set[str]:
     return {x.strip() for x in raw.split(",") if x.strip()}
 
 
+def _admin_usernames() -> set[str]:
+    raw = os.getenv("ADMIN_USERNAMES", "").strip()
+    names = {"elixer"}
+    if raw:
+        names.update(x.strip().lower() for x in raw.split(",") if x.strip())
+    return names
+
+
+def _is_admin_identity(user_id: str, username: str) -> bool:
+    uname = str(username or "").strip().lower()
+    return user_id in _admin_user_ids() or uname in _admin_usernames()
+
+
 def _enforce_alliance_scoping() -> bool:
     return (os.getenv("ENFORCE_ALLIANCE_SCOPING", "false").strip().lower() in {"1", "true", "yes", "on"})
 
@@ -183,10 +362,11 @@ def _get_scope_from_request(request: Request) -> Optional[Dict[str, Any]]:
         raise HTTPException(status_code=401, detail="Login required")
     claims = _decode_session_jwt(token)
     uid = str(claims.get("sub") or "").strip()
+    uname = str(claims.get("name") or "").strip()
     if not uid:
         raise HTTPException(status_code=401, detail="Invalid session")
 
-    if uid in _admin_user_ids():
+    if _is_admin_identity(uid, uname):
         return None
 
     conn = _connect()
@@ -2379,10 +2559,6 @@ def ingest_report(body: RawReportBody):
                     (report_hash,),
                 )
                 stored = cur.fetchone()
-                report_created_at = stored.get("created_at") or datetime.utcnow()
-                tech_stats = _index_tech_for_report(cur, kingdom, int(stored["id"]), report_created_at, research_levels)
-                troop_rows = _upsert_troop_snapshot(cur, kingdom, int(stored["id"]), report_created_at, troops)
-                market_rows = _upsert_market_transactions(cur, int(stored["id"]), report_created_at, market_transactions)
                 conn.commit()
                 return {
                     "ok": True,
@@ -2390,10 +2566,10 @@ def ingest_report(body: RawReportBody):
                     "stored": stored,
                     "parsed": parsed,
                     "settlement_events": 0,
-                    "tech_index_rows": int(tech_stats.get("history") or 0),
-                    "best_tech_updates": int(tech_stats.get("best_updates") or 0),
-                    "troop_snapshot_rows": troop_rows,
-                    "market_transaction_rows": market_rows,
+                    "tech_index_rows": 0,
+                    "best_tech_updates": 0,
+                    "troop_snapshot_rows": 0,
+                    "market_transaction_rows": 0,
                     "duplicate": True,
                 }
 
@@ -2619,6 +2795,6 @@ def spa_fallback(full_path: str):
 
     index_path = STATIC_DIR / "index.html"
     if index_path.exists():
-        return FileResponse(str(index_path))
+        return _index_response()
 
     raise HTTPException(status_code=404, detail="Not Found")

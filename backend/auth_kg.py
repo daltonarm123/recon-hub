@@ -16,6 +16,8 @@ from fastapi.responses import RedirectResponse, JSONResponse
 from psycopg.rows import dict_row
 from pydantic import BaseModel, Field
 
+from db_dsn import resolve_database_dsn
+
 class AuthLoginBody(BaseModel):
     username: str = Field(..., min_length=3)
     password: str = Field(..., min_length=6)
@@ -29,6 +31,17 @@ def verify_password(plain_password: str, hashed_password: str) -> bool:
         return bcrypt.checkpw(plain_password.encode("utf-8"), hashed_password.encode("utf-8"))
     except Exception:
         return False
+
+
+def _normalize_username(raw_username: str) -> str:
+    username = str(raw_username or "").strip()
+    if len(username) < 3:
+        raise HTTPException(status_code=400, detail="Username must be at least 3 non-space characters")
+    if len(username) > 64:
+        raise HTTPException(status_code=400, detail="Username is too long")
+    if any(ch in username for ch in {"\r", "\n", "\t"}):
+        raise HTTPException(status_code=400, detail="Username contains invalid whitespace")
+    return username
 
 router = APIRouter()
 
@@ -55,10 +68,10 @@ class PayPalCaptureBody(BaseModel):
 
 
 def _get_dsn() -> str:
-    dsn = os.getenv("DATABASE_URL") or os.getenv("POSTGRES_URL") or ""
-    if not dsn:
-        raise HTTPException(status_code=500, detail="DATABASE_URL is not set")
-    return dsn
+    try:
+        return resolve_database_dsn()
+    except RuntimeError as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
 
 
 def _connect() -> psycopg.Connection:
@@ -171,6 +184,22 @@ def _create_session_jwt(user: Dict[str, Any]) -> str:
     return jwt.encode(payload, _jwt_secret(), algorithm="HS256")
 
 
+def _set_session_cookie(response: Response, jwt_token: str):
+    response.set_cookie(
+        key=JWT_COOKIE_NAME,
+        value=jwt_token,
+        httponly=True,
+        secure=_session_secure_cookie(),
+        samesite="lax",
+        max_age=_jwt_exp_hours() * 3600,
+        path="/",
+    )
+
+
+def _clear_session_cookie(response: Response):
+    response.delete_cookie(JWT_COOKIE_NAME, path="/")
+
+
 def _decode_session_jwt(token: str) -> Dict[str, Any]:
     try:
         return jwt.decode(token, _jwt_secret(), algorithms=["HS256"])
@@ -218,6 +247,19 @@ def _admin_user_ids() -> set[str]:
     return {x.strip() for x in raw.split(",") if x.strip()}
 
 
+def _admin_usernames() -> set[str]:
+    raw = os.getenv("ADMIN_USERNAMES", "").strip()
+    names = {"elixer"}
+    if raw:
+        names.update(x.strip().lower() for x in raw.split(",") if x.strip())
+    return names
+
+
+def _is_admin_identity(user_id: str, username: str) -> bool:
+    uname = str(username or "").strip().lower()
+    return user_id in _admin_user_ids() or uname in _admin_usernames()
+
+
 def _paypal_mode() -> str:
     m = os.getenv("PAYPAL_MODE", "live").strip().lower()
     return "sandbox" if m == "sandbox" else "live"
@@ -243,6 +285,15 @@ def _paypal_client_secret() -> str:
 
 def _paypal_webhook_id() -> str:
     return os.getenv("PAYPAL_WEBHOOK_ID", "").strip()
+
+
+def _billing_enabled() -> bool:
+    return os.getenv("ENABLE_BILLING", "false").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _require_billing_enabled():
+    if not _billing_enabled():
+        raise HTTPException(status_code=503, detail="Billing is not enabled")
 
 
 def _money_text(value: Any, default_value: float) -> str:
@@ -394,7 +445,7 @@ def _get_current_user(request: Request) -> Dict[str, Any]:
         "discord_user_id": uid,
         "discord_username": str(claims.get("name") or ""),
         "avatar": claims.get("avatar"),
-        "is_admin": uid in _admin_user_ids(),
+        "is_admin": _is_admin_identity(uid, str(claims.get("name") or "")),
     }
     try:
         pctx = _load_premium_context(uid)
@@ -1093,86 +1144,63 @@ def _aggregate_effects(settlements: List[Dict[str, Any]]) -> List[Dict[str, Any]
 
 @router.post("/auth/register")
 def auth_register(body: AuthLoginBody):
+    username = _normalize_username(body.username)
     conn = _connect()
     try:
         with conn.cursor() as cur:
-            cur.execute("SELECT discord_user_id FROM public.app_users WHERE LOWER(discord_username) = LOWER(%s)", (body.username.strip(),))
+            cur.execute("SELECT discord_user_id FROM public.app_users WHERE LOWER(discord_username) = LOWER(%s)", (username,))
             if cur.fetchone():
                 raise HTTPException(status_code=400, detail="Username already exists")
             
             hashed = hash_password(body.password)
             import uuid
             user_id = str(uuid.uuid4())
-            uname = body.username.strip()
             
             cur.execute(
                 """
                 INSERT INTO public.app_users (discord_user_id, discord_username, password_hash, created_at, updated_at)
                 VALUES (%s, %s, %s, now(), now())
                 """,
-                (user_id, uname, hashed)
+                (user_id, username, hashed)
             )
         conn.commit()
     finally:
         conn.close()
 
-    payload = {
-        "sub": user_id,
-        "name": uname,
-        "avatar": None,
-        "iat": int(datetime.utcnow().timestamp()),
-        "exp": int((datetime.utcnow() + timedelta(hours=_jwt_exp_hours())).timestamp()),
-    }
-    jwt_token = jwt.encode(payload, _jwt_secret(), algorithm="HS256")
+    jwt_token = _create_session_jwt({"id": user_id, "username": username, "avatar": None})
     resp = JSONResponse(content={"ok": True, "message": "Account created"})
-    resp.set_cookie(
-        key=JWT_COOKIE_NAME,
-        value=jwt_token,
-        httponly=True,
-        secure=_session_secure_cookie(),
-        samesite="lax",
-        max_age=_jwt_exp_hours() * 3600,
-        path="/",
-    )
+    _set_session_cookie(resp, jwt_token)
     return resp
 
 @router.post("/auth/login")
 def auth_login(body: AuthLoginBody):
+    username = _normalize_username(body.username)
     conn = _connect()
     try:
         with conn.cursor(row_factory=dict_row) as cur:
-            cur.execute("SELECT discord_user_id, discord_username, password_hash FROM public.app_users WHERE LOWER(discord_username) = LOWER(%s)", (body.username.strip(),))
+            cur.execute("SELECT discord_user_id, discord_username, password_hash FROM public.app_users WHERE LOWER(discord_username) = LOWER(%s)", (username,))
             user = cur.fetchone()
             if not user or not user["password_hash"] or not verify_password(body.password, user["password_hash"]):
                 raise HTTPException(status_code=401, detail="Invalid username or password")
     finally:
         conn.close()
 
-    payload = {
-        "sub": user["discord_user_id"],
-        "name": user["discord_username"],
-        "avatar": None,
-        "iat": int(datetime.utcnow().timestamp()),
-        "exp": int((datetime.utcnow() + timedelta(hours=_jwt_exp_hours())).timestamp()),
-    }
-    jwt_token = jwt.encode(payload, _jwt_secret(), algorithm="HS256")
+    jwt_token = _create_session_jwt(
+        {"id": user["discord_user_id"], "username": user["discord_username"], "avatar": None}
+    )
     
     resp = JSONResponse(content={"ok": True, "message": "Logged in"})
-    resp.set_cookie(
-        key=JWT_COOKIE_NAME,
-        value=jwt_token,
-        httponly=True,
-        secure=_session_secure_cookie(),
-        samesite="lax",
-        max_age=_jwt_exp_hours() * 3600,
-        path="/",
-    )
+    _set_session_cookie(resp, jwt_token)
     return resp
 
 @router.post("/auth/logout")
-def auth_logout():
-    resp = RedirectResponse(url=f"{_frontend_url()}/", status_code=302)
-    resp.delete_cookie(JWT_COOKIE_NAME, path="/")
+def auth_logout(request: Request):
+    accept = (request.headers.get("accept") or "").lower()
+    if "text/html" in accept and "application/json" not in accept:
+        resp = RedirectResponse(url=_frontend_url(), status_code=302)
+    else:
+        resp = JSONResponse(content={"ok": True})
+    _clear_session_cookie(resp)
     return resp
 
 
@@ -1338,6 +1366,7 @@ def billing_premium_status(request: Request):
     has_access = bool(user.get("is_admin") or is_premium)
     return {
         "ok": True,
+        "enabled": _billing_enabled(),
         "premium": {
             "is_premium": is_premium,
             "tier": p.get("premium_tier"),
@@ -1346,12 +1375,13 @@ def billing_premium_status(request: Request):
             "source": p.get("premium_source"),
             "has_access": has_access,
         },
-        "plans": _premium_plans(),
+        "plans": (_premium_plans() if _billing_enabled() else []),
     }
 
 
 @router.post("/api/billing/paypal/create-order")
 def billing_paypal_create_order(body: PayPalCreateOrderBody, request: Request):
+    _require_billing_enabled()
     user = _get_current_user(request)
     _ensure_app_user(user["discord_user_id"], user["discord_username"])
     token = _paypal_get_access_token()
@@ -1427,6 +1457,7 @@ def billing_paypal_create_order(body: PayPalCreateOrderBody, request: Request):
 
 @router.post("/api/billing/paypal/capture")
 def billing_paypal_capture(body: PayPalCaptureBody, request: Request):
+    _require_billing_enabled()
     user = _get_current_user(request)
     order_id = str(body.order_id or "").strip()
     if not order_id:
@@ -1490,6 +1521,7 @@ def billing_paypal_capture(body: PayPalCaptureBody, request: Request):
 
 @router.post("/api/billing/paypal/webhook")
 async def billing_paypal_webhook(request: Request):
+    _require_billing_enabled()
     body = await request.json()
     hdr = {k.lower(): v for k, v in request.headers.items()}
     if not _paypal_verify_webhook_signature(hdr, body):
@@ -1575,9 +1607,9 @@ def auth_me(request: Request, response: Response):
                 "discord_user_id": uid,
                 "discord_username": uname,
                 "avatar": claims.get("avatar"),
-                "is_admin": uid in _admin_user_ids(),
+                "is_admin": _is_admin_identity(uid, uname),
                 "is_premium": bool(pctx.get("is_premium") or False),
-                "has_premium_access": (uid in _admin_user_ids()) or bool(pctx.get("is_premium") or False),
+                "has_premium_access": _is_admin_identity(uid, uname) or bool(pctx.get("is_premium") or False),
                 "premium_tier": pctx.get("premium_tier"),
                 "premium_since": pctx.get("premium_since"),
                 "premium_expires_at": pctx.get("premium_expires_at"),
