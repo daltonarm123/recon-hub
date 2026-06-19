@@ -409,6 +409,95 @@ def ensure_recon_tables():
             )
             cur.execute(
                 """
+                CREATE TABLE IF NOT EXISTS public.tech_index (
+                    id BIGSERIAL PRIMARY KEY,
+                    kingdom TEXT,
+                    tech_name TEXT,
+                    tech_level INTEGER,
+                    captured_at TIMESTAMPTZ,
+                    report_id BIGINT REFERENCES public.spy_reports(id) ON DELETE CASCADE,
+                    UNIQUE(kingdom, tech_name, tech_level, report_id)
+                );
+                """
+            )
+            cur.execute(
+                """
+                CREATE TABLE IF NOT EXISTS public.kingdom_tech (
+                    kingdom TEXT NOT NULL,
+                    tech_name TEXT NOT NULL,
+                    best_level INTEGER NOT NULL,
+                    updated_at TIMESTAMPTZ NOT NULL,
+                    source_report_id BIGINT REFERENCES public.spy_reports(id) ON DELETE SET NULL,
+                    PRIMARY KEY (kingdom, tech_name)
+                );
+                """
+            )
+            cur.execute(
+                """
+                CREATE TABLE IF NOT EXISTS public.troop_snapshots (
+                    id BIGSERIAL PRIMARY KEY,
+                    kingdom TEXT NOT NULL,
+                    report_id BIGINT REFERENCES public.spy_reports(id) ON DELETE CASCADE,
+                    captured_at TIMESTAMPTZ NOT NULL,
+                    unit_name TEXT NOT NULL,
+                    unit_count INTEGER NOT NULL,
+                    UNIQUE(report_id, unit_name)
+                );
+                """
+            )
+            cur.execute(
+                """
+                CREATE TABLE IF NOT EXISTS public.market_transactions (
+                    id BIGSERIAL PRIMARY KEY,
+                    report_id BIGINT NOT NULL REFERENCES public.spy_reports(id) ON DELETE CASCADE,
+                    captured_at TIMESTAMPTZ NOT NULL,
+                    line_no INTEGER NOT NULL,
+                    tx_type TEXT,
+                    buyer_kingdom TEXT,
+                    seller_kingdom TEXT,
+                    partner_kingdom TEXT,
+                    resource TEXT,
+                    quantity INTEGER,
+                    gold_amount BIGINT,
+                    tx_time_text TEXT,
+                    raw_line TEXT,
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    UNIQUE(report_id, line_no)
+                );
+                """
+            )
+            cur.execute(
+                """
+                CREATE INDEX IF NOT EXISTS tech_index_kingdom_captured_at_idx
+                ON public.tech_index (kingdom, captured_at DESC, report_id DESC);
+                """
+            )
+            cur.execute(
+                """
+                CREATE INDEX IF NOT EXISTS tech_index_name_idx
+                ON public.tech_index (tech_name);
+                """
+            )
+            cur.execute(
+                """
+                CREATE INDEX IF NOT EXISTS troop_snapshots_kingdom_captured_at_idx
+                ON public.troop_snapshots (kingdom, captured_at DESC, report_id DESC);
+                """
+            )
+            cur.execute(
+                """
+                CREATE INDEX IF NOT EXISTS market_transactions_buyer_captured_idx
+                ON public.market_transactions (buyer_kingdom, captured_at DESC, id DESC);
+                """
+            )
+            cur.execute(
+                """
+                CREATE INDEX IF NOT EXISTS market_transactions_seller_captured_idx
+                ON public.market_transactions (seller_kingdom, captured_at DESC, id DESC);
+                """
+            )
+            cur.execute(
+                """
                 CREATE TABLE IF NOT EXISTS public.alliances (
                     id BIGSERIAL PRIMARY KEY,
                     slug TEXT UNIQUE NOT NULL,
@@ -667,6 +756,81 @@ def _parse_research_levels(text: str) -> Dict[str, int]:
     return out
 
 
+def _parse_market_transactions(text: str, buyer_kingdom: Optional[str] = None) -> List[Dict[str, Any]]:
+    txs: List[Dict[str, Any]] = []
+    in_market = False
+    buyer = str(buyer_kingdom or "").strip() or None
+
+    for idx, raw_line in enumerate((text or "").splitlines(), start=1):
+        line = (raw_line or "").strip()
+        ll = line.lower()
+        line_clean = line.lstrip("•-* ").strip()
+
+        if "the following recent market transactions were also discovered" in ll:
+            in_market = True
+            continue
+
+        if not in_market:
+            continue
+
+        if not line:
+            continue
+
+        if any(x in ll for x in (
+            "our spies also found the following information",
+            "the following technology information",
+            "the following information was found regarding troop movements",
+            "subject:",
+            "sender:",
+            "recipient",
+        )):
+            break
+
+        m = re.match(
+            r"^(Bought|Sold)\s+([\d,]+)\s+x\s+(.+?)\s+(from|to)\s+(.+?)\s+for\s+([\d,]+)\s+gold(?:\s*\(([^)]+)\))?\s*$",
+            line_clean,
+            re.IGNORECASE,
+        )
+        if not m:
+            continue
+
+        verb = m.group(1).strip().lower()
+        qty = int(m.group(2).replace(",", ""))
+        resource = m.group(3).strip()
+        edge = m.group(4).strip().lower()
+        partner = m.group(5).strip()
+        gold = int(m.group(6).replace(",", ""))
+        tx_time_txt = (m.group(7) or "").strip() or None
+
+        seller = None
+        inferred_buyer = buyer
+        if verb == "bought" and edge == "from":
+            seller = partner
+        elif verb == "sold" and edge == "to":
+            inferred_buyer = partner
+        elif edge == "from":
+            seller = partner
+        elif edge == "to":
+            inferred_buyer = partner
+
+        txs.append(
+            {
+                "line_no": idx,
+                "tx_type": verb,
+                "buyer_kingdom": inferred_buyer,
+                "seller_kingdom": seller,
+                "partner_kingdom": partner,
+                "resource": resource,
+                "quantity": qty,
+                "gold_amount": gold,
+                "tx_time_text": tx_time_txt,
+                "raw_line": line,
+            }
+        )
+
+    return txs
+
+
 def parse_spy_report(text: str) -> Dict[str, Any]:
     target = _grab_line(text, "Target")
     alliance = _grab_line(text, "Alliance")
@@ -717,6 +881,7 @@ def parse_spy_report(text: str) -> Dict[str, Any]:
         troops[k] = v
 
     research_levels = _parse_research_levels(text)
+    market_transactions = _parse_market_transactions(text, target)
 
     return {
         "target": target,
@@ -732,6 +897,7 @@ def parse_spy_report(text: str) -> Dict[str, Any]:
         "resources": resources,
         "troops": troops,
         "research_levels": research_levels,
+        "market_transactions": market_transactions,
     }
 
 
@@ -1784,6 +1950,105 @@ def _sync_settlement_observations_from_attack_reports(from_id: int, limit: int) 
         conn.close()
 
 
+def _upsert_troop_snapshot(cur, kingdom: str, report_id: int, captured_at: datetime, troops: Dict[str, int]) -> int:
+    if not kingdom or not report_id or not troops:
+        return 0
+    inserted = 0
+    for unit_name, unit_count in troops.items():
+        cur.execute(
+            """
+            INSERT INTO public.troop_snapshots (kingdom, report_id, captured_at, unit_name, unit_count)
+            VALUES (%s, %s, %s, %s, %s)
+            ON CONFLICT (report_id, unit_name) DO NOTHING
+            """,
+            (kingdom, int(report_id), captured_at, unit_name, int(unit_count)),
+        )
+        inserted += int(cur.rowcount or 0)
+    return inserted
+
+
+def _upsert_market_transactions(cur, report_id: int, captured_at: datetime, txs: List[Dict[str, Any]]) -> int:
+    if not report_id or not txs:
+        return 0
+    inserted = 0
+    for tx in txs:
+        cur.execute(
+            """
+            INSERT INTO public.market_transactions (
+                report_id, captured_at, line_no, tx_type, buyer_kingdom, seller_kingdom,
+                partner_kingdom, resource, quantity, gold_amount, tx_time_text, raw_line
+            )
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            ON CONFLICT (report_id, line_no) DO NOTHING
+            """,
+            (
+                int(report_id),
+                captured_at,
+                int(tx.get("line_no") or 0),
+                (str(tx.get("tx_type") or "").lower() or None),
+                (str(tx.get("buyer_kingdom") or "").strip() or None),
+                (str(tx.get("seller_kingdom") or "").strip() or None),
+                (str(tx.get("partner_kingdom") or "").strip() or None),
+                (str(tx.get("resource") or "").strip() or None),
+                int(tx.get("quantity") or 0),
+                int(tx.get("gold_amount") or 0),
+                (str(tx.get("tx_time_text") or "").strip() or None),
+                (str(tx.get("raw_line") or "").strip() or None),
+            ),
+        )
+        inserted += int(cur.rowcount or 0)
+    return inserted
+
+
+def _upsert_best_tech(cur, kingdom: str, tech_name: str, level: int, report_id: int, captured_at: datetime):
+    cur.execute(
+        """
+        INSERT INTO public.kingdom_tech (kingdom, tech_name, best_level, updated_at, source_report_id)
+        VALUES (%s, %s, %s, %s, %s)
+        ON CONFLICT (kingdom, tech_name)
+        DO UPDATE SET
+          best_level = CASE
+            WHEN EXCLUDED.best_level > public.kingdom_tech.best_level THEN EXCLUDED.best_level
+            WHEN EXCLUDED.best_level = public.kingdom_tech.best_level AND EXCLUDED.updated_at > public.kingdom_tech.updated_at THEN EXCLUDED.best_level
+            ELSE public.kingdom_tech.best_level
+          END,
+          updated_at = CASE
+            WHEN EXCLUDED.best_level > public.kingdom_tech.best_level THEN EXCLUDED.updated_at
+            WHEN EXCLUDED.best_level = public.kingdom_tech.best_level AND EXCLUDED.updated_at > public.kingdom_tech.updated_at THEN EXCLUDED.updated_at
+            ELSE public.kingdom_tech.updated_at
+          END,
+          source_report_id = CASE
+            WHEN EXCLUDED.best_level > public.kingdom_tech.best_level THEN EXCLUDED.source_report_id
+            WHEN EXCLUDED.best_level = public.kingdom_tech.best_level AND EXCLUDED.updated_at > public.kingdom_tech.updated_at THEN EXCLUDED.source_report_id
+            ELSE public.kingdom_tech.source_report_id
+          END
+        """,
+        (kingdom, tech_name, int(level), captured_at, int(report_id)),
+    )
+
+
+def _index_tech_for_report(cur, kingdom: str, report_id: int, captured_at: datetime, research_levels: Dict[str, int]) -> Dict[str, int]:
+    if not kingdom or not report_id or not research_levels:
+        return {"history": 0, "best_updates": 0}
+
+    history = 0
+    best_updates = 0
+    for tech_name, level in research_levels.items():
+        cur.execute(
+            """
+            INSERT INTO public.tech_index (kingdom, tech_name, tech_level, captured_at, report_id)
+            VALUES (%s, %s, %s, %s, %s)
+            ON CONFLICT DO NOTHING
+            """,
+            (kingdom, tech_name, int(level), captured_at, int(report_id)),
+        )
+        history += int(cur.rowcount or 0)
+        _upsert_best_tech(cur, kingdom, tech_name, int(level), int(report_id), captured_at)
+        best_updates += 1
+
+    return {"history": history, "best_updates": best_updates}
+
+
 def _research_row_to_api(row: Dict[str, Any]) -> Dict[str, Any]:
     return {
         "id": int(row.get("id") or 0),
@@ -2084,6 +2349,10 @@ def ingest_report(body: RawReportBody):
             if not kingdom:
                 raise HTTPException(status_code=400, detail="Could not parse spy report target kingdom")
 
+            research_levels = dict(parsed.get("research_levels") or {})
+            troops = dict(parsed.get("troops") or {})
+            market_transactions = list(parsed.get("market_transactions") or [])
+
             cur.execute(
                 """
                 INSERT INTO public.spy_reports
@@ -2110,6 +2379,10 @@ def ingest_report(body: RawReportBody):
                     (report_hash,),
                 )
                 stored = cur.fetchone()
+                report_created_at = stored.get("created_at") or datetime.utcnow()
+                tech_stats = _index_tech_for_report(cur, kingdom, int(stored["id"]), report_created_at, research_levels)
+                troop_rows = _upsert_troop_snapshot(cur, kingdom, int(stored["id"]), report_created_at, troops)
+                market_rows = _upsert_market_transactions(cur, int(stored["id"]), report_created_at, market_transactions)
                 conn.commit()
                 return {
                     "ok": True,
@@ -2117,8 +2390,17 @@ def ingest_report(body: RawReportBody):
                     "stored": stored,
                     "parsed": parsed,
                     "settlement_events": 0,
+                    "tech_index_rows": int(tech_stats.get("history") or 0),
+                    "best_tech_updates": int(tech_stats.get("best_updates") or 0),
+                    "troop_snapshot_rows": troop_rows,
+                    "market_transaction_rows": market_rows,
                     "duplicate": True,
                 }
+
+            report_created_at = stored.get("created_at") or datetime.utcnow()
+            tech_stats = _index_tech_for_report(cur, kingdom, int(stored["id"]), report_created_at, research_levels)
+            troop_rows = _upsert_troop_snapshot(cur, kingdom, int(stored["id"]), report_created_at, troops)
+            market_rows = _upsert_market_transactions(cur, int(stored["id"]), report_created_at, market_transactions)
 
             events = 0
             for s in _parse_settlement_mentions(raw_text):
@@ -2143,6 +2425,10 @@ def ingest_report(body: RawReportBody):
             "stored": stored,
             "parsed": parsed,
             "settlement_events": events,
+            "tech_index_rows": int(tech_stats.get("history") or 0),
+            "best_tech_updates": int(tech_stats.get("best_updates") or 0),
+            "troop_snapshot_rows": troop_rows,
+            "market_transaction_rows": market_rows,
         }
     finally:
         conn.close()
