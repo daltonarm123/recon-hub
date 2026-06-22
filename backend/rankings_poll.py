@@ -238,6 +238,7 @@ def _kg_headers(world_id: str) -> Dict[str, str]:
         "Content-Type": "application/json",
         "Origin": "https://www.kingdomgame.net",
         "Referer": "https://www.kingdomgame.net/rankings",
+        "X-Requested-With": "XMLHttpRequest",
         # Some KG endpoints/anti-bot layers appear sensitive to header casing;
         # send both variants to match browser captures.
         "World-Id": str(world_id),
@@ -255,6 +256,27 @@ def _kg_headers(world_id: str) -> Dict[str, str]:
     cookie = os.getenv("KG_COOKIE", "").strip()
     if cookie:
         headers["Cookie"] = cookie
+
+        # Some ASP.NET setups require the antiforgery token to be echoed as a header.
+        m = re.search(r"(?:^|;\s*)__RequestVerificationToken=([^;]+)", cookie)
+        if m:
+            tok = m.group(1).strip()
+            if tok:
+                headers["RequestVerificationToken"] = tok
+                headers["X-RequestVerificationToken"] = tok
+
+    extra_headers_raw = os.getenv("KG_EXTRA_HEADERS_JSON", "").strip()
+    if extra_headers_raw:
+        try:
+            extra = json.loads(extra_headers_raw)
+            if isinstance(extra, dict):
+                for k, v in extra.items():
+                    ks = str(k or "").strip()
+                    if not ks:
+                        continue
+                    headers[ks] = str(v)
+        except Exception:
+            pass
     return headers
 
 
@@ -374,23 +396,60 @@ def _poll_rankings_once(*, world_id: str, creds: Dict[str, object]) -> Tuple[int
         base = dict(base_payload)
         base["startNumber"] = start_number
 
+        world_id_int = int(base.get("worldId", 1) or 1)
+        account_id_int = int(base.get("accountId", 0) or 0)
+        kingdom_id_int = int(base.get("kingdomId", 0) or 0)
+        continent_id_int = int(base.get("continentId", -1) or -1)
+
         v1 = dict(base)
         v2 = {
             "accountID": str(base.get("accountId", "")),
             "token": str(base.get("token", "")),
-            "kingdomID": int(base.get("kingdomId", 0) or 0),
-            "continentID": int(base.get("continentId", -1) or -1),
+            "kingdomID": kingdom_id_int,
+            "continentID": continent_id_int,
             "startNumber": int(start_number),
-            "worldId": int(base.get("worldId", 1) or 1),
+            "worldId": world_id_int,
         }
         v3 = {
             "accountId": str(base.get("accountId", "")),
             "token": str(base.get("token", "")),
-            "kingdomId": int(base.get("kingdomId", 0) or 0),
+            "kingdomId": kingdom_id_int,
             "startNumber": int(start_number),
-            "worldId": int(base.get("worldId", 1) or 1),
+            "worldId": world_id_int,
         }
-        return [v1, v2, v3]
+
+        # Some KG nodes are strict about key casing and stringly-typed values.
+        v4 = {
+            "accountID": str(account_id_int),
+            "token": str(base.get("token", "")),
+            "kingdomID": str(kingdom_id_int),
+            "continentID": str(continent_id_int),
+            "startNumber": str(int(start_number)),
+            "worldID": str(world_id_int),
+        }
+
+        # Minimal payload fallback (some deployments ignore optional fields).
+        v5 = {
+            "accountId": account_id_int,
+            "token": str(base.get("token", "")),
+            "kingdomId": kingdom_id_int,
+        }
+
+        # Retry with common alternate start/continent defaults when KG returns {}.
+        variants: List[Dict[str, object]] = [v1, v2, v3, v4, v5]
+        for alt_continent in (-1, 0, 1):
+            variants.append(
+                {
+                    "accountId": account_id_int,
+                    "token": str(base.get("token", "")),
+                    "kingdomId": kingdom_id_int,
+                    "continentId": alt_continent,
+                    "startNumber": int(start_number),
+                    "worldId": world_id_int,
+                }
+            )
+
+        return variants
 
     def _parse_response_body(r: httpx.Response) -> Dict:
         raw: Dict = {}
