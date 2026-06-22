@@ -94,6 +94,10 @@ def _parse_kg_d_json(resp_json: Dict) -> Dict:
     d = resp_json.get("d")
     if not d:
         return {}
+    if isinstance(d, dict):
+        return d
+    if isinstance(d, list):
+        return {"kingdoms": d}
     try:
         return json.loads(d)
     except Exception:
@@ -103,6 +107,19 @@ def _parse_kg_d_json(resp_json: Dict) -> Dict:
 def _extract_kingdoms(payload: Dict) -> List[Dict]:
     rows = payload.get("kingdoms")
     if not isinstance(rows, list):
+        rows = payload.get("Kingdoms")
+    if not isinstance(rows, list):
+        rows = payload.get("rows")
+    if not isinstance(rows, list):
+        data = payload.get("data")
+        if isinstance(data, dict):
+            rows = data.get("kingdoms") or data.get("rows")
+    if not isinstance(rows, list):
+        d = payload.get("d")
+        if isinstance(d, dict):
+            rows = d.get("kingdoms") or d.get("rows")
+
+    if not isinstance(rows, list):
         return []
 
     out: List[Dict] = []
@@ -111,10 +128,34 @@ def _extract_kingdoms(payload: Dict) -> List[Dict]:
             continue
 
         kid = r.get("id")
+        if kid is None:
+            kid = r.get("Id")
+        if kid is None:
+            kid = r.get("kingdomId")
+
         name = r.get("name")
+        if name is None:
+            name = r.get("Name")
+        if name is None:
+            name = r.get("kingdom")
+
         alliance = r.get("allianceName")
+        if alliance is None:
+            alliance = r.get("AllianceName")
+        if alliance is None:
+            alliance = r.get("alliance")
+
         ranking = r.get("rank")
+        if ranking is None:
+            ranking = r.get("ranking")
+        if ranking is None:
+            ranking = r.get("Rank")
+
         networth = r.get("networth")
+        if networth is None:
+            networth = r.get("Networth")
+        if networth is None:
+            networth = r.get("netWorth")
 
         if kid is None or name is None:
             continue
@@ -231,6 +272,7 @@ def _kg_base_payload(creds: Dict[str, object]) -> Dict[str, object]:
         "kingdomId": int(kingdom_id),
         "continentId": int(continent_id),
         "startNumber": int(start_number),
+        "worldId": int(os.getenv("KG_WORLD_ID", "1") or "1"),
     }
 
 
@@ -395,7 +437,11 @@ def _poll_rankings_once(*, world_id: str, creds: Dict[str, object]) -> Tuple[int
 
     if not all_rows:
         snippet = str(parsed_last)[:350]
-        raise RuntimeError(f"Parsed 0 kingdoms from KG response. Snippet: {snippet}")
+        has_cookie = bool(str(os.getenv("KG_COOKIE", "")).strip())
+        raise RuntimeError(
+            "Parsed 0 kingdoms from KG response. "
+            f"cookie_present={has_cookie}. Snippet: {snippet}"
+        )
 
     fetched_at = datetime.now(timezone.utc)
     _upsert_top(all_rows[:300], fetched_at=fetched_at)
