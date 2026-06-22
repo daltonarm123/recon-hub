@@ -1,4 +1,5 @@
 import threading
+import time
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
 
@@ -15,6 +16,8 @@ router = APIRouter()
 _SEED_LOCK = threading.Lock()
 _SEED_THREAD: Optional[threading.Thread] = None
 _LAST_SEED_NOTE = ""
+_LAST_SEED_FINISHED_AT = 0.0
+_SEED_RETRY_COOLDOWN_SECONDS = 45.0
 
 
 def _get_dsn() -> str:
@@ -76,20 +79,27 @@ def _kickoff_seed_rankings_if_needed() -> str:
     Start a background one-shot seed if not already running and return
     immediate status text so /api/nw/kingdoms never blocks on remote KG calls.
     """
-    global _SEED_THREAD, _LAST_SEED_NOTE
+    global _SEED_THREAD, _LAST_SEED_NOTE, _LAST_SEED_FINISHED_AT
 
     with _SEED_LOCK:
         if _SEED_THREAD and _SEED_THREAD.is_alive():
             return _LAST_SEED_NOTE or "Rankings sync in progress..."
 
+        now = time.monotonic()
+        if _LAST_SEED_NOTE and (now - _LAST_SEED_FINISHED_AT) < _SEED_RETRY_COOLDOWN_SECONDS:
+            # Keep showing the latest result briefly instead of instantly restarting.
+            return _LAST_SEED_NOTE
+
         _LAST_SEED_NOTE = "Rankings sync started in background..."
 
         def _runner():
-            global _LAST_SEED_NOTE
+            global _LAST_SEED_NOTE, _LAST_SEED_FINISHED_AT
             try:
                 _LAST_SEED_NOTE = _seed_rankings_if_possible()
             except Exception as exc:
                 _LAST_SEED_NOTE = f"Could not sync rankings now. Detail: {exc}"
+            finally:
+                _LAST_SEED_FINISHED_AT = time.monotonic()
 
         _SEED_THREAD = threading.Thread(target=_runner, daemon=True, name="nwot-seed")
         _SEED_THREAD.start()
