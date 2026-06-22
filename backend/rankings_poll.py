@@ -245,8 +245,14 @@ def _parse_int(v: object) -> Optional[int]:
 
 def _parse_cred(raw: Dict[str, object]) -> Optional[Dict[str, object]]:
     account_id = _parse_int(raw.get("account_id"))
+    if account_id is None:
+        account_id = _parse_int(raw.get("accountId"))
+
     kingdom_id = _parse_int(raw.get("kingdom_id"))
-    token = str(raw.get("token") or "").strip()
+    if kingdom_id is None:
+        kingdom_id = _parse_int(raw.get("kingdomId"))
+
+    token = str(raw.get("token") or raw.get("Token") or "").strip()
     if account_id is None or kingdom_id is None or not token:
         return None
     return {"account_id": account_id, "kingdom_id": kingdom_id, "token": token}
