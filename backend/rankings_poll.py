@@ -266,8 +266,9 @@ def _kg_headers(world_id: str) -> Dict[str, str]:
     headers = {
         "Accept": "application/json, text/plain, */*",
         "Content-Type": "application/json",
-        "Origin": "https://www.kingdomgame.net",
-        "Referer": "https://www.kingdomgame.net/rankings",
+        # Origin/Referer are set per-request to match the target host.
+        "Origin": "https://kingdomgame.net",
+        "Referer": "https://kingdomgame.net/rankings",
         "X-Requested-With": "XMLHttpRequest",
         # Some KG endpoints/anti-bot layers appear sensitive to header casing;
         # send both variants to match browser captures.
@@ -500,6 +501,12 @@ def _poll_rankings_once(*, world_id: str, creds: Dict[str, object]) -> Tuple[int
         parsed = _parse_kg_d_json(raw) or raw
         return parsed if isinstance(parsed, dict) else {}
 
+    def _origin_for_url(url: str) -> str:
+        m = re.match(r"^(https?://[^/]+)", str(url or "").strip(), flags=re.I)
+        if m:
+            return m.group(1)
+        return "https://kingdomgame.net"
+
     def post_rankings_page(client: httpx.Client, start_number: int) -> Dict:
         last_err: Optional[Exception] = None
         for attempt in range(1, KG_PAGE_RETRIES + 1):
@@ -507,11 +514,18 @@ def _poll_rankings_once(*, world_id: str, creds: Dict[str, object]) -> Tuple[int
                 for payload in _payload_variants(start_number):
                     try:
                         req_headers = dict(headers)
+                        origin = _origin_for_url(url)
+                        req_headers["Origin"] = origin
+                        req_headers["Referer"] = f"{origin}/rankings"
                         r = client.post(url, headers=req_headers, json=payload)
                         r.raise_for_status()
                         parsed = _parse_response_body(r)
                         if parsed:
                             return parsed
+
+                        body1 = (r.text or "").strip().replace("\n", " ")
+                        if len(body1) > 220:
+                            body1 = body1[:220]
 
                         # Retry same payload as text body for stricter ASMX handling.
                         req_headers["Content-Type"] = "application/json; charset=UTF-8"
@@ -520,7 +534,17 @@ def _poll_rankings_once(*, world_id: str, creds: Dict[str, object]) -> Tuple[int
                         parsed2 = _parse_response_body(r2)
                         if parsed2:
                             return parsed2
-                        last_err = RuntimeError("empty parsed response")
+
+                        body2 = (r2.text or "").strip().replace("\n", " ")
+                        if len(body2) > 220:
+                            body2 = body2[:220]
+
+                        last_err = RuntimeError(
+                            "empty parsed response "
+                            f"url={url} status1={r.status_code} ct1={r.headers.get('content-type','')} "
+                            f"body1={body1!r} status2={r2.status_code} ct2={r2.headers.get('content-type','')} "
+                            f"body2={body2!r}"
+                        )
                     except Exception as e:
                         last_err = e
             if attempt < KG_PAGE_RETRIES:
