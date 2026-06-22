@@ -3,6 +3,7 @@ import json
 import time
 import threading
 import random
+import re
 from datetime import datetime, timezone, timedelta
 from typing import Dict, List, Optional, Tuple
 
@@ -369,21 +370,71 @@ def _poll_rankings_once(*, world_id: str, creds: Dict[str, object]) -> Tuple[int
 
     parsed_last: Dict = {}
 
+    def _payload_variants(start_number: int) -> List[Dict[str, object]]:
+        base = dict(base_payload)
+        base["startNumber"] = start_number
+
+        v1 = dict(base)
+        v2 = {
+            "accountID": str(base.get("accountId", "")),
+            "token": str(base.get("token", "")),
+            "kingdomID": int(base.get("kingdomId", 0) or 0),
+            "continentID": int(base.get("continentId", -1) or -1),
+            "startNumber": int(start_number),
+            "worldId": int(base.get("worldId", 1) or 1),
+        }
+        v3 = {
+            "accountId": str(base.get("accountId", "")),
+            "token": str(base.get("token", "")),
+            "kingdomId": int(base.get("kingdomId", 0) or 0),
+            "startNumber": int(start_number),
+            "worldId": int(base.get("worldId", 1) or 1),
+        }
+        return [v1, v2, v3]
+
+    def _parse_response_body(r: httpx.Response) -> Dict:
+        raw: Dict = {}
+        try:
+            raw = r.json()
+        except Exception:
+            text = (r.text or "").strip()
+            if text:
+                try:
+                    raw = json.loads(text)
+                except Exception:
+                    m = re.search(r"\{.*\}", text, flags=re.DOTALL)
+                    if m:
+                        try:
+                            raw = json.loads(m.group(0))
+                        except Exception:
+                            raw = {}
+        parsed = _parse_kg_d_json(raw) or raw
+        return parsed if isinstance(parsed, dict) else {}
+
     def post_rankings_page(client: httpx.Client, start_number: int) -> Dict:
-        payload = dict(base_payload)
-        payload["startNumber"] = start_number
         last_err: Optional[Exception] = None
         for attempt in range(1, KG_PAGE_RETRIES + 1):
-            try:
-                r = client.post(KG_RANKINGS_URL, headers=headers, json=payload)
-                r.raise_for_status()
-                raw = r.json()
-                parsed = _parse_kg_d_json(raw) or raw
-                return parsed if isinstance(parsed, dict) else {}
-            except Exception as e:
-                last_err = e
-                if attempt < KG_PAGE_RETRIES:
-                    time.sleep(min(2 ** (attempt - 1), 4) + random.uniform(0.0, 0.5))
+            for payload in _payload_variants(start_number):
+                try:
+                    req_headers = dict(headers)
+                    r = client.post(KG_RANKINGS_URL, headers=req_headers, json=payload)
+                    r.raise_for_status()
+                    parsed = _parse_response_body(r)
+                    if parsed:
+                        return parsed
+
+                    # Retry same payload as text body for stricter ASMX handling.
+                    req_headers["Content-Type"] = "application/json; charset=UTF-8"
+                    r2 = client.post(KG_RANKINGS_URL, headers=req_headers, content=json.dumps(payload))
+                    r2.raise_for_status()
+                    parsed2 = _parse_response_body(r2)
+                    if parsed2:
+                        return parsed2
+                    last_err = RuntimeError("empty parsed response")
+                except Exception as e:
+                    last_err = e
+            if attempt < KG_PAGE_RETRIES:
+                time.sleep(min(2 ** (attempt - 1), 4) + random.uniform(0.0, 0.5))
         raise last_err or RuntimeError("rankings page request failed")
 
     with httpx.Client(timeout=KG_REQUEST_TIMEOUT_SECONDS) as client:
