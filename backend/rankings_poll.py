@@ -263,13 +263,12 @@ def _upsert_top(rows: List[Dict], fetched_at: datetime):
 # KG request builders
 # -------------------------
 def _kg_headers(world_id: str) -> Dict[str, str]:
-    headers = {
+    return {
         "Accept": "application/json, text/plain, */*",
         "Content-Type": "application/json",
         # Origin/Referer are set per-request to match the target host.
         "Origin": "https://kingdomgame.net",
         "Referer": "https://kingdomgame.net/rankings",
-        "X-Requested-With": "XMLHttpRequest",
         # Some KG endpoints/anti-bot layers appear sensitive to header casing;
         # send both variants to match browser captures.
         "World-Id": str(world_id),
@@ -280,21 +279,33 @@ def _kg_headers(world_id: str) -> Dict[str, str]:
             "(KHTML, like Gecko) Chrome/144.0.0.0 Safari/537.36 Edg/144.0.0.0",
         ),
         "Accept-Language": os.getenv("KG_ACCEPT_LANGUAGE", "en-US,en;q=0.9"),
-        "Sec-Fetch-Site": "same-origin",
-        "Sec-Fetch-Mode": "cors",
-        "Sec-Fetch-Dest": "empty",
     }
+
+
+def _kg_header_variants(url: str, world_id: str) -> List[Dict[str, str]]:
+    origin_match = re.match(r"^(https?://[^/]+)", str(url or "").strip(), flags=re.I)
+    origin = origin_match.group(1) if origin_match else "https://kingdomgame.net"
+
+    base = _kg_headers(world_id)
+    base["Origin"] = origin
+    base["Referer"] = f"{origin}/rankings"
+
     cookie = os.getenv("KG_COOKIE", "").strip()
     if cookie:
-        headers["Cookie"] = cookie
+        base["Cookie"] = cookie
 
-        # Some ASP.NET setups require the antiforgery token to be echoed as a header.
+    variants: List[Dict[str, str]] = [dict(base)]
+
+    enriched = dict(base)
+
+    # Some ASP.NET setups require the antiforgery token to be echoed as a header.
+    if cookie:
         m = re.search(r"(?:^|;\s*)__RequestVerificationToken=([^;]+)", cookie)
         if m:
             tok = m.group(1).strip()
             if tok:
-                headers["RequestVerificationToken"] = tok
-                headers["X-RequestVerificationToken"] = tok
+                enriched["RequestVerificationToken"] = tok
+                enriched["X-RequestVerificationToken"] = tok
 
     extra_headers_raw = os.getenv("KG_EXTRA_HEADERS_JSON", "").strip()
     if extra_headers_raw:
@@ -305,10 +316,15 @@ def _kg_headers(world_id: str) -> Dict[str, str]:
                     ks = str(k or "").strip()
                     if not ks:
                         continue
-                    headers[ks] = str(v)
+                    enriched[ks] = str(v)
         except Exception:
             pass
-    return headers
+
+    # Only add the enriched variant if it differs from the minimal proven-good set.
+    if enriched != base:
+        variants.append(enriched)
+
+    return variants
 
 
 def _kg_base_payload(creds: Dict[str, object]) -> Dict[str, object]:
@@ -408,7 +424,6 @@ def _resolve_rankings_creds() -> List[Dict[str, object]]:
 # Poll once (paginated to 300)
 # -------------------------
 def _poll_rankings_once(*, world_id: str, creds: Dict[str, object]) -> Tuple[int, Optional[int]]:
-    headers = _kg_headers(world_id)
     base_payload = _kg_base_payload(creds)
 
     all_rows: List[Dict] = []
@@ -522,41 +537,39 @@ def _poll_rankings_once(*, world_id: str, creds: Dict[str, object]) -> Tuple[int
         for attempt in range(1, KG_PAGE_RETRIES + 1):
             for url in _rankings_urls():
                 for payload in _payload_variants(start_number):
-                    try:
-                        req_headers = dict(headers)
-                        origin = _origin_for_url(url)
-                        req_headers["Origin"] = origin
-                        req_headers["Referer"] = f"{origin}/rankings"
-                        r = client.post(url, headers=req_headers, json=payload)
-                        r.raise_for_status()
-                        parsed = _parse_response_body(r)
-                        if parsed:
-                            return parsed
+                    for req_headers in _kg_header_variants(url, world_id):
+                        try:
+                            r = client.post(url, headers=req_headers, json=payload)
+                            r.raise_for_status()
+                            parsed = _parse_response_body(r)
+                            if parsed:
+                                return parsed
 
-                        body1 = (r.text or "").strip().replace("\n", " ")
-                        if len(body1) > 220:
-                            body1 = body1[:220]
+                            body1 = (r.text or "").strip().replace("\n", " ")
+                            if len(body1) > 220:
+                                body1 = body1[:220]
 
-                        # Retry same payload as text body for stricter ASMX handling.
-                        req_headers["Content-Type"] = "application/json; charset=UTF-8"
-                        r2 = client.post(url, headers=req_headers, content=json.dumps(payload))
-                        r2.raise_for_status()
-                        parsed2 = _parse_response_body(r2)
-                        if parsed2:
-                            return parsed2
+                            # Retry same payload as text body for stricter ASMX handling.
+                            req_headers2 = dict(req_headers)
+                            req_headers2["Content-Type"] = "application/json; charset=UTF-8"
+                            r2 = client.post(url, headers=req_headers2, content=json.dumps(payload))
+                            r2.raise_for_status()
+                            parsed2 = _parse_response_body(r2)
+                            if parsed2:
+                                return parsed2
 
-                        body2 = (r2.text or "").strip().replace("\n", " ")
-                        if len(body2) > 220:
-                            body2 = body2[:220]
+                            body2 = (r2.text or "").strip().replace("\n", " ")
+                            if len(body2) > 220:
+                                body2 = body2[:220]
 
-                        last_err = RuntimeError(
-                            "empty parsed response "
-                            f"url={url} status1={r.status_code} ct1={r.headers.get('content-type','')} "
-                            f"body1={body1!r} status2={r2.status_code} ct2={r2.headers.get('content-type','')} "
-                            f"body2={body2!r}"
-                        )
-                    except Exception as e:
-                        last_err = e
+                            last_err = RuntimeError(
+                                "empty parsed response "
+                                f"url={url} status1={r.status_code} ct1={r.headers.get('content-type','')} "
+                                f"body1={body1!r} status2={r2.status_code} ct2={r2.headers.get('content-type','')} "
+                                f"body2={body2!r}"
+                            )
+                        except Exception as e:
+                            last_err = e
             if attempt < KG_PAGE_RETRIES:
                 time.sleep(min(2 ** (attempt - 1), 4) + random.uniform(0.0, 0.5))
         raise last_err or RuntimeError("rankings page request failed")
