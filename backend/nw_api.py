@@ -1,5 +1,6 @@
+import threading
 from datetime import datetime, timedelta, timezone
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 import psycopg
 from psycopg.rows import dict_row
@@ -10,6 +11,10 @@ from rankings_poll import _ensure_tables as ensure_rankings_tables
 from rankings_poll import _poll_rankings_once, _resolve_rankings_creds
 
 router = APIRouter()
+
+_SEED_LOCK = threading.Lock()
+_SEED_THREAD: Optional[threading.Thread] = None
+_LAST_SEED_NOTE = ""
 
 
 def _get_dsn() -> str:
@@ -66,6 +71,31 @@ def _seed_rankings_if_possible() -> str:
     return "No rankings rows returned from KG yet."
 
 
+def _kickoff_seed_rankings_if_needed() -> str:
+    """
+    Start a background one-shot seed if not already running and return
+    immediate status text so /api/nw/kingdoms never blocks on remote KG calls.
+    """
+    global _SEED_THREAD, _LAST_SEED_NOTE
+
+    with _SEED_LOCK:
+        if _SEED_THREAD and _SEED_THREAD.is_alive():
+            return _LAST_SEED_NOTE or "Rankings sync in progress..."
+
+        _LAST_SEED_NOTE = "Rankings sync started in background..."
+
+        def _runner():
+            global _LAST_SEED_NOTE
+            try:
+                _LAST_SEED_NOTE = _seed_rankings_if_possible()
+            except Exception as exc:
+                _LAST_SEED_NOTE = f"Could not sync rankings now. Detail: {exc}"
+
+        _SEED_THREAD = threading.Thread(target=_runner, daemon=True, name="nwot-seed")
+        _SEED_THREAD.start()
+        return _LAST_SEED_NOTE
+
+
 @router.get("/kingdoms")
 def nw_kingdoms(limit: int = 300, search: str = ""):
     """
@@ -82,14 +112,12 @@ def nw_kingdoms(limit: int = 300, search: str = ""):
             has_hist = _table_exists(cur, "public.nw_history")
 
             if not has_top:
-                note = _seed_rankings_if_possible()
-                has_top = _table_exists(cur, "public.kg_top_kingdoms")
-                if not has_top:
-                    return {
-                        "ok": True,
-                        "kingdoms": [],
-                        "note": note or "Rankings source table is not ready yet (kg_top_kingdoms).",
-                    }
+                note = _kickoff_seed_rankings_if_needed()
+                return {
+                    "ok": True,
+                    "kingdoms": [],
+                    "note": note or "Rankings source table is not ready yet (kg_top_kingdoms).",
+                }
 
             if s:
                 like = f"%{s}%"
@@ -192,55 +220,7 @@ def nw_kingdoms(limit: int = 300, search: str = ""):
 
             # Common first-run case: table exists but has no rows yet.
             if not rows and not s:
-                note = _seed_rankings_if_possible()
-                has_hist = _table_exists(cur, "public.nw_history")
-
-                if has_hist:
-                    cur.execute(
-                        """
-                        WITH hist AS (
-                            SELECT kingdom,
-                                   MAX(tick_time) AS last_tick,
-                                   COUNT(*)::int  AS points
-                            FROM public.nw_history
-                            GROUP BY kingdom
-                        )
-                        SELECT
-                            k.ranking AS rank,
-                            k.kingdom_id,
-                            k.kingdom,
-                            k.networth,
-                            COALESCE(k.alliance, '') AS alliance,
-                            k.fetched_at,
-                            h.last_tick,
-                            COALESCE(h.points, 0)::int AS points
-                        FROM public.kg_top_kingdoms k
-                        LEFT JOIN hist h
-                            ON h.kingdom = k.kingdom
-                        ORDER BY k.ranking ASC NULLS LAST
-                        LIMIT %s
-                        """,
-                        (limit,),
-                    )
-                else:
-                    cur.execute(
-                        """
-                        SELECT
-                            k.ranking AS rank,
-                            k.kingdom_id,
-                            k.kingdom,
-                            k.networth,
-                            COALESCE(k.alliance, '') AS alliance,
-                            k.fetched_at,
-                            NULL::timestamptz AS last_tick,
-                            0::int AS points
-                        FROM public.kg_top_kingdoms k
-                        ORDER BY k.ranking ASC NULLS LAST
-                        LIMIT %s
-                        """,
-                        (limit,),
-                    )
-                rows = cur.fetchall()
+                note = _kickoff_seed_rankings_if_needed()
 
         out: Dict[str, Any] = {"ok": True, "kingdoms": rows}
         if note:
