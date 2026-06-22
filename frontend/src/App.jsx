@@ -1455,6 +1455,16 @@ function NWOT() {
                             Last NW tick: {status.data?.last_nw_tick ? timeAgo(status.data.last_nw_tick) : "not available"}
                         </div>
                     ) : null}
+                    {status.err ? (
+                        <div style={{ marginBottom: 8, fontSize: 12, color: "#ff8f8f" }}>
+                            NW status error: {status.err}
+                        </div>
+                    ) : null}
+                    {Array.isArray(kingdoms.data?.kingdoms) && kingdoms.data.kingdoms.length === 0 && kingdoms.data?.note ? (
+                        <div style={{ marginBottom: 8, fontSize: 12, color: "#ffd37a" }}>
+                            {kingdoms.data.note}
+                        </div>
+                    ) : null}
 
                     <div className="nwot-grid">
                         {/* Left: list */}

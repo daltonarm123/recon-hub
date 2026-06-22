@@ -1,4 +1,3 @@
-import os
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List
 
@@ -7,6 +6,8 @@ from psycopg.rows import dict_row
 from fastapi import APIRouter, HTTPException
 
 from db_dsn import resolve_database_dsn
+from rankings_poll import _ensure_tables as ensure_rankings_tables
+from rankings_poll import _poll_rankings_once, _resolve_rankings_creds
 
 router = APIRouter()
 
@@ -28,6 +29,43 @@ def _table_exists(cur: psycopg.Cursor, regclass_name: str) -> bool:
     return bool(row.get("t"))
 
 
+def _seed_rankings_if_possible() -> str:
+    """
+    Attempt a one-shot rankings pull using configured poller credentials.
+    Returns a short diagnostic note for UI consumption.
+    """
+    try:
+        ensure_rankings_tables()
+        creds = _resolve_rankings_creds()
+    except Exception as exc:
+        return (
+            "No rankings data yet. Configure KG poller credentials "
+            f"(KG_POLLER_*) and retry. Detail: {exc}"
+        )
+
+    world_id = "1"
+    try:
+        import os
+
+        world_id = str(os.getenv("KG_WORLD_ID", "1") or "1")
+    except Exception:
+        world_id = "1"
+
+    last_err: Exception | None = None
+    for cred in creds:
+        try:
+            count, _acct = _poll_rankings_once(world_id=world_id, creds=cred)
+            if int(count or 0) > 0:
+                return "Rankings synced on demand."
+        except Exception as exc:
+            last_err = exc
+            continue
+
+    if last_err is not None:
+        return f"Could not sync rankings now. Detail: {last_err}"
+    return "No rankings rows returned from KG yet."
+
+
 @router.get("/kingdoms")
 def nw_kingdoms(limit: int = 300, search: str = ""):
     """
@@ -36,6 +74,7 @@ def nw_kingdoms(limit: int = 300, search: str = ""):
     """
     s = (search or "").strip()
 
+    note = ""
     conn = _connect()
     try:
         with conn.cursor() as cur:
@@ -43,11 +82,14 @@ def nw_kingdoms(limit: int = 300, search: str = ""):
             has_hist = _table_exists(cur, "public.nw_history")
 
             if not has_top:
-                return {
-                    "ok": True,
-                    "kingdoms": [],
-                    "note": "Rankings source table is not ready yet (kg_top_kingdoms).",
-                }
+                note = _seed_rankings_if_possible()
+                has_top = _table_exists(cur, "public.kg_top_kingdoms")
+                if not has_top:
+                    return {
+                        "ok": True,
+                        "kingdoms": [],
+                        "note": note or "Rankings source table is not ready yet (kg_top_kingdoms).",
+                    }
 
             if s:
                 like = f"%{s}%"
@@ -148,7 +190,62 @@ def nw_kingdoms(limit: int = 300, search: str = ""):
                     )
             rows = cur.fetchall()
 
-        return {"ok": True, "kingdoms": rows}
+            # Common first-run case: table exists but has no rows yet.
+            if not rows and not s:
+                note = _seed_rankings_if_possible()
+                has_hist = _table_exists(cur, "public.nw_history")
+
+                if has_hist:
+                    cur.execute(
+                        """
+                        WITH hist AS (
+                            SELECT kingdom,
+                                   MAX(tick_time) AS last_tick,
+                                   COUNT(*)::int  AS points
+                            FROM public.nw_history
+                            GROUP BY kingdom
+                        )
+                        SELECT
+                            k.ranking AS rank,
+                            k.kingdom_id,
+                            k.kingdom,
+                            k.networth,
+                            COALESCE(k.alliance, '') AS alliance,
+                            k.fetched_at,
+                            h.last_tick,
+                            COALESCE(h.points, 0)::int AS points
+                        FROM public.kg_top_kingdoms k
+                        LEFT JOIN hist h
+                            ON h.kingdom = k.kingdom
+                        ORDER BY k.ranking ASC NULLS LAST
+                        LIMIT %s
+                        """,
+                        (limit,),
+                    )
+                else:
+                    cur.execute(
+                        """
+                        SELECT
+                            k.ranking AS rank,
+                            k.kingdom_id,
+                            k.kingdom,
+                            k.networth,
+                            COALESCE(k.alliance, '') AS alliance,
+                            k.fetched_at,
+                            NULL::timestamptz AS last_tick,
+                            0::int AS points
+                        FROM public.kg_top_kingdoms k
+                        ORDER BY k.ranking ASC NULLS LAST
+                        LIMIT %s
+                        """,
+                        (limit,),
+                    )
+                rows = cur.fetchall()
+
+        out: Dict[str, Any] = {"ok": True, "kingdoms": rows}
+        if note:
+            out["note"] = note
+        return out
     finally:
         conn.close()
 
