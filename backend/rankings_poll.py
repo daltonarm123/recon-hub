@@ -432,7 +432,17 @@ def _poll_rankings_once(*, world_id: str, creds: Dict[str, object]) -> Tuple[int
         kingdom_id_int = int(base.get("kingdomId", 0) or 0)
         continent_id_int = int(base.get("continentId", -1) or -1)
 
-        v1 = dict(base)
+        # This exact shape matched the working browser request length/profile
+        # and returned rankings data during direct verification.
+        v1 = {
+            "accountId": str(base.get("accountId", "")),
+            "token": str(base.get("token", "")),
+            "kingdomId": kingdom_id_int,
+            "continentId": continent_id_int,
+            "startNumber": int(start_number),
+        }
+
+        v1b = dict(base)
         v2 = {
             "accountID": str(base.get("accountId", "")),
             "token": str(base.get("token", "")),
@@ -467,7 +477,7 @@ def _poll_rankings_once(*, world_id: str, creds: Dict[str, object]) -> Tuple[int
         }
 
         # Retry with common alternate start/continent defaults when KG returns {}.
-        variants: List[Dict[str, object]] = [v1, v2, v3, v4, v5]
+        variants: List[Dict[str, object]] = [v1, v1b, v2, v3, v4, v5]
         for alt_continent in (-1, 0, 1):
             variants.append(
                 {
