@@ -22,6 +22,12 @@ def _connect() -> psycopg.Connection:
     return psycopg.connect(_get_dsn(), row_factory=dict_row)
 
 
+def _table_exists(cur: psycopg.Cursor, regclass_name: str) -> bool:
+    cur.execute("SELECT to_regclass(%s) AS t", (regclass_name,))
+    row = cur.fetchone() or {}
+    return bool(row.get("t"))
+
+
 @router.get("/kingdoms")
 def nw_kingdoms(limit: int = 300, search: str = ""):
     """
@@ -33,63 +39,113 @@ def nw_kingdoms(limit: int = 300, search: str = ""):
     conn = _connect()
     try:
         with conn.cursor() as cur:
+            has_top = _table_exists(cur, "public.kg_top_kingdoms")
+            has_hist = _table_exists(cur, "public.nw_history")
+
+            if not has_top:
+                return {
+                    "ok": True,
+                    "kingdoms": [],
+                    "note": "Rankings source table is not ready yet (kg_top_kingdoms).",
+                }
+
             if s:
                 like = f"%{s}%"
-                cur.execute(
-                    """
-                    WITH hist AS (
-                        SELECT kingdom,
-                               MAX(tick_time) AS last_tick,
-                               COUNT(*)::int  AS points
-                        FROM public.nw_history
-                        GROUP BY kingdom
+                if has_hist:
+                    cur.execute(
+                        """
+                        WITH hist AS (
+                            SELECT kingdom,
+                                   MAX(tick_time) AS last_tick,
+                                   COUNT(*)::int  AS points
+                            FROM public.nw_history
+                            GROUP BY kingdom
+                        )
+                        SELECT
+                            k.ranking AS rank,
+                            k.kingdom_id,
+                            k.kingdom,
+                            k.networth,
+                            COALESCE(k.alliance, '') AS alliance,
+                            k.fetched_at,
+                            h.last_tick,
+                            COALESCE(h.points, 0)::int AS points
+                        FROM public.kg_top_kingdoms k
+                        LEFT JOIN hist h
+                            ON h.kingdom = k.kingdom
+                        WHERE k.kingdom ILIKE %s
+                           OR COALESCE(k.alliance,'') ILIKE %s
+                        ORDER BY k.ranking ASC NULLS LAST
+                        LIMIT %s
+                        """,
+                        (like, like, limit),
                     )
-                    SELECT
-                        k.ranking AS rank,
-                        k.kingdom_id,
-                        k.kingdom,
-                        k.networth,
-                        COALESCE(k.alliance, '') AS alliance,
-                        k.fetched_at,
-                        h.last_tick,
-                        COALESCE(h.points, 0)::int AS points
-                    FROM public.kg_top_kingdoms k
-                    LEFT JOIN hist h
-                        ON h.kingdom = k.kingdom
-                    WHERE k.kingdom ILIKE %s
-                       OR COALESCE(k.alliance,'') ILIKE %s
-                    ORDER BY k.ranking ASC NULLS LAST
-                    LIMIT %s
-                    """,
-                    (like, like, limit),
-                )
+                else:
+                    cur.execute(
+                        """
+                        SELECT
+                            k.ranking AS rank,
+                            k.kingdom_id,
+                            k.kingdom,
+                            k.networth,
+                            COALESCE(k.alliance, '') AS alliance,
+                            k.fetched_at,
+                            NULL::timestamptz AS last_tick,
+                            0::int AS points
+                        FROM public.kg_top_kingdoms k
+                        WHERE k.kingdom ILIKE %s
+                           OR COALESCE(k.alliance,'') ILIKE %s
+                        ORDER BY k.ranking ASC NULLS LAST
+                        LIMIT %s
+                        """,
+                        (like, like, limit),
+                    )
             else:
-                cur.execute(
-                    """
-                    WITH hist AS (
-                        SELECT kingdom,
-                               MAX(tick_time) AS last_tick,
-                               COUNT(*)::int  AS points
-                        FROM public.nw_history
-                        GROUP BY kingdom
+                if has_hist:
+                    cur.execute(
+                        """
+                        WITH hist AS (
+                            SELECT kingdom,
+                                   MAX(tick_time) AS last_tick,
+                                   COUNT(*)::int  AS points
+                            FROM public.nw_history
+                            GROUP BY kingdom
+                        )
+                        SELECT
+                            k.ranking AS rank,
+                            k.kingdom_id,
+                            k.kingdom,
+                            k.networth,
+                            COALESCE(k.alliance, '') AS alliance,
+                            k.fetched_at,
+                            h.last_tick,
+                            COALESCE(h.points, 0)::int AS points
+                        FROM public.kg_top_kingdoms k
+                        LEFT JOIN hist h
+                            ON h.kingdom = k.kingdom
+                        ORDER BY k.ranking ASC NULLS LAST
+                        LIMIT %s
+                        """,
+                        (limit,),
                     )
-                    SELECT
-                        k.ranking AS rank,
-                        k.kingdom_id,
-                        k.kingdom,
-                        k.networth,
-                        COALESCE(k.alliance, '') AS alliance,
-                        k.fetched_at,
-                        h.last_tick,
-                        COALESCE(h.points, 0)::int AS points
-                    FROM public.kg_top_kingdoms k
-                    LEFT JOIN hist h
-                        ON h.kingdom = k.kingdom
-                    ORDER BY k.ranking ASC NULLS LAST
-                    LIMIT %s
-                    """,
-                    (limit,),
-                )
+                else:
+                    cur.execute(
+                        """
+                        SELECT
+                            k.ranking AS rank,
+                            k.kingdom_id,
+                            k.kingdom,
+                            k.networth,
+                            COALESCE(k.alliance, '') AS alliance,
+                            k.fetched_at,
+                            NULL::timestamptz AS last_tick,
+                            0::int AS points
+                        FROM public.kg_top_kingdoms k
+                        ORDER BY k.ranking ASC NULLS LAST
+                        LIMIT %s
+                        """,
+                        (limit,),
+                    )
             rows = cur.fetchall()
 
         return {"ok": True, "kingdoms": rows}
@@ -102,11 +158,15 @@ def nw_history(kingdom: str, hours: int = 24):
     """
     Returns chart points: [{t: ISO8601, v: networth}, ...]
     """
-    since = datetime.now(timezone.utc) - timedelta(hours=hours)
+    safe_hours = max(1, min(int(hours), 168))
+    since = datetime.now(timezone.utc) - timedelta(hours=safe_hours)
 
     conn = _connect()
     try:
         with conn.cursor() as cur:
+            if not _table_exists(cur, "public.nw_history"):
+                return []
+
             cur.execute(
                 """
                 SELECT tick_time, networth
@@ -142,21 +202,28 @@ def nw_status():
     conn = _connect()
     try:
         with conn.cursor() as cur:
-            cur.execute(
-                """
-                SELECT MAX(fetched_at) AS last_rankings_fetch
-                FROM public.kg_top_kingdoms
-                """
-            )
-            r1 = cur.fetchone() or {}
+            has_top = _table_exists(cur, "public.kg_top_kingdoms")
+            has_hist = _table_exists(cur, "public.nw_history")
 
-            cur.execute(
-                """
-                SELECT MAX(tick_time) AS last_nw_tick
-                FROM public.nw_history
-                """
-            )
-            r2 = cur.fetchone() or {}
+            r1: Dict[str, Any] = {}
+            r2: Dict[str, Any] = {}
+            if has_top:
+                cur.execute(
+                    """
+                    SELECT MAX(fetched_at) AS last_rankings_fetch
+                    FROM public.kg_top_kingdoms
+                    """
+                )
+                r1 = cur.fetchone() or {}
+
+            if has_hist:
+                cur.execute(
+                    """
+                    SELECT MAX(tick_time) AS last_nw_tick
+                    FROM public.nw_history
+                    """
+                )
+                r2 = cur.fetchone() or {}
 
         last_fetch = r1.get("last_rankings_fetch")
         last_tick = r2.get("last_nw_tick")
@@ -171,6 +238,8 @@ def nw_status():
         return {
             "ok": True,
             "now": now.isoformat(),
+            "has_kg_top_kingdoms": has_top,
+            "has_nw_history": has_hist,
             "last_rankings_fetch": last_fetch.isoformat() if last_fetch else None,
             "last_nw_tick": last_tick.isoformat() if last_tick else None,
             "rankings_age_seconds": fetch_age_s,

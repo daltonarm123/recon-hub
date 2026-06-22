@@ -388,6 +388,17 @@ function QuickLinkCard({ to, title, description, meta }) {
 /* ---------------- Dashboard ---------------- */
 
 function Dashboard() {
+    const [statusRefresh, setStatusRefresh] = useState(0);
+    const nwStatus = useFetchJson(`${API_BASE}/api/nw/status?r=${encodeURIComponent(statusRefresh)}`, [statusRefresh]);
+
+    useEffect(() => {
+        const id = window.setInterval(() => setStatusRefresh((v) => v + 1), 60000);
+        return () => window.clearInterval(id);
+    }, []);
+
+    const nwTickAgeSeconds = Number(nwStatus.data?.nw_tick_age_seconds);
+    const nwTrackerHealthy = Number.isFinite(nwTickAgeSeconds) && nwTickAgeSeconds >= 0 && nwTickAgeSeconds < 900;
+
     return (
         <Layout>
             <div style={{ display: "grid", gap: 14 }}>
@@ -421,6 +432,37 @@ function Dashboard() {
                                 Service Health
                             </div>
                             <BackendBadge />
+                            <div
+                                style={{
+                                    border: "1px solid var(--rh-border)",
+                                    borderRadius: 10,
+                                    padding: "8px 10px",
+                                    background: "rgba(255,236,201,.05)",
+                                    display: "grid",
+                                    gap: 4,
+                                }}
+                            >
+                                <div style={{ display: "flex", justifyContent: "space-between", gap: 8, alignItems: "center" }}>
+                                    <span style={{ fontSize: 11, color: "var(--rh-muted)", textTransform: "uppercase", letterSpacing: 0.35 }}>
+                                        NW Tracker
+                                    </span>
+                                    <span
+                                        style={{
+                                            fontSize: 11,
+                                            fontWeight: 700,
+                                            color: nwTrackerHealthy ? "#7ad8a2" : "#ffc56a",
+                                        }}
+                                    >
+                                        {nwStatus.loading ? "Checking..." : nwTrackerHealthy ? "Healthy" : "Waiting"}
+                                    </span>
+                                </div>
+                                <div style={{ fontSize: 12, color: "var(--rh-muted)", lineHeight: 1.4 }}>
+                                    Tick: {nwStatus.data?.last_nw_tick ? timeAgo(nwStatus.data.last_nw_tick) : "not available"}
+                                </div>
+                                <div style={{ fontSize: 12, color: "var(--rh-muted)", lineHeight: 1.4 }}>
+                                    Rankings: {nwStatus.data?.last_rankings_fetch ? timeAgo(nwStatus.data.last_rankings_fetch) : "not available"}
+                                </div>
+                            </div>
                             <div style={{ fontSize: 12, color: "var(--rh-muted)", lineHeight: 1.45 }}>
                                 Use this as the landing page to verify backend reachability before opening heavier data views.
                             </div>
@@ -1327,10 +1369,20 @@ function NWOT() {
     const [search, setSearch] = useState("");
     const [selected, setSelected] = useState("Galileo");
     const [hours, setHours] = useState(24);
+    const [refresh, setRefresh] = useState(0);
     const deferredSearch = useDeferredValue(search);
 
-    const kingdomsUrl = useMemo(() => `${API_BASE}/api/nw/kingdoms?limit=300`, []);
+    useEffect(() => {
+        const id = window.setInterval(() => setRefresh((v) => v + 1), 60000);
+        return () => window.clearInterval(id);
+    }, []);
+
+    const kingdomsUrl = useMemo(
+        () => `${API_BASE}/api/nw/kingdoms?limit=300&r=${encodeURIComponent(refresh)}`,
+        [refresh]
+    );
     const kingdoms = useFetchJson(kingdomsUrl, [kingdomsUrl]);
+    const status = useFetchJson(`${API_BASE}/api/nw/status?r=${encodeURIComponent(refresh)}`, [refresh]);
 
     const filtered = useMemo(() => {
         const list = kingdoms.data?.kingdoms || [];
@@ -1343,10 +1395,20 @@ function NWOT() {
         if (!selected) return "";
         return `${API_BASE}/api/nw/history/${encodeURIComponent(
             selected
-        )}?hours=${encodeURIComponent(hours)}`;
-    }, [selected, hours]);
+        )}?hours=${encodeURIComponent(hours)}&r=${encodeURIComponent(refresh)}`;
+    }, [selected, hours, refresh]);
 
     const history = useFetchJson(historyUrl, [historyUrl]);
+
+    useEffect(() => {
+        const list = kingdoms.data?.kingdoms || [];
+        if (!Array.isArray(list) || list.length === 0) return;
+        const selectedExists = list.some((k) => k?.kingdom === selected);
+        if (selectedExists) return;
+
+        const withHistory = list.find((k) => Number(k?.points || 0) > 0);
+        setSelected(withHistory?.kingdom || list[0]?.kingdom || "");
+    }, [kingdoms.data, selected]);
 
     return (
         <Layout>
@@ -1373,11 +1435,26 @@ function NWOT() {
                                 <option value={48}>48h</option>
                                 <option value={72}>72h</option>
                             </select>
+                            <button
+                                type="button"
+                                onClick={() => setRefresh((v) => v + 1)}
+                                style={{ ...btnGhost, whiteSpace: "nowrap" }}
+                                title="Refresh kingdoms, status, and history now"
+                            >
+                                Refresh
+                            </button>
                         </div>
                     }
                 >
                     {kingdoms.loading ? <div>Loading kingdoms…</div> : null}
                     {kingdoms.err ? <div style={{ color: "#ff6b6b" }}>{kingdoms.err}</div> : null}
+                    {!kingdoms.err ? (
+                        <div style={{ marginBottom: 8, fontSize: 11, color: "rgba(231,236,255,.70)" }}>
+                            Last rankings sync: {status.data?.last_rankings_fetch ? timeAgo(status.data.last_rankings_fetch) : "not available"}
+                            {" • "}
+                            Last NW tick: {status.data?.last_nw_tick ? timeAgo(status.data.last_nw_tick) : "not available"}
+                        </div>
+                    ) : null}
 
                     <div className="nwot-grid">
                         {/* Left: list */}
@@ -1393,7 +1470,7 @@ function NWOT() {
                             <div style={{ maxHeight: 520, overflowY: "auto" }}>
                                 {filtered.length === 0 && !kingdoms.loading ? (
                                     <div style={{ padding: 12, fontSize: 12, color: "rgba(231,236,255,.65)" }}>
-                                        No matches.
+                                        {kingdoms.data?.note || "No matches."}
                                     </div>
                                 ) : null}
 
