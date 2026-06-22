@@ -15,8 +15,38 @@ from db_dsn import resolve_database_dsn
 
 KG_RANKINGS_URL = os.getenv(
     "KG_RANKINGS_URL",
-    "https://www.kingdomgame.net/WebService/Kingdoms.asmx/GetKingdomRankings",
+    "https://kingdomgame.net/WebService/Kingdoms.asmx/GetKingdomRankings",
 )
+
+
+def _rankings_urls() -> List[str]:
+    primary = str(KG_RANKINGS_URL or "").strip()
+    urls: List[str] = []
+    if primary:
+        urls.append(primary)
+
+    # Auto-fallback between host variants because KG behavior can differ by host.
+    if primary.startswith("https://kingdomgame.net/"):
+        urls.append(primary.replace("https://kingdomgame.net/", "https://www.kingdomgame.net/", 1))
+    elif primary.startswith("https://www.kingdomgame.net/"):
+        urls.append(primary.replace("https://www.kingdomgame.net/", "https://kingdomgame.net/", 1))
+    else:
+        urls.extend(
+            [
+                "https://kingdomgame.net/WebService/Kingdoms.asmx/GetKingdomRankings",
+                "https://www.kingdomgame.net/WebService/Kingdoms.asmx/GetKingdomRankings",
+            ]
+        )
+
+    # Keep order while removing duplicates.
+    seen = set()
+    out: List[str] = []
+    for u in urls:
+        if u in seen:
+            continue
+        seen.add(u)
+        out.append(u)
+    return out
 
 # How long to wait AFTER the tick boundary before hitting KG
 # (important because the game UI often lags a bit after :00/:05)
@@ -473,25 +503,26 @@ def _poll_rankings_once(*, world_id: str, creds: Dict[str, object]) -> Tuple[int
     def post_rankings_page(client: httpx.Client, start_number: int) -> Dict:
         last_err: Optional[Exception] = None
         for attempt in range(1, KG_PAGE_RETRIES + 1):
-            for payload in _payload_variants(start_number):
-                try:
-                    req_headers = dict(headers)
-                    r = client.post(KG_RANKINGS_URL, headers=req_headers, json=payload)
-                    r.raise_for_status()
-                    parsed = _parse_response_body(r)
-                    if parsed:
-                        return parsed
+            for url in _rankings_urls():
+                for payload in _payload_variants(start_number):
+                    try:
+                        req_headers = dict(headers)
+                        r = client.post(url, headers=req_headers, json=payload)
+                        r.raise_for_status()
+                        parsed = _parse_response_body(r)
+                        if parsed:
+                            return parsed
 
-                    # Retry same payload as text body for stricter ASMX handling.
-                    req_headers["Content-Type"] = "application/json; charset=UTF-8"
-                    r2 = client.post(KG_RANKINGS_URL, headers=req_headers, content=json.dumps(payload))
-                    r2.raise_for_status()
-                    parsed2 = _parse_response_body(r2)
-                    if parsed2:
-                        return parsed2
-                    last_err = RuntimeError("empty parsed response")
-                except Exception as e:
-                    last_err = e
+                        # Retry same payload as text body for stricter ASMX handling.
+                        req_headers["Content-Type"] = "application/json; charset=UTF-8"
+                        r2 = client.post(url, headers=req_headers, content=json.dumps(payload))
+                        r2.raise_for_status()
+                        parsed2 = _parse_response_body(r2)
+                        if parsed2:
+                            return parsed2
+                        last_err = RuntimeError("empty parsed response")
+                    except Exception as e:
+                        last_err = e
             if attempt < KG_PAGE_RETRIES:
                 time.sleep(min(2 ** (attempt - 1), 4) + random.uniform(0.0, 0.5))
         raise last_err or RuntimeError("rankings page request failed")
