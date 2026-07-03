@@ -211,7 +211,7 @@ def _login_urls() -> List[str]:
 
 def _kg_headers(world_id: str, url: str) -> Dict[str, str]:
     origin = _origin_for_url(url)
-    return {
+    headers = {
         "Accept": "application/json, text/plain, */*",
         "Content-Type": "application/json",
         "World-Id": str(world_id),
@@ -224,6 +224,31 @@ def _kg_headers(world_id: str, url: str) -> Dict[str, str]:
         ),
         "Accept-Language": os.getenv("KG_ACCEPT_LANGUAGE", "en-US,en;q=0.9"),
     }
+
+    cookie = str(os.getenv("KG_COOKIE", "")).strip()
+    if cookie:
+        headers["Cookie"] = cookie
+        m = re.search(r"(?:^|;\s*)__RequestVerificationToken=([^;]+)", cookie)
+        if m:
+            tok = m.group(1).strip()
+            if tok:
+                headers["RequestVerificationToken"] = tok
+                headers["X-RequestVerificationToken"] = tok
+
+    extra_headers_raw = str(os.getenv("KG_EXTRA_HEADERS_JSON", "")).strip()
+    if extra_headers_raw:
+        try:
+            extra = json.loads(extra_headers_raw)
+            if isinstance(extra, dict):
+                for k, v in extra.items():
+                    key = str(k or "").strip()
+                    if not key:
+                        continue
+                    headers[key] = str(v)
+        except Exception:
+            pass
+
+    return headers
 
 
 def _kg_login_headers(url: str) -> Dict[str, str]:

@@ -1411,7 +1411,8 @@ function NWOT() {
             ? history.data
             : [];
 
-    const staleSeconds = Number(health.data?.nw_age_seconds);
+    const staleAgeRaw = health.data?.nw_age_seconds;
+    const staleSeconds = staleAgeRaw == null ? NaN : Number(staleAgeRaw);
     const isStale = Number.isFinite(staleSeconds) ? staleSeconds > 120 : true;
 
     useEffect(() => {
