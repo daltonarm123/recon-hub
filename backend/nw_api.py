@@ -145,6 +145,29 @@ def nw_live(limit: int = 100):
             )
             rows = cur.fetchall()
 
+            if not rows and _table_exists(cur, "public.kg_top_kingdoms"):
+                cur.execute(
+                    """
+                    SELECT kingdom_id, kingdom, COALESCE(ranking, 999999) AS rank, networth, fetched_at AS updated_at
+                    FROM public.kg_top_kingdoms
+                    ORDER BY ranking ASC NULLS LAST, kingdom ASC
+                    LIMIT %s
+                    """,
+                    (safe_limit,),
+                )
+                fallback_rows = cur.fetchall()
+                rows = [
+                    {
+                        "kingdom_id": r.get("kingdom_id"),
+                        "kingdom": r.get("kingdom"),
+                        "rank": r.get("rank"),
+                        "networth": r.get("networth"),
+                        "delta": 0,
+                        "updated_at": r.get("updated_at"),
+                    }
+                    for r in fallback_rows
+                ]
+
         out_rows: List[Dict[str, Any]] = []
         latest_ts: Optional[datetime] = None
         for row in rows:
@@ -356,6 +379,28 @@ def nw_kingdoms(limit: int = 300, search: str = ""):
                 (safe_limit,),
             )
             rows = cur.fetchall()
+
+            if not rows and _table_exists(cur, "public.kg_top_kingdoms"):
+                cur.execute(
+                    """
+                    SELECT kingdom_id, kingdom, COALESCE(ranking, 999999) AS rank, networth, fetched_at AS updated_at
+                    FROM public.kg_top_kingdoms
+                    ORDER BY ranking ASC NULLS LAST, kingdom ASC
+                    LIMIT %s
+                    """,
+                    (safe_limit,),
+                )
+                rows = [
+                    {
+                        "kingdom_id": r.get("kingdom_id"),
+                        "kingdom": r.get("kingdom"),
+                        "rank": r.get("rank"),
+                        "networth": r.get("networth"),
+                        "delta": 0,
+                        "updated_at": r.get("updated_at"),
+                    }
+                    for r in cur.fetchall()
+                ]
 
         out = []
         for row in rows:

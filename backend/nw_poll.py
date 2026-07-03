@@ -40,8 +40,18 @@ def _ensure_tables():
             """)
 
             cur.execute("""
+                ALTER TABLE public.nw_history
+                ADD COLUMN IF NOT EXISTS kingdom TEXT;
+            """)
+
+            cur.execute("""
                 CREATE INDEX IF NOT EXISTS ix_nw_history_kingdom_id_time
                 ON public.nw_history (kingdom_id, tick_time DESC);
+            """)
+
+            cur.execute("""
+                CREATE UNIQUE INDEX IF NOT EXISTS uq_nw_history_kingdom_id_tick
+                ON public.nw_history (kingdom_id, tick_time);
             """)
 
             cur.execute("""
@@ -68,6 +78,16 @@ def _ensure_tables():
             cur.execute("""
                 ALTER TABLE public.nw_latest
                 ADD COLUMN IF NOT EXISTS delta BIGINT NOT NULL DEFAULT 0;
+            """)
+
+            cur.execute("""
+                CREATE UNIQUE INDEX IF NOT EXISTS uq_nw_latest_kingdom_id
+                ON public.nw_latest (kingdom_id);
+            """)
+
+            cur.execute("""
+                CREATE INDEX IF NOT EXISTS ix_nw_latest_rank
+                ON public.nw_latest (rank ASC, kingdom ASC);
             """)
         conn.commit()
     finally:

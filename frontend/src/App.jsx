@@ -1499,7 +1499,7 @@ function NWOT() {
                             <div style={{ maxHeight: 520, overflowY: "auto" }}>
                                 {filtered.length === 0 && !live.loading ? (
                                     <div style={{ padding: 12, fontSize: 12, color: "rgba(231,236,255,.65)" }}>
-                                        {live.data?.note || "No matches."}
+                                        {live.data?.note || (search.trim() ? "No matches for current search." : "No top-100 data available yet.")}
                                     </div>
                                 ) : null}
 
