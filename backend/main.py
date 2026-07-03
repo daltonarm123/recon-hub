@@ -129,8 +129,8 @@ def _db_exception_to_http(exc: Exception) -> HTTPException:
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     world_id = os.getenv("KG_WORLD_ID", "1")
-    rankings_seconds = _int_env("RANKINGS_POLL_SECONDS", 900)
-    nw_seconds = _int_env("NW_POLL_SECONDS", 240)
+    rankings_seconds = _int_env("RANKINGS_POLL_SECONDS", 60)
+    nw_seconds = _int_env("NW_POLL_SECONDS", 60)
     enable_rankings_poller = _bool_env("ENABLE_RANKINGS_POLLER", True)
     enable_nw_poller = _bool_env("ENABLE_NW_POLLER", True)
     enable_settlement_observer = _bool_env("ENABLE_SETTLEMENT_OBSERVER", True)

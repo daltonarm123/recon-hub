@@ -1367,55 +1367,73 @@ function Admin() {
 
 function NWOT() {
     const [search, setSearch] = useState("");
-    const [selected, setSelected] = useState("Galileo");
-    const [hours, setHours] = useState(24);
+    const [selectedId, setSelectedId] = useState(0);
+    const [range, setRange] = useState("24h");
     const [refresh, setRefresh] = useState(0);
     const deferredSearch = useDeferredValue(search);
 
     useEffect(() => {
-        const id = window.setInterval(() => setRefresh((v) => v + 1), 60000);
+        const id = window.setInterval(() => setRefresh((v) => v + 1), 30000);
         return () => window.clearInterval(id);
     }, []);
 
-    const kingdomsUrl = useMemo(
-        () => `${API_BASE}/api/nw/kingdoms?limit=300&r=${encodeURIComponent(refresh)}`,
+    const liveUrl = useMemo(
+        () => `${API_BASE}/api/nw/live?limit=100&r=${encodeURIComponent(refresh)}`,
         [refresh]
     );
-    const kingdoms = useFetchJson(kingdomsUrl, [kingdomsUrl]);
-    const status = useFetchJson(`${API_BASE}/api/nw/status?r=${encodeURIComponent(refresh)}`, [refresh]);
+    const live = useFetchJson(liveUrl, [liveUrl]);
+    const movers = useFetchJson(
+        `${API_BASE}/api/nw/movers?window=15m&minDelta=1000&r=${encodeURIComponent(refresh)}`,
+        [refresh]
+    );
+    const health = useFetchJson(`${API_BASE}/api/nw/health?r=${encodeURIComponent(refresh)}`, [refresh]);
 
     const filtered = useMemo(() => {
-        const list = kingdoms.data?.kingdoms || [];
+        const list = live.data?.rows || [];
         const s = deferredSearch.trim().toLowerCase();
         if (!s) return list;
         return list.filter((k) => String(k.kingdom || "").toLowerCase().includes(s));
-    }, [deferredSearch, kingdoms.data]);
+    }, [deferredSearch, live.data]);
+
+    const selectedRow = useMemo(() => {
+        return (live.data?.rows || []).find((row) => Number(row.kingdomId) === Number(selectedId)) || null;
+    }, [live.data, selectedId]);
 
     const historyUrl = useMemo(() => {
-        if (!selected) return "";
-        return `${API_BASE}/api/nw/history/${encodeURIComponent(
-            selected
-        )}?hours=${encodeURIComponent(hours)}&r=${encodeURIComponent(refresh)}`;
-    }, [selected, hours, refresh]);
+        if (!selectedId) return "";
+        return `${API_BASE}/api/nw/history?kingdomId=${encodeURIComponent(selectedId)}&range=${encodeURIComponent(range)}&r=${encodeURIComponent(refresh)}`;
+    }, [selectedId, range, refresh]);
 
     const history = useFetchJson(historyUrl, [historyUrl]);
+    const chartPoints = Array.isArray(history.data?.points)
+        ? history.data.points
+        : Array.isArray(history.data)
+            ? history.data
+            : [];
+
+    const staleSeconds = Number(health.data?.nw_age_seconds);
+    const isStale = Number.isFinite(staleSeconds) ? staleSeconds > 120 : true;
 
     useEffect(() => {
-        const list = kingdoms.data?.kingdoms || [];
+        const list = live.data?.rows || [];
         if (!Array.isArray(list) || list.length === 0) return;
-        const selectedExists = list.some((k) => k?.kingdom === selected);
+        const selectedExists = list.some((k) => Number(k?.kingdomId) === Number(selectedId));
         if (selectedExists) return;
+        setSelectedId(Number(list[0]?.kingdomId || 0));
+    }, [live.data, selectedId]);
 
-        const withHistory = list.find((k) => Number(k?.points || 0) > 0);
-        setSelected(withHistory?.kingdom || list[0]?.kingdom || "");
-    }, [kingdoms.data, selected]);
+    const fmtDelta = (n) => {
+        const v = Number(n || 0);
+        if (v > 0) return `+${v.toLocaleString()}`;
+        return v.toLocaleString();
+    };
 
     return (
         <Layout>
             <div style={{ display: "grid", gap: 14 }}>
                 <Card
-                    title="Networth Over Time"
-                    subtitle="Select a kingdom to view NWOT (from nw_history)."
+                    title="Live NW Movement"
+                    subtitle="Top 100 snapshots from KingdomGame rankings with live deltas."
                     right={
                         <div className="nwot-controls">
                             <input
@@ -1425,49 +1443,50 @@ function NWOT() {
                                 style={input}
                             />
                             <select
-                                value={String(hours)}
-                                onChange={(e) => setHours(Number(e.target.value))}
+                                value={range}
+                                onChange={(e) => setRange(String(e.target.value))}
                                 style={{ ...input, cursor: "pointer" }}
                             >
-                                <option value={6}>6h</option>
-                                <option value={12}>12h</option>
-                                <option value={24}>24h</option>
-                                <option value={48}>48h</option>
-                                <option value={72}>72h</option>
+                                <option value="1h">1h</option>
+                                <option value="6h">6h</option>
+                                <option value="12h">12h</option>
+                                <option value="24h">24h</option>
+                                <option value="48h">48h</option>
                             </select>
                             <button
                                 type="button"
                                 onClick={() => setRefresh((v) => v + 1)}
                                 style={{ ...btnGhost, whiteSpace: "nowrap" }}
-                                title="Refresh kingdoms, status, and history now"
+                                title="Refresh live data now"
                             >
                                 Refresh
                             </button>
                         </div>
                     }
                 >
-                    {kingdoms.loading ? <div>Loading kingdoms…</div> : null}
-                    {kingdoms.err ? <div style={{ color: "#ff6b6b" }}>{kingdoms.err}</div> : null}
-                    {!kingdoms.err ? (
+                    {live.loading ? <div>Loading live rankings…</div> : null}
+                    {live.err ? <div style={{ color: "#ff6b6b" }}>{live.err}</div> : null}
+                    {!live.err ? (
                         <div style={{ marginBottom: 8, fontSize: 11, color: "rgba(231,236,255,.70)" }}>
-                            Last rankings sync: {status.data?.last_rankings_fetch ? timeAgo(status.data.last_rankings_fetch) : "not available"}
+                            Last updated: {live.data?.updatedAt ? timeAgo(live.data.updatedAt) : "not available"}
                             {" • "}
-                            Last NW tick: {status.data?.last_nw_tick ? timeAgo(status.data.last_nw_tick) : "not available"}
+                            State: <span style={{ color: isStale ? "#ff8f8f" : "#8be28b" }}>{isStale ? "stale" : "live"}</span>
+                            {" • "}
+                            Auth: {health.data?.auth_mode || "-"}
                         </div>
                     ) : null}
-                    {status.err ? (
+                    {health.err ? (
                         <div style={{ marginBottom: 8, fontSize: 12, color: "#ff8f8f" }}>
-                            NW status error: {status.err}
+                            NW health error: {health.err}
                         </div>
                     ) : null}
-                    {Array.isArray(kingdoms.data?.kingdoms) && kingdoms.data.kingdoms.length === 0 && kingdoms.data?.note ? (
+                    {Array.isArray(live.data?.rows) && live.data.rows.length === 0 && live.data?.note ? (
                         <div style={{ marginBottom: 8, fontSize: 12, color: "#ffd37a" }}>
-                            {kingdoms.data.note}
+                            {live.data.note}
                         </div>
                     ) : null}
 
                     <div className="nwot-grid">
-                        {/* Left: list */}
                         <div
                             className="nwot-sidebar"
                             style={{
@@ -1478,19 +1497,20 @@ function NWOT() {
                             }}
                         >
                             <div style={{ maxHeight: 520, overflowY: "auto" }}>
-                                {filtered.length === 0 && !kingdoms.loading ? (
+                                {filtered.length === 0 && !live.loading ? (
                                     <div style={{ padding: 12, fontSize: 12, color: "rgba(231,236,255,.65)" }}>
-                                        {kingdoms.data?.note || "No matches."}
+                                        {live.data?.note || "No matches."}
                                     </div>
                                 ) : null}
 
                                 {filtered.map((k) => {
-                                    const name = k.kingdom;
-                                    const active = name === selected;
+                                    const name = String(k.kingdom || "");
+                                    const active = Number(k.kingdomId) === Number(selectedId);
+                                    const positive = Number(k.delta || 0) >= 0;
                                     return (
                                         <button
-                                            key={name}
-                                            onClick={() => setSelected(name)}
+                                            key={`${k.kingdomId}-${name}`}
+                                            onClick={() => setSelectedId(Number(k.kingdomId))}
                                             style={{
                                                 width: "100%",
                                                 textAlign: "left",
@@ -1502,12 +1522,13 @@ function NWOT() {
                                                 cursor: "pointer",
                                                 fontSize: 12,
                                             }}
-                                            title={`Last tick: ${k.last_tick || "—"} • Points: ${k.points ?? "—"}`}
+                                            title={`Rank ${k.rank || "-"} • Delta ${fmtDelta(k.delta)}`}
                                         >
                                             <div style={{ fontWeight: 800 }}>{name}</div>
-                                            <div style={{ opacity: 0.7, fontSize: 11, marginTop: 2 }}>
-                                                {k.points ?? 0} pts •{" "}
-                                                {k.last_tick ? new Date(k.last_tick).toLocaleString() : "—"}
+                                            <div style={{ opacity: 0.8, fontSize: 11, marginTop: 3, display: "flex", gap: 8, flexWrap: "wrap" }}>
+                                                <span>#{Number(k.rank || 0)}</span>
+                                                <span>NW {Number(k.networth || 0).toLocaleString()}</span>
+                                                <span style={{ color: positive ? "#8be28b" : "#ff9b9b" }}>{fmtDelta(k.delta)}</span>
                                             </div>
                                         </button>
                                     );
@@ -1515,10 +1536,14 @@ function NWOT() {
                             </div>
                         </div>
 
-                        {/* Right: chart */}
                         <div className="nwot-chart">
                             <div style={{ display: "flex", gap: 10, flexWrap: "wrap", marginBottom: 10 }}>
-                                <div style={{ fontWeight: 800 }}>{selected || "—"}</div>
+                                <div style={{ fontWeight: 800 }}>{selectedRow?.kingdom || "—"}</div>
+                                {selectedRow ? (
+                                    <div style={{ fontSize: 12, opacity: 0.85 }}>
+                                        Rank #{Number(selectedRow.rank || 0)} • NW {Number(selectedRow.networth || 0).toLocaleString()} • Delta {fmtDelta(selectedRow.delta)}
+                                    </div>
+                                ) : null}
                                 {history.loading ? (
                                     <div style={{ fontSize: 12, opacity: 0.7 }}>Loading history…</div>
                                 ) : null}
@@ -1527,15 +1552,43 @@ function NWOT() {
                                 ) : null}
                             </div>
 
-                            {Array.isArray(history.data) && history.data.length > 0 ? (
+                            {chartPoints.length > 0 ? (
                                 <Suspense fallback={<div style={{ fontSize: 12, color: "var(--rh-muted)" }}>Loading chart…</div>}>
-                                    <NWChart data={history.data} />
+                                    <NWChart data={chartPoints} />
                                 </Suspense>
                             ) : (
                                 <div style={{ fontSize: 12, color: "rgba(231,236,255,.65)" }}>
                                     No history points yet for this kingdom/time range.
                                 </div>
                             )}
+
+                            <div style={{ marginTop: 14, display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))", gap: 12 }}>
+                                <div style={{ border: "1px solid rgba(255,255,255,.10)", borderRadius: 10, padding: 10 }}>
+                                    <div style={{ fontWeight: 700, marginBottom: 8 }}>Top Gainers (15m)</div>
+                                    {(movers.data?.gainers || []).slice(0, 6).map((m) => (
+                                        <div key={`g-${m.kingdomId}`} style={{ display: "flex", justifyContent: "space-between", fontSize: 12, marginBottom: 4 }}>
+                                            <span>{m.kingdom}</span>
+                                            <span style={{ color: "#8be28b" }}>{fmtDelta(m.delta)}</span>
+                                        </div>
+                                    ))}
+                                    {!(movers.data?.gainers || []).length ? (
+                                        <div style={{ fontSize: 12, color: "var(--rh-muted)" }}>No gainers in window.</div>
+                                    ) : null}
+                                </div>
+
+                                <div style={{ border: "1px solid rgba(255,255,255,.10)", borderRadius: 10, padding: 10 }}>
+                                    <div style={{ fontWeight: 700, marginBottom: 8 }}>Top Losers (15m)</div>
+                                    {(movers.data?.losers || []).slice(0, 6).map((m) => (
+                                        <div key={`l-${m.kingdomId}`} style={{ display: "flex", justifyContent: "space-between", fontSize: 12, marginBottom: 4 }}>
+                                            <span>{m.kingdom}</span>
+                                            <span style={{ color: "#ff9b9b" }}>{fmtDelta(m.delta)}</span>
+                                        </div>
+                                    ))}
+                                    {!(movers.data?.losers || []).length ? (
+                                        <div style={{ fontSize: 12, color: "var(--rh-muted)" }}>No losers in window.</div>
+                                    ) : null}
+                                </div>
+                            </div>
                         </div>
                     </div>
                 </Card>
