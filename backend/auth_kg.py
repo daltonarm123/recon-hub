@@ -761,7 +761,7 @@ def _extract_login_token(parsed: Dict[str, Any]) -> Tuple[str, Optional[int], Op
 def _first_non_none(d: Any, *keys: str) -> Any:
     """Return the first non-None value from a dictionary for the provided keys."""
     if not isinstance(d, dict):
-        return None
+        raise TypeError("Expected a dictionary")
     for key in keys:
         value = d.get(key)
         if value is not None:
@@ -790,7 +790,8 @@ def _resolve_login_kingdom_id(login_url: str, account_id: int, token: str) -> Op
         try:
             if kingdom_id is not None:
                 return int(kingdom_id)
-        except (TypeError, ValueError):
+        except (TypeError, ValueError) as exc:
+            logger.debug("Ignoring invalid KG kingdom id %r: %s", kingdom_id, exc)
             continue
     return None
 
