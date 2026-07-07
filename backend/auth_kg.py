@@ -635,6 +635,49 @@ def _kg_login_headers(url: str) -> Dict[str, str]:
     return headers
 
 
+def _extract_request_verification_token(text: str) -> str:
+    raw = str(text or "")
+    patterns = [
+        r'name="__RequestVerificationToken"\s+type="hidden"\s+value="([^"]+)"',
+        r'value="([^"]+)"\s+name="__RequestVerificationToken"',
+        r'__RequestVerificationToken["\']?\s*[:=]\s*["\']([^"\']+)',
+    ]
+    for pattern in patterns:
+        m = re.search(pattern, raw, flags=re.I)
+        if m and m.group(1):
+            return str(m.group(1)).strip()
+    return ""
+
+
+def _kg_bootstrap_login_session(client: httpx.Client, login_url: str) -> str:
+    origin = _origin_for_url(login_url)
+    seed_paths = ["/", "/login", "/rankings"]
+
+    for path in seed_paths:
+        try:
+            response = client.get(
+                f"{origin}{path}",
+                headers=_kg_headers(login_url, path),
+                follow_redirects=True,
+            )
+        except Exception:
+            continue
+
+        cookie_token = ""
+        try:
+            cookie_token = str(client.cookies.get("__RequestVerificationToken") or "").strip()
+        except Exception:
+            cookie_token = ""
+        if cookie_token:
+            return cookie_token
+
+        html_token = _extract_request_verification_token(getattr(response, "text", ""))
+        if html_token:
+            return html_token
+
+    return ""
+
+
 def _kg_base_payload(conn_row: Dict[str, Any]) -> Dict[str, Any]:
     return {
         "accountId": str(conn_row["account_id"]),
@@ -713,8 +756,13 @@ def _kg_login_credential(email: str, password: str) -> Dict[str, Any]:
 
     last_error = "KG login failed"
     with httpx.Client(timeout=30.0) as client:
+        bootstrap_token = ""
         for url in _kg_login_urls():
+            bootstrap_token = _kg_bootstrap_login_session(client, url)
             headers = _kg_login_headers(url)
+            if bootstrap_token:
+                headers["RequestVerificationToken"] = bootstrap_token
+                headers["X-RequestVerificationToken"] = bootstrap_token
             for payload in payload_variants:
                 try:
                     response = client.post(url, headers=headers, content=_compact_json(payload))

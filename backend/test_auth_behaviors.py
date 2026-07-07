@@ -271,6 +271,35 @@ class AuthBehaviorTests(unittest.TestCase):
             auth_kg._kg_login_credential = original_login
             auth_kg._upsert_user_kg_connection = original_upsert
 
+    def test_kg_bootstrap_login_session_reads_verification_token_from_cookie(self):
+        class FakeCookies:
+            def get(self, key, default=None):
+                if key == "__RequestVerificationToken":
+                    return "cookie-token-123"
+                return default
+
+        class FakeResponse:
+            text = "<html></html>"
+
+        class FakeClient:
+            def __init__(self):
+                self.cookies = FakeCookies()
+                self.calls = []
+
+            def get(self, url, headers=None, follow_redirects=None):
+                self.calls.append((url, headers, follow_redirects))
+                return FakeResponse()
+
+        client = FakeClient()
+
+        token = auth_kg._kg_bootstrap_login_session(
+            client,
+            "https://kingdomgame.net/WebService/User.asmx/Login",
+        )
+
+        self.assertEqual(token, "cookie-token-123")
+        self.assertTrue(client.calls)
+
 
 if __name__ == "__main__":
     unittest.main()
