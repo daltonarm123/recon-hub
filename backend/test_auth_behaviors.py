@@ -1,4 +1,5 @@
 import unittest
+import os
 
 from fastapi import HTTPException, Request
 
@@ -150,6 +151,45 @@ class AuthBehaviorTests(unittest.TestCase):
         finally:
             auth_kg._decrypt_token = original_decrypt
             auth_kg._kg_post_json = original_post
+
+    def test_kg_headers_include_cookie_verification_and_extra_headers(self):
+        old_cookie = os.environ.get("KG_COOKIE")
+        old_extra = os.environ.get("KG_EXTRA_HEADERS_JSON")
+        old_lang = os.environ.get("KG_ACCEPT_LANGUAGE")
+        old_agent = os.environ.get("KG_USER_AGENT")
+        try:
+            os.environ["KG_COOKIE"] = "foo=bar; __RequestVerificationToken=req-123"
+            os.environ["KG_EXTRA_HEADERS_JSON"] = '{"X-Test-Header":"settlements"}'
+            os.environ["KG_ACCEPT_LANGUAGE"] = "en-US"
+            os.environ["KG_USER_AGENT"] = "kg-test-agent"
+
+            headers = auth_kg._kg_headers("https://kingdomgame.net/WebService/Settlement.asmx/GetSettlementBuildings")
+
+            self.assertEqual(headers["Origin"], "https://kingdomgame.net")
+            self.assertEqual(headers["Referer"], "https://kingdomgame.net/settlements")
+            self.assertEqual(headers["Cookie"], "foo=bar; __RequestVerificationToken=req-123")
+            self.assertEqual(headers["RequestVerificationToken"], "req-123")
+            self.assertEqual(headers["X-RequestVerificationToken"], "req-123")
+            self.assertEqual(headers["X-Test-Header"], "settlements")
+            self.assertEqual(headers["User-Agent"], "kg-test-agent")
+            self.assertEqual(headers["Accept-Language"], "en-US")
+        finally:
+            if old_cookie is None:
+                os.environ.pop("KG_COOKIE", None)
+            else:
+                os.environ["KG_COOKIE"] = old_cookie
+            if old_extra is None:
+                os.environ.pop("KG_EXTRA_HEADERS_JSON", None)
+            else:
+                os.environ["KG_EXTRA_HEADERS_JSON"] = old_extra
+            if old_lang is None:
+                os.environ.pop("KG_ACCEPT_LANGUAGE", None)
+            else:
+                os.environ["KG_ACCEPT_LANGUAGE"] = old_lang
+            if old_agent is None:
+                os.environ.pop("KG_USER_AGENT", None)
+            else:
+                os.environ["KG_USER_AGENT"] = old_agent
 
 
 if __name__ == "__main__":

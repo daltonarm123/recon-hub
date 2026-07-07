@@ -547,15 +547,54 @@ def _kg_world_id() -> str:
     return os.getenv("KG_WORLD_ID", "1").strip() or "1"
 
 
-def _kg_headers() -> Dict[str, str]:
-    return {
+def _compact_json(payload: Dict[str, Any]) -> str:
+    return json.dumps(payload, separators=(",", ":"), ensure_ascii=True)
+
+
+def _origin_for_url(url: str) -> str:
+    m = re.match(r"^(https?://[^/]+)", str(url or "").strip(), flags=re.I)
+    return m.group(1) if m else "https://kingdomgame.net"
+
+
+def _kg_headers(url: str, referer_path: str = "/settlements") -> Dict[str, str]:
+    origin = _origin_for_url(url)
+    headers = {
         "Accept": "application/json, text/plain, */*",
         "Content-Type": "application/json",
-        "Origin": "https://www.kingdomgame.net",
-        "Referer": "https://www.kingdomgame.net/settlements",
+        "Origin": origin,
+        "Referer": f"{origin}{referer_path}",
         "World-Id": _kg_world_id(),
-        "User-Agent": "recon-hub/1.0 (settlements)",
+        "User-Agent": os.getenv(
+            "KG_USER_AGENT",
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+            "(KHTML, like Gecko) Chrome/144.0.0.0 Safari/537.36",
+        ),
+        "Accept-Language": os.getenv("KG_ACCEPT_LANGUAGE", "en-US,en;q=0.9"),
     }
+
+    cookie = str(os.getenv("KG_COOKIE", "")).strip()
+    if cookie:
+        headers["Cookie"] = cookie
+        m = re.search(r"(?:^|;\s*)__RequestVerificationToken=([^;]+)", cookie)
+        if m:
+            token = m.group(1).strip()
+            if token:
+                headers["RequestVerificationToken"] = token
+                headers["X-RequestVerificationToken"] = token
+
+    extra_headers_raw = str(os.getenv("KG_EXTRA_HEADERS_JSON", "")).strip()
+    if extra_headers_raw:
+        try:
+            extra = json.loads(extra_headers_raw)
+            if isinstance(extra, dict):
+                for key, value in extra.items():
+                    key_str = str(key or "").strip()
+                    if key_str:
+                        headers[key_str] = str(value)
+        except Exception:
+            pass
+
+    return headers
 
 
 def _kg_base_payload(conn_row: Dict[str, Any]) -> Dict[str, Any]:
@@ -583,7 +622,7 @@ def _parse_kg_resp_json(raw: Dict[str, Any]) -> Dict[str, Any]:
 def _kg_post_json(url: str, payload: Dict[str, Any]) -> Dict[str, Any]:
     with httpx.Client(timeout=30.0) as client:
         try:
-            r = client.post(url, headers=_kg_headers(), json=payload)
+            r = client.post(url, headers=_kg_headers(url), content=_compact_json(payload))
             r.raise_for_status()
         except httpx.HTTPStatusError as e:
             body = ""
