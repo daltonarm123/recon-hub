@@ -760,8 +760,8 @@ def _resolve_login_kingdom_id(login_url: str, account_id: int, token: str) -> Op
         kingdoms = _kg_post_json(
             f"{_origin_for_url(login_url)}/WebService/Kingdoms.asmx/GetKingdoms",
             {
-                "accountId": int(account_id),
-                "token": str(token),
+                "accountId": account_id,
+                "token": token,
             },
         )
     except Exception:
