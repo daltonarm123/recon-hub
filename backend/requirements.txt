@@ -5,6 +5,7 @@ PyJWT==2.9.0
 psycopg[binary]==3.2.3
 requests==2.31.0
 cryptography==44.0.0
+playwright==1.54.0
 
 bcrypt==5.0.0
 passlib==1.7.4

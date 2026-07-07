@@ -1,6 +1,7 @@
 import json
 import os
 import re
+import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional, Tuple
@@ -700,6 +701,20 @@ def _parse_kg_resp_json(raw: Dict[str, Any]) -> Dict[str, Any]:
     return {}
 
 
+def _parse_kg_response_text(text: str) -> Dict[str, Any]:
+    raw = str(text or "").strip()
+    if not raw:
+        return {}
+    try:
+        loaded = json.loads(raw)
+    except Exception:
+        return {}
+    if isinstance(loaded, dict):
+        parsed = _parse_kg_resp_json(loaded)
+        return parsed if parsed else loaded
+    return {}
+
+
 def _parse_kg_response(resp: httpx.Response) -> Dict[str, Any]:
     raw: Dict[str, Any] = {}
     try:
@@ -790,6 +805,181 @@ def _kg_login_credential(email: str, password: str) -> Dict[str, Any]:
                         last_error = str(exc)
 
     raise HTTPException(status_code=502, detail=last_error or "KG login failed")
+
+
+def _kg_browser_login_credential(email: str, password: str) -> Dict[str, Any]:
+    email = str(email or "").strip()
+    password = str(password or "")
+    if not email or not password:
+        raise HTTPException(status_code=400, detail="KG email and password are required")
+
+    try:
+        from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
+        from playwright.sync_api import sync_playwright
+    except Exception as exc:
+        raise HTTPException(
+            status_code=503,
+            detail="KG browser login is not available on this deployment",
+        ) from exc
+
+    login_url = _kg_login_urls()[0]
+    captured: Dict[str, Any] = {"token": "", "account_id": None, "kingdom_id": None}
+    browser_error = "KG browser login failed"
+
+    def capture_from_text(text: str):
+        nonlocal captured
+        parsed = _parse_kg_response_text(text)
+        if not parsed:
+            return
+        token, account_id, kingdom_id = _extract_login_token(parsed)
+        if token:
+            captured["token"] = token
+        if account_id is not None:
+            captured["account_id"] = account_id
+        if kingdom_id is not None:
+            captured["kingdom_id"] = kingdom_id
+
+    try:
+        with sync_playwright() as pw:
+            browser = pw.chromium.launch(headless=True)
+            context = browser.new_context(
+                user_agent=os.getenv(
+                    "KG_USER_AGENT",
+                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                    "(KHTML, like Gecko) Chrome/144.0.0.0 Safari/537.36",
+                )
+            )
+            page = context.new_page()
+
+            def handle_response(response):
+                nonlocal browser_error
+                url = str(response.url or "")
+                low = url.lower()
+                if "/webservice/user.asmx/login" not in low and "/webservice/kingdoms.asmx/getkingdoms" not in low:
+                    return
+                try:
+                    capture_from_text(response.text())
+                except Exception as exc:
+                    browser_error = str(exc)
+
+            page.on("response", handle_response)
+
+            try:
+                page.goto(login_url, wait_until="domcontentloaded", timeout=45000)
+                page.wait_for_load_state("networkidle", timeout=20000)
+
+                email_selectors = [
+                    'input[type="email"]',
+                    'input[name="email"]',
+                    'input[placeholder*="email" i]',
+                    'input[autocomplete="username"]',
+                ]
+                password_selectors = [
+                    'input[type="password"]',
+                    'input[name="password"]',
+                    'input[autocomplete="current-password"]',
+                ]
+                button_selectors = [
+                    'button:has-text("Login")',
+                    'button:has-text("Log In")',
+                    'button:has-text("Sign In")',
+                    'input[type="submit"]',
+                ]
+
+                email_locator = None
+                for selector in email_selectors:
+                    locator = page.locator(selector).first
+                    try:
+                        locator.wait_for(state="visible", timeout=5000)
+                        email_locator = locator
+                        break
+                    except Exception:
+                        continue
+                if email_locator is None:
+                    raise HTTPException(status_code=502, detail="KG login form email field not found")
+
+                password_locator = None
+                for selector in password_selectors:
+                    locator = page.locator(selector).first
+                    try:
+                        locator.wait_for(state="visible", timeout=5000)
+                        password_locator = locator
+                        break
+                    except Exception:
+                        continue
+                if password_locator is None:
+                    raise HTTPException(status_code=502, detail="KG login form password field not found")
+
+                email_locator.fill(email)
+                password_locator.fill(password)
+
+                clicked = False
+                for selector in button_selectors:
+                    locator = page.locator(selector).first
+                    try:
+                        locator.wait_for(state="visible", timeout=3000)
+                        locator.click()
+                        clicked = True
+                        break
+                    except Exception:
+                        continue
+                if not clicked:
+                    password_locator.press("Enter")
+
+                try:
+                    page.wait_for_load_state("networkidle", timeout=30000)
+                except PlaywrightTimeoutError:
+                    pass
+
+                deadline = time.time() + 30.0
+                while time.time() < deadline:
+                    if captured.get("token") and captured.get("account_id") is not None:
+                        break
+                    page.wait_for_timeout(250)
+
+                if not captured.get("token") or captured.get("account_id") is None:
+                    raise HTTPException(status_code=502, detail=browser_error or "KG browser login did not return a token")
+
+                if captured.get("kingdom_id") is None:
+                    payload = {
+                        "accountId": int(captured["account_id"]),
+                        "token": str(captured["token"]),
+                    }
+                    kingdoms = _kg_post_json(
+                        f"{_origin_for_url(login_url)}/WebService/Kingdoms.asmx/GetKingdoms",
+                        payload,
+                    )
+                    rows = kingdoms.get("kingdoms") or kingdoms.get("Kingdoms") or []
+                    if isinstance(rows, list):
+                        for row in rows:
+                            if not isinstance(row, dict):
+                                continue
+                            kingdom_id = row.get("id") or row.get("Id") or row.get("kingdomId") or row.get("KingdomId")
+                            try:
+                                if kingdom_id is not None:
+                                    captured["kingdom_id"] = int(kingdom_id)
+                                    break
+                            except Exception:
+                                continue
+
+                if captured.get("kingdom_id") is None:
+                    raise HTTPException(status_code=502, detail="KG browser login succeeded but no kingdom id was found")
+
+                return {
+                    "token": str(captured["token"]),
+                    "account_id": int(captured["account_id"]),
+                    "kingdom_id": int(captured["kingdom_id"]),
+                }
+            finally:
+                try:
+                    context.close()
+                except Exception:
+                    pass
+                browser.close()
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"KG browser login failed: {exc}") from exc
 
 
 def _kg_post_json(url: str, payload: Dict[str, Any]) -> Dict[str, Any]:
@@ -1971,7 +2161,12 @@ def kg_connect(body: KGConnectBody, request: Request):
 @router.post("/api/kg/login")
 def kg_login(body: KGLoginBody, request: Request):
     user = _get_current_user(request)
-    cred = _kg_login_credential(body.email, body.password)
+    try:
+        cred = _kg_browser_login_credential(body.email, body.password)
+    except HTTPException as exc:
+        if exc.status_code == 503:
+            raise
+        cred = _kg_login_credential(body.email, body.password)
     _upsert_user_kg_connection(
         user["discord_user_id"],
         user["discord_username"],

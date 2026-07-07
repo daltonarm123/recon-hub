@@ -228,6 +228,7 @@ class AuthBehaviorTests(unittest.TestCase):
 
     def test_kg_login_route_saves_server_side_login_result(self):
         original_current_user = auth_kg._get_current_user
+        original_browser_login = getattr(auth_kg, "_kg_browser_login_credential", None)
         original_login = auth_kg._kg_login_credential
         original_upsert = auth_kg._upsert_user_kg_connection
         saved = {}
@@ -235,6 +236,11 @@ class AuthBehaviorTests(unittest.TestCase):
             auth_kg._get_current_user = lambda request: {
                 "discord_user_id": "u1",
                 "discord_username": "tester",
+            }
+            auth_kg._kg_browser_login_credential = lambda email, password: {
+                "token": "kg-token",
+                "account_id": 32,
+                "kingdom_id": 41,
             }
             auth_kg._kg_login_credential = lambda email, password: {
                 "token": "kg-token",
@@ -268,6 +274,50 @@ class AuthBehaviorTests(unittest.TestCase):
             self.assertEqual(saved["token"], "kg-token")
         finally:
             auth_kg._get_current_user = original_current_user
+            if original_browser_login is not None:
+                auth_kg._kg_browser_login_credential = original_browser_login
+            auth_kg._kg_login_credential = original_login
+            auth_kg._upsert_user_kg_connection = original_upsert
+
+    def test_kg_login_route_falls_back_to_direct_login_when_browser_login_fails(self):
+        original_current_user = auth_kg._get_current_user
+        original_browser_login = getattr(auth_kg, "_kg_browser_login_credential", None)
+        original_login = auth_kg._kg_login_credential
+        original_upsert = auth_kg._upsert_user_kg_connection
+        saved = {}
+        try:
+            auth_kg._get_current_user = lambda request: {
+                "discord_user_id": "u1",
+                "discord_username": "tester",
+            }
+
+            def fail_browser_login(email, password):
+                raise HTTPException(status_code=502, detail="browser failed")
+
+            auth_kg._kg_browser_login_credential = fail_browser_login
+            auth_kg._kg_login_credential = lambda email, password: {
+                "token": "kg-token",
+                "account_id": 32,
+                "kingdom_id": 41,
+            }
+
+            def fake_upsert(discord_user_id, discord_username, account_id, kingdom_id, token):
+                saved.update({"account_id": account_id, "kingdom_id": kingdom_id, "token": token})
+
+            auth_kg._upsert_user_kg_connection = fake_upsert
+
+            request = Request({"type": "http", "headers": []})
+            body = auth_kg.KGLoginBody(email="user@example.com", password="hunter22")
+            response = auth_kg.kg_login(body, request)
+
+            self.assertEqual(response["ok"], True)
+            self.assertEqual(saved["account_id"], 32)
+            self.assertEqual(saved["kingdom_id"], 41)
+            self.assertEqual(saved["token"], "kg-token")
+        finally:
+            auth_kg._get_current_user = original_current_user
+            if original_browser_login is not None:
+                auth_kg._kg_browser_login_credential = original_browser_login
             auth_kg._kg_login_credential = original_login
             auth_kg._upsert_user_kg_connection = original_upsert
 
@@ -299,6 +349,13 @@ class AuthBehaviorTests(unittest.TestCase):
 
         self.assertEqual(token, "cookie-token-123")
         self.assertTrue(client.calls)
+
+    def test_parse_kg_response_text_decodes_nested_d_payload(self):
+        payload = os.linesep.join([])
+        payload = '{"d": "{\\"token\\":\\"kg-token\\",\\"accountId\\":32}"}'
+        parsed = auth_kg._parse_kg_response_text(payload)
+        self.assertEqual(parsed["token"], "kg-token")
+        self.assertEqual(parsed["accountId"], 32)
 
 
 if __name__ == "__main__":
