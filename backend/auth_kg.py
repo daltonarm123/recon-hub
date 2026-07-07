@@ -631,9 +631,7 @@ def _kg_login_urls() -> List[str]:
 
 
 def _kg_login_headers(url: str) -> Dict[str, str]:
-    headers = _kg_headers(url, "/rankings")
-    headers.pop("World-Id", None)
-    return headers
+    return _kg_headers(url, "/login")
 
 
 def _extract_request_verification_token(text: str) -> str:
@@ -757,6 +755,34 @@ def _extract_login_token(parsed: Dict[str, Any]) -> Tuple[str, Optional[int], Op
     return token, account_id_i, kingdom_id_i
 
 
+def _resolve_login_kingdom_id(login_url: str, account_id: int, token: str) -> Optional[int]:
+    try:
+        kingdoms = _kg_post_json(
+            f"{_origin_for_url(login_url)}/WebService/Kingdoms.asmx/GetKingdoms",
+            {
+                "accountId": int(account_id),
+                "token": str(token),
+            },
+        )
+    except Exception:
+        return None
+
+    rows = kingdoms.get("kingdoms") or kingdoms.get("Kingdoms") or []
+    if not isinstance(rows, list):
+        rows = _extract_list(kingdoms, ["kingdoms", "Kingdoms"])
+    if isinstance(rows, list):
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            kingdom_id = row.get("id") or row.get("Id") or row.get("kingdomId") or row.get("KingdomId")
+            try:
+                if kingdom_id is not None:
+                    return int(kingdom_id)
+            except Exception:
+                continue
+    return None
+
+
 def _kg_login_credential(email: str, password: str) -> Dict[str, Any]:
     email = str(email or "").strip()
     password = str(password or "")
@@ -770,6 +796,7 @@ def _kg_login_credential(email: str, password: str) -> Dict[str, Any]:
     ]
 
     last_error = "KG login failed"
+    missing_kingdom = False
     with httpx.Client(timeout=30.0) as client:
         bootstrap_token = ""
         for url in _kg_login_urls():
@@ -784,13 +811,19 @@ def _kg_login_credential(email: str, password: str) -> Dict[str, Any]:
                     parsed = _parse_kg_response(response)
                     response.raise_for_status()
                     token, account_id, kingdom_id = _extract_login_token(parsed)
+                    if token and account_id is not None and kingdom_id is None:
+                        kingdom_id = _resolve_login_kingdom_id(url, account_id, token)
                     if token and account_id is not None and kingdom_id is not None:
                         return {
                             "token": token,
                             "account_id": account_id,
                             "kingdom_id": kingdom_id,
                         }
-                    last_error = "KG login response missing token/account/kingdom"
+                    if token and account_id is not None:
+                        last_error = "KG login response missing kingdom id"
+                        missing_kingdom = True
+                        break
+                    last_error = "KG login response missing token/account"
                 except Exception as exc:
                     resp = getattr(exc, "response", None)
                     body = ""
@@ -803,6 +836,8 @@ def _kg_login_credential(email: str, password: str) -> Dict[str, Any]:
                         last_error = f"HTTP {status} for {url} body={body}"
                     else:
                         last_error = str(exc)
+            if missing_kingdom:
+                break
 
     raise HTTPException(status_code=502, detail=last_error or "KG login failed")
 

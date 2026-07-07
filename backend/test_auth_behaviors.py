@@ -191,6 +191,12 @@ class AuthBehaviorTests(unittest.TestCase):
             else:
                 os.environ["KG_USER_AGENT"] = old_agent
 
+    def test_kg_login_headers_include_login_referer_and_world_id(self):
+        headers = auth_kg._kg_login_headers("https://kingdomgame.net/WebService/User.asmx/Login")
+
+        self.assertEqual(headers["Referer"], "https://kingdomgame.net/login")
+        self.assertEqual(headers["World-Id"], "1")
+
     def test_kg_login_credential_extracts_token_account_and_kingdom(self):
         original_client = auth_kg.httpx.Client
 
@@ -225,6 +231,50 @@ class AuthBehaviorTests(unittest.TestCase):
             self.assertEqual(cred["kingdom_id"], 41)
         finally:
             auth_kg.httpx.Client = original_client
+
+    def test_kg_login_credential_resolves_missing_kingdom_from_login_response(self):
+        original_client = auth_kg.httpx.Client
+        original_post = auth_kg._kg_post_json
+        calls = []
+
+        class FakeResponse:
+            status_code = 200
+            text = '{"d":"{\\"accountId\\":\\"32\\",\\"token\\":\\"kg-token\\",\\"ReturnValue\\":1}"}'
+
+            def json(self):
+                return {"d": '{"accountId":"32","token":"kg-token","ReturnValue":1}'}
+
+            def raise_for_status(self):
+                return None
+
+        class FakeClient:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc_val, exc_tb):
+                return False
+
+            def post(self, url, headers=None, content=None):
+                calls.append((url, headers, content))
+                return FakeResponse()
+
+        try:
+            auth_kg.httpx.Client = FakeClient
+            auth_kg._kg_post_json = lambda url, payload: {"kingdoms": [{"id": "41"}]}
+
+            cred = auth_kg._kg_login_credential("user@example.com", "hunter22")
+
+            self.assertEqual(cred["token"], "kg-token")
+            self.assertEqual(cred["account_id"], 32)
+            self.assertEqual(cred["kingdom_id"], 41)
+            self.assertEqual(len(calls), 1)
+            self.assertIn('"email":"user@example.com"', calls[0][2])
+        finally:
+            auth_kg.httpx.Client = original_client
+            auth_kg._kg_post_json = original_post
 
     def test_kg_login_route_saves_server_side_login_result(self):
         original_current_user = auth_kg._get_current_user
