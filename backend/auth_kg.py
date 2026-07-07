@@ -755,6 +755,16 @@ def _extract_login_token(parsed: Dict[str, Any]) -> Tuple[str, Optional[int], Op
     return token, account_id_i, kingdom_id_i
 
 
+def _first_non_none(d: Dict[str, Any], *keys: str) -> Any:
+    if not isinstance(d, dict):
+        return None
+    for key in keys:
+        value = d.get(key)
+        if value is not None:
+            return value
+    return None
+
+
 def _resolve_login_kingdom_id(login_url: str, account_id: int, token: str) -> Optional[int]:
     try:
         kingdoms = _kg_post_json(
@@ -767,20 +777,20 @@ def _resolve_login_kingdom_id(login_url: str, account_id: int, token: str) -> Op
     except Exception:
         return None
 
-    rows = kingdoms.get("kingdoms") or kingdoms.get("Kingdoms") or []
-    if not isinstance(rows, list):
-        rows = _extract_list(kingdoms, ["kingdoms", "Kingdoms"])
-    if isinstance(rows, list):
-        for row in rows:
-            if not isinstance(row, dict):
-                continue
-            kingdom_id = row.get("id") or row.get("Id") or row.get("kingdomId") or row.get("KingdomId")
-            try:
-                if kingdom_id is not None:
-                    return int(kingdom_id)
-            except Exception:
-                continue
+    for row in _extract_list(kingdoms, ["kingdoms", "Kingdoms"]):
+        if not isinstance(row, dict):
+            continue
+        kingdom_id = _first_non_none(row, "id", "Id", "kingdomId", "KingdomId")
+        try:
+            if kingdom_id is not None:
+                return int(kingdom_id)
+        except Exception:
+            continue
     return None
+
+
+def _kg_login_page_url(login_url: str) -> str:
+    return f"{_origin_for_url(login_url)}/login"
 
 
 def _kg_login_credential(email: str, password: str) -> Dict[str, Any]:
@@ -900,7 +910,7 @@ def _kg_browser_login_credential(email: str, password: str) -> Dict[str, Any]:
             page.on("response", handle_response)
 
             try:
-                page.goto(login_url, wait_until="domcontentloaded", timeout=45000)
+                page.goto(_kg_login_page_url(login_url), wait_until="domcontentloaded", timeout=45000)
                 page.wait_for_load_state("networkidle", timeout=20000)
 
                 email_selectors = [
@@ -976,26 +986,11 @@ def _kg_browser_login_credential(email: str, password: str) -> Dict[str, Any]:
                     raise HTTPException(status_code=502, detail=browser_error or "KG browser login did not return a token")
 
                 if captured.get("kingdom_id") is None:
-                    payload = {
-                        "accountId": int(captured["account_id"]),
-                        "token": str(captured["token"]),
-                    }
-                    kingdoms = _kg_post_json(
-                        f"{_origin_for_url(login_url)}/WebService/Kingdoms.asmx/GetKingdoms",
-                        payload,
+                    captured["kingdom_id"] = _resolve_login_kingdom_id(
+                        login_url,
+                        int(captured["account_id"]),
+                        str(captured["token"]),
                     )
-                    rows = kingdoms.get("kingdoms") or kingdoms.get("Kingdoms") or []
-                    if isinstance(rows, list):
-                        for row in rows:
-                            if not isinstance(row, dict):
-                                continue
-                            kingdom_id = row.get("id") or row.get("Id") or row.get("kingdomId") or row.get("KingdomId")
-                            try:
-                                if kingdom_id is not None:
-                                    captured["kingdom_id"] = int(kingdom_id)
-                                    break
-                            except Exception:
-                                continue
 
                 if captured.get("kingdom_id") is None:
                     raise HTTPException(status_code=502, detail="KG browser login succeeded but no kingdom id was found")

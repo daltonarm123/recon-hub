@@ -197,6 +197,16 @@ class AuthBehaviorTests(unittest.TestCase):
         self.assertEqual(headers["Referer"], "https://kingdomgame.net/login")
         self.assertEqual(headers["World-Id"], "1")
 
+    def test_kg_login_page_url_uses_origin_login_page(self):
+        self.assertEqual(
+            auth_kg._kg_login_page_url("https://kingdomgame.net/WebService/User.asmx/Login"),
+            "https://kingdomgame.net/login",
+        )
+        self.assertEqual(
+            auth_kg._kg_login_page_url("https://www.kingdomgame.net/WebService/User.asmx/Login"),
+            "https://www.kingdomgame.net/login",
+        )
+
     def test_kg_login_credential_extracts_token_account_and_kingdom(self):
         original_client = auth_kg.httpx.Client
 
@@ -225,7 +235,7 @@ class AuthBehaviorTests(unittest.TestCase):
 
         try:
             auth_kg.httpx.Client = FakeClient
-            cred = auth_kg._kg_login_credential("user@example.com", "hunter22")
+            cred = auth_kg._kg_login_credential("user@example.com", "testpassword123")
             self.assertEqual(cred["token"], "kg-token")
             self.assertEqual(cred["account_id"], 32)
             self.assertEqual(cred["kingdom_id"], 41)
@@ -265,7 +275,7 @@ class AuthBehaviorTests(unittest.TestCase):
             auth_kg.httpx.Client = FakeClient
             auth_kg._kg_post_json = lambda url, payload: {"kingdoms": [{"id": "41"}]}
 
-            cred = auth_kg._kg_login_credential("user@example.com", "hunter22")
+            cred = auth_kg._kg_login_credential("user@example.com", "testpassword123")
 
             self.assertEqual(cred["token"], "kg-token")
             self.assertEqual(cred["account_id"], 32)
