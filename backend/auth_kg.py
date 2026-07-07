@@ -1,4 +1,5 @@
 import json
+import logging
 import os
 import re
 import time
@@ -18,6 +19,8 @@ from psycopg.rows import dict_row
 from pydantic import BaseModel, Field
 
 from db_dsn import resolve_database_dsn
+
+logger = logging.getLogger(__name__)
 
 class AuthLoginBody(BaseModel):
     username: str = Field(..., min_length=3)
@@ -631,9 +634,7 @@ def _kg_login_urls() -> List[str]:
 
 
 def _kg_login_headers(url: str) -> Dict[str, str]:
-    headers = _kg_headers(url, "/rankings")
-    headers.pop("World-Id", None)
-    return headers
+    return _kg_headers(url, "/login")
 
 
 def _extract_request_verification_token(text: str) -> str:
@@ -757,6 +758,49 @@ def _extract_login_token(parsed: Dict[str, Any]) -> Tuple[str, Optional[int], Op
     return token, account_id_i, kingdom_id_i
 
 
+def _first_non_none(d: Any, *keys: str) -> Any:
+    """Return the first non-None value from a dictionary for the provided keys."""
+    if not isinstance(d, dict):
+        raise TypeError(f"Expected a dictionary, got {type(d).__name__}")
+    for key in keys:
+        value = d.get(key)
+        if value is not None:
+            return value
+    return None
+
+
+def _fetch_kingdom_id_from_kg_api(login_url: str, account_id: int, token: str) -> Optional[int]:
+    """Fetch KG kingdoms for a login token and return the first kingdom id found."""
+    try:
+        kingdoms = _kg_post_json(
+            f"{_origin_for_url(login_url)}/WebService/Kingdoms.asmx/GetKingdoms",
+            {
+                "accountId": account_id,
+                "token": token,
+            },
+        )
+    except Exception as exc:
+        logger.debug("Failed to resolve KG login kingdom id: %s", exc, exc_info=True)
+        return None
+
+    for row in _extract_list(kingdoms, ["kingdoms", "Kingdoms"]):
+        if not isinstance(row, dict):
+            continue
+        kingdom_id = _first_non_none(row, "id", "Id", "kingdomId", "KingdomId")
+        try:
+            if kingdom_id is not None:
+                return int(kingdom_id)
+        except (TypeError, ValueError) as exc:
+            logger.debug("Ignoring invalid KG kingdom id %r: %s", kingdom_id, exc)
+            continue
+    return None
+
+
+def _kg_login_page_url(login_url: str) -> str:
+    """Build the browser login page URL from the KG API login URL."""
+    return f"{_origin_for_url(login_url)}/login"
+
+
 def _kg_login_credential(email: str, password: str) -> Dict[str, Any]:
     email = str(email or "").strip()
     password = str(password or "")
@@ -770,6 +814,7 @@ def _kg_login_credential(email: str, password: str) -> Dict[str, Any]:
     ]
 
     last_error = "KG login failed"
+    found_partial_login = False
     with httpx.Client(timeout=30.0) as client:
         bootstrap_token = ""
         for url in _kg_login_urls():
@@ -784,13 +829,19 @@ def _kg_login_credential(email: str, password: str) -> Dict[str, Any]:
                     parsed = _parse_kg_response(response)
                     response.raise_for_status()
                     token, account_id, kingdom_id = _extract_login_token(parsed)
+                    if token and account_id is not None and kingdom_id is None:
+                        kingdom_id = _fetch_kingdom_id_from_kg_api(url, account_id, token)
                     if token and account_id is not None and kingdom_id is not None:
                         return {
                             "token": token,
                             "account_id": account_id,
                             "kingdom_id": kingdom_id,
                         }
-                    last_error = "KG login response missing token/account/kingdom"
+                    if token and account_id is not None:
+                        last_error = "KG login response missing kingdom id"
+                        found_partial_login = True
+                        break
+                    last_error = "KG login response missing token/account"
                 except Exception as exc:
                     resp = getattr(exc, "response", None)
                     body = ""
@@ -803,6 +854,8 @@ def _kg_login_credential(email: str, password: str) -> Dict[str, Any]:
                         last_error = f"HTTP {status} for {url} body={body}"
                     else:
                         last_error = str(exc)
+            if found_partial_login:
+                break
 
     raise HTTPException(status_code=502, detail=last_error or "KG login failed")
 
@@ -865,7 +918,7 @@ def _kg_browser_login_credential(email: str, password: str) -> Dict[str, Any]:
             page.on("response", handle_response)
 
             try:
-                page.goto(login_url, wait_until="domcontentloaded", timeout=45000)
+                page.goto(_kg_login_page_url(login_url), wait_until="domcontentloaded", timeout=45000)
                 page.wait_for_load_state("networkidle", timeout=20000)
 
                 email_selectors = [
@@ -941,26 +994,11 @@ def _kg_browser_login_credential(email: str, password: str) -> Dict[str, Any]:
                     raise HTTPException(status_code=502, detail=browser_error or "KG browser login did not return a token")
 
                 if captured.get("kingdom_id") is None:
-                    payload = {
-                        "accountId": int(captured["account_id"]),
-                        "token": str(captured["token"]),
-                    }
-                    kingdoms = _kg_post_json(
-                        f"{_origin_for_url(login_url)}/WebService/Kingdoms.asmx/GetKingdoms",
-                        payload,
+                    captured["kingdom_id"] = _fetch_kingdom_id_from_kg_api(
+                        login_url,
+                        int(captured["account_id"]),
+                        str(captured["token"]),
                     )
-                    rows = kingdoms.get("kingdoms") or kingdoms.get("Kingdoms") or []
-                    if isinstance(rows, list):
-                        for row in rows:
-                            if not isinstance(row, dict):
-                                continue
-                            kingdom_id = row.get("id") or row.get("Id") or row.get("kingdomId") or row.get("KingdomId")
-                            try:
-                                if kingdom_id is not None:
-                                    captured["kingdom_id"] = int(kingdom_id)
-                                    break
-                            except Exception:
-                                continue
 
                 if captured.get("kingdom_id") is None:
                     raise HTTPException(status_code=502, detail="KG browser login succeeded but no kingdom id was found")
