@@ -761,7 +761,7 @@ def _extract_login_token(parsed: Dict[str, Any]) -> Tuple[str, Optional[int], Op
 def _first_non_none(d: Any, *keys: str) -> Any:
     """Return the first non-None value from a dictionary for the provided keys."""
     if not isinstance(d, dict):
-        raise TypeError("Expected a dictionary")
+        raise TypeError(f"Expected a dictionary, got {type(d).__name__}")
     for key in keys:
         value = d.get(key)
         if value is not None:
@@ -769,7 +769,7 @@ def _first_non_none(d: Any, *keys: str) -> Any:
     return None
 
 
-def _resolve_login_kingdom_id(login_url: str, account_id: int, token: str) -> Optional[int]:
+def _fetch_kingdom_id_from_kg_api(login_url: str, account_id: int, token: str) -> Optional[int]:
     """Fetch KG kingdoms for a login token and return the first kingdom id found."""
     try:
         kingdoms = _kg_post_json(
@@ -830,7 +830,7 @@ def _kg_login_credential(email: str, password: str) -> Dict[str, Any]:
                     response.raise_for_status()
                     token, account_id, kingdom_id = _extract_login_token(parsed)
                     if token and account_id is not None and kingdom_id is None:
-                        kingdom_id = _resolve_login_kingdom_id(url, account_id, token)
+                        kingdom_id = _fetch_kingdom_id_from_kg_api(url, account_id, token)
                     if token and account_id is not None and kingdom_id is not None:
                         return {
                             "token": token,
@@ -994,7 +994,7 @@ def _kg_browser_login_credential(email: str, password: str) -> Dict[str, Any]:
                     raise HTTPException(status_code=502, detail=browser_error or "KG browser login did not return a token")
 
                 if captured.get("kingdom_id") is None:
-                    captured["kingdom_id"] = _resolve_login_kingdom_id(
+                    captured["kingdom_id"] = _fetch_kingdom_id_from_kg_api(
                         login_url,
                         int(captured["account_id"]),
                         str(captured["token"]),

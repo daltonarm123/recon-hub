@@ -49,7 +49,6 @@ class AuthBehaviorTests(unittest.TestCase):
         auth_kg._connect = lambda: self.fake_conn
         auth_kg._jwt_secret = lambda: "secret"
         auth_kg._billing_enabled = lambda: False
-        self.test_kg_password = f"test-{uuid.uuid4().hex}"
 
     def tearDown(self):
         auth_kg._connect = self.orig_connect
@@ -237,7 +236,7 @@ class AuthBehaviorTests(unittest.TestCase):
 
         try:
             auth_kg.httpx.Client = FakeClient
-            cred = auth_kg._kg_login_credential("user@example.com", self.test_kg_password)
+            cred = auth_kg._kg_login_credential("user@example.com", f"test-{uuid.uuid4().hex}")
             self.assertEqual(cred["token"], "kg-token")
             self.assertEqual(cred["account_id"], 32)
             self.assertEqual(cred["kingdom_id"], 41)
@@ -276,7 +275,7 @@ class AuthBehaviorTests(unittest.TestCase):
             auth_kg.httpx.Client = FakeClient
             auth_kg._kg_post_json = lambda url, payload: {"kingdoms": [{"id": "41"}]}
 
-            cred = auth_kg._kg_login_credential("user@example.com", self.test_kg_password)
+            cred = auth_kg._kg_login_credential("user@example.com", f"test-{uuid.uuid4().hex}")
 
             self.assertEqual(cred["token"], "kg-token")
             self.assertEqual(cred["account_id"], 32)
