@@ -758,7 +758,7 @@ def _extract_login_token(parsed: Dict[str, Any]) -> Tuple[str, Optional[int], Op
     return token, account_id_i, kingdom_id_i
 
 
-def _first_non_none(d: Dict[str, Any], *keys: str) -> Any:
+def _first_non_none(d: Any, *keys: str) -> Any:
     """Return the first non-None value from a dictionary for the provided keys."""
     if not isinstance(d, dict):
         return None
@@ -780,7 +780,7 @@ def _resolve_login_kingdom_id(login_url: str, account_id: int, token: str) -> Op
             },
         )
     except Exception as exc:
-        logger.debug("Failed to resolve KG login kingdom id", exc_info=True)
+        logger.debug("Failed to resolve KG login kingdom id: %s", exc, exc_info=True)
         return None
 
     for row in _extract_list(kingdoms, ["kingdoms", "Kingdoms"]):
@@ -813,7 +813,7 @@ def _kg_login_credential(email: str, password: str) -> Dict[str, Any]:
     ]
 
     last_error = "KG login failed"
-    missing_kingdom = False
+    found_partial_login = False
     with httpx.Client(timeout=30.0) as client:
         bootstrap_token = ""
         for url in _kg_login_urls():
@@ -838,7 +838,7 @@ def _kg_login_credential(email: str, password: str) -> Dict[str, Any]:
                         }
                     if token and account_id is not None:
                         last_error = "KG login response missing kingdom id"
-                        missing_kingdom = True
+                        found_partial_login = True
                         break
                     last_error = "KG login response missing token/account"
                 except Exception as exc:
@@ -853,7 +853,7 @@ def _kg_login_credential(email: str, password: str) -> Dict[str, Any]:
                         last_error = f"HTTP {status} for {url} body={body}"
                     else:
                         last_error = str(exc)
-            if missing_kingdom:
+            if found_partial_login:
                 break
 
     raise HTTPException(status_code=502, detail=last_error or "KG login failed")

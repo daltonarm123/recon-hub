@@ -1,12 +1,13 @@
 import unittest
 import os
+import uuid
 
 from fastapi import HTTPException, Request
 
 import auth_kg
 
 
-TEST_KG_PASSWORD = "testpassword123"
+TEST_KG_PASSWORD = f"test-{uuid.uuid4().hex}"
 
 
 class FakeConn:
@@ -252,7 +253,6 @@ class AuthBehaviorTests(unittest.TestCase):
 
         class FakeResponse:
             status_code = 200
-            text = '{"d":"{\\"accountId\\":\\"32\\",\\"token\\":\\"kg-token\\",\\"ReturnValue\\":1}"}'
 
             def json(self):
                 return {"d": '{"accountId":"32","token":"kg-token","ReturnValue":1}'}
