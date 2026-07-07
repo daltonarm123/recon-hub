@@ -191,6 +191,86 @@ class AuthBehaviorTests(unittest.TestCase):
             else:
                 os.environ["KG_USER_AGENT"] = old_agent
 
+    def test_kg_login_credential_extracts_token_account_and_kingdom(self):
+        original_client = auth_kg.httpx.Client
+
+        class FakeResponse:
+            status_code = 200
+            text = '{"d":"{\"token\":\"kg-token\",\"accountId\":32,\"kingdomId\":41}"}'
+
+            def json(self):
+                return {"d": '{"token":"kg-token","accountId":32,"kingdomId":41}'}
+
+            def raise_for_status(self):
+                return None
+
+        class FakeClient:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc_val, exc_tb):
+                return False
+
+            def post(self, url, headers=None, content=None):
+                return FakeResponse()
+
+        try:
+            auth_kg.httpx.Client = FakeClient
+            cred = auth_kg._kg_login_credential("user@example.com", "hunter22")
+            self.assertEqual(cred["token"], "kg-token")
+            self.assertEqual(cred["account_id"], 32)
+            self.assertEqual(cred["kingdom_id"], 41)
+        finally:
+            auth_kg.httpx.Client = original_client
+
+    def test_kg_login_route_saves_server_side_login_result(self):
+        original_current_user = auth_kg._get_current_user
+        original_login = auth_kg._kg_login_credential
+        original_upsert = auth_kg._upsert_user_kg_connection
+        saved = {}
+        try:
+            auth_kg._get_current_user = lambda request: {
+                "discord_user_id": "u1",
+                "discord_username": "tester",
+            }
+            auth_kg._kg_login_credential = lambda email, password: {
+                "token": "kg-token",
+                "account_id": 32,
+                "kingdom_id": 41,
+            }
+
+            def fake_upsert(discord_user_id, discord_username, account_id, kingdom_id, token):
+                saved.update(
+                    {
+                        "discord_user_id": discord_user_id,
+                        "discord_username": discord_username,
+                        "account_id": account_id,
+                        "kingdom_id": kingdom_id,
+                        "token": token,
+                    }
+                )
+
+            auth_kg._upsert_user_kg_connection = fake_upsert
+
+            request = Request({"type": "http", "headers": []})
+            body = auth_kg.KGLoginBody(email="user@example.com", password="hunter22")
+            response = auth_kg.kg_login(body, request)
+
+            self.assertEqual(response["ok"], True)
+            self.assertEqual(response["connection"]["account_id"], 32)
+            self.assertEqual(response["connection"]["kingdom_id"], 41)
+            self.assertEqual(saved["discord_user_id"], "u1")
+            self.assertEqual(saved["account_id"], 32)
+            self.assertEqual(saved["kingdom_id"], 41)
+            self.assertEqual(saved["token"], "kg-token")
+        finally:
+            auth_kg._get_current_user = original_current_user
+            auth_kg._kg_login_credential = original_login
+            auth_kg._upsert_user_kg_connection = original_upsert
+
 
 if __name__ == "__main__":
     unittest.main()

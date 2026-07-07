@@ -55,6 +55,11 @@ class KGConnectBody(BaseModel):
     token: str = Field(..., min_length=8)
 
 
+class KGLoginBody(BaseModel):
+    email: str = Field(..., min_length=3)
+    password: str = Field(..., min_length=6)
+
+
 class AllianceSwitchBody(BaseModel):
     alliance_id: int = Field(..., gt=0)
 
@@ -597,6 +602,39 @@ def _kg_headers(url: str, referer_path: str = "/settlements") -> Dict[str, str]:
     return headers
 
 
+def _kg_login_urls() -> List[str]:
+    primary = str(
+        os.getenv("KG_USER_LOGIN_URL", "https://kingdomgame.net/WebService/User.asmx/Login")
+    ).strip()
+    urls: List[str] = [primary] if primary else []
+    if primary.startswith("https://kingdomgame.net/"):
+        urls.append(primary.replace("https://kingdomgame.net/", "https://www.kingdomgame.net/", 1))
+    elif primary.startswith("https://www.kingdomgame.net/"):
+        urls.append(primary.replace("https://www.kingdomgame.net/", "https://kingdomgame.net/", 1))
+    else:
+        urls.extend(
+            [
+                "https://kingdomgame.net/WebService/User.asmx/Login",
+                "https://www.kingdomgame.net/WebService/User.asmx/Login",
+            ]
+        )
+
+    out: List[str] = []
+    seen = set()
+    for url in urls:
+        if not url or url in seen:
+            continue
+        seen.add(url)
+        out.append(url)
+    return out
+
+
+def _kg_login_headers(url: str) -> Dict[str, str]:
+    headers = _kg_headers(url, "/rankings")
+    headers.pop("World-Id", None)
+    return headers
+
+
 def _kg_base_payload(conn_row: Dict[str, Any]) -> Dict[str, Any]:
     return {
         "accountId": str(conn_row["account_id"]),
@@ -617,6 +655,93 @@ def _parse_kg_resp_json(raw: Dict[str, Any]) -> Dict[str, Any]:
     if isinstance(raw, dict):
         return raw
     return {}
+
+
+def _parse_kg_response(resp: httpx.Response) -> Dict[str, Any]:
+    raw: Dict[str, Any] = {}
+    try:
+        loaded = resp.json()
+        if isinstance(loaded, dict):
+            raw = loaded
+    except Exception:
+        text = (resp.text or "").strip()
+        if text:
+            try:
+                loaded = json.loads(text)
+                if isinstance(loaded, dict):
+                    raw = loaded
+            except Exception:
+                raw = {}
+    parsed = _parse_kg_resp_json(raw)
+    return parsed if parsed else raw
+
+
+def _extract_login_token(parsed: Dict[str, Any]) -> Tuple[str, Optional[int], Optional[int]]:
+    token = str(
+        parsed.get("token")
+        or parsed.get("Token")
+        or parsed.get("accessToken")
+        or parsed.get("AccessToken")
+        or ""
+    ).strip()
+    account_id = parsed.get("accountId") or parsed.get("AccountId") or parsed.get("accountID")
+    kingdom_id = parsed.get("kingdomId") or parsed.get("KingdomId") or parsed.get("kingdomID")
+
+    try:
+        account_id_i = int(account_id) if account_id is not None else None
+    except Exception:
+        account_id_i = None
+    try:
+        kingdom_id_i = int(kingdom_id) if kingdom_id is not None else None
+    except Exception:
+        kingdom_id_i = None
+
+    return token, account_id_i, kingdom_id_i
+
+
+def _kg_login_credential(email: str, password: str) -> Dict[str, Any]:
+    email = str(email or "").strip()
+    password = str(password or "")
+    if not email or not password:
+        raise HTTPException(status_code=400, detail="KG email and password are required")
+
+    payload_variants = [
+        {"email": email, "password": password},
+        {"Email": email, "Password": password},
+        {"username": email, "password": password},
+    ]
+
+    last_error = "KG login failed"
+    with httpx.Client(timeout=30.0) as client:
+        for url in _kg_login_urls():
+            headers = _kg_login_headers(url)
+            for payload in payload_variants:
+                try:
+                    response = client.post(url, headers=headers, content=_compact_json(payload))
+                    parsed = _parse_kg_response(response)
+                    response.raise_for_status()
+                    token, account_id, kingdom_id = _extract_login_token(parsed)
+                    if token and account_id is not None and kingdom_id is not None:
+                        return {
+                            "token": token,
+                            "account_id": account_id,
+                            "kingdom_id": kingdom_id,
+                        }
+                    last_error = "KG login response missing token/account/kingdom"
+                except Exception as exc:
+                    resp = getattr(exc, "response", None)
+                    body = ""
+                    if resp is not None:
+                        try:
+                            body = (resp.text or "").strip().replace("\n", " ")[:220]
+                        except Exception:
+                            body = ""
+                        status = getattr(resp, "status_code", "?")
+                        last_error = f"HTTP {status} for {url} body={body}"
+                    else:
+                        last_error = str(exc)
+
+    raise HTTPException(status_code=502, detail=last_error or "KG login failed")
 
 
 def _kg_post_json(url: str, payload: Dict[str, Any]) -> Dict[str, Any]:
@@ -1793,6 +1918,27 @@ def kg_connect(body: KGConnectBody, request: Request):
     )
 
     return {"ok": True, "connected": True}
+
+
+@router.post("/api/kg/login")
+def kg_login(body: KGLoginBody, request: Request):
+    user = _get_current_user(request)
+    cred = _kg_login_credential(body.email, body.password)
+    _upsert_user_kg_connection(
+        user["discord_user_id"],
+        user["discord_username"],
+        int(cred["account_id"]),
+        int(cred["kingdom_id"]),
+        str(cred["token"]),
+    )
+    return {
+        "ok": True,
+        "connected": True,
+        "connection": {
+            "account_id": int(cred["account_id"]),
+            "kingdom_id": int(cred["kingdom_id"]),
+        },
+    }
 
 
 @router.delete("/api/kg/connection")

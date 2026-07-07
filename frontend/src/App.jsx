@@ -948,6 +948,7 @@ function Reports() {
 function Settlements() {
     const [refresh, setRefresh] = useState(0);
     const [form, setForm] = useState({ account_id: "", kingdom_id: "", token: "" });
+    const [kgLoginForm, setKgLoginForm] = useState({ email: "", password: "" });
     const [snippet, setSnippet] = useState("");
     const [busy, setBusy] = useState(false);
     const [msg, setMsg] = useState("");
@@ -973,6 +974,31 @@ function Settlements() {
             if (!r.ok) throw new Error(j?.detail || `HTTP ${r.status}`);
             setMsg("KG account connected.");
             setForm((f) => ({ ...f, token: "" }));
+            setRefresh((x) => x + 1);
+        } catch (e) {
+            setMsg(String(e.message || e));
+        } finally {
+            setBusy(false);
+        }
+    }
+
+    async function loginWithKg() {
+        setBusy(true);
+        setMsg("");
+        try {
+            const r = await fetch(`${API_BASE}/api/kg/login`, {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                credentials: "include",
+                body: JSON.stringify({
+                    email: kgLoginForm.email.trim(),
+                    password: kgLoginForm.password,
+                }),
+            });
+            const j = await r.json().catch(() => ({}));
+            if (!r.ok) throw new Error(j?.detail || `HTTP ${r.status}`);
+            setMsg("KG account connected.");
+            setKgLoginForm((f) => ({ ...f, password: "" }));
             setRefresh((x) => x + 1);
         } catch (e) {
             setMsg(String(e.message || e));
@@ -1050,7 +1076,7 @@ function Settlements() {
             <div style={{ display: "grid", gap: 14 }}>
                 <Card
                     title="Settlements"
-                    subtitle="Log In, connect KG token, then load your settlements."
+                    subtitle="Log In, then connect KG directly or with a fallback token."
                 >
                     {conn.err ? <div style={{ color: "#ff6b6b", marginBottom: 10 }}>{conn.err}</div> : null}
                     {!connected ? (
@@ -1059,7 +1085,32 @@ function Settlements() {
                                 Log In
                             </a>
                             <div style={{ fontSize: 12, color: "rgba(231,236,255,.75)" }}>
-                                Easy connect: paste the KG request snippet (from `GetKingdomDetails` or `GetSettlements`) and click Detect.
+                                Preferred: sign in with your KG account and let Recon Hub exchange the session for the settlement token server-side.
+                            </div>
+                            <input
+                                style={input}
+                                placeholder="KG email"
+                                value={kgLoginForm.email}
+                                onChange={(e) => setKgLoginForm((f) => ({ ...f, email: e.target.value }))}
+                            />
+                            <input
+                                style={input}
+                                type="password"
+                                placeholder="KG password"
+                                value={kgLoginForm.password}
+                                onChange={(e) => setKgLoginForm((f) => ({ ...f, password: e.target.value }))}
+                            />
+                            <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
+                                <button
+                                    style={btn}
+                                    disabled={busy || !kgLoginForm.email.trim() || !kgLoginForm.password}
+                                    onClick={loginWithKg}
+                                >
+                                    {busy ? "Connecting..." : "Login with KG"}
+                                </button>
+                            </div>
+                            <div style={{ fontSize: 12, color: "rgba(231,236,255,.55)" }}>
+                                Fallback: paste the KG request snippet if direct login fails.
                             </div>
                             <textarea
                                 style={{ ...input, minHeight: 100, resize: "vertical" }}
