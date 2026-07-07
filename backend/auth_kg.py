@@ -726,7 +726,14 @@ def _extract_settlements(payload: Dict[str, Any], account_id: Optional[int] = No
                 except Exception:
                     pass
 
-        sid = _ci_get(item, "id", "settlementId", "settlementID", "cityId", "cityID", "townId", "townID")
+        sid_key = None
+        sid = None
+        for candidate_key in ("settlementId", "settlementID", "cityId", "cityID", "townId", "townID", "id"):
+            value = _ci_get(item, candidate_key)
+            if value is not None:
+                sid_key = candidate_key
+                sid = value
+                break
         name = _ci_get(item, "name", "settlementName", "cityName", "townName")
         if sid is None:
             return
@@ -738,6 +745,7 @@ def _extract_settlements(payload: Dict[str, Any], account_id: Optional[int] = No
             {
                 "settlement_id": sid_i,
                 "name": str(name or f"Settlement {sid_i}"),
+                "detail_id_key": sid_key or "settlementId",
                 "raw": item,
             }
         )
@@ -957,18 +965,36 @@ def _fetch_settlements_live(conn_row: Dict[str, Any]) -> List[Dict[str, Any]]:
             "accountId": base["accountId"],
             "token": base["token"],
             "kingdomId": int(base["kingdomId"]),
-            "settlementId": sid,
         }
-        payload_variants = [
-            payload_base,
-            {**payload_base, "settlementID": sid},
-            {
+        source_id_key = str(s.get("detail_id_key") or "settlementId")
+        if source_id_key.lower().startswith("city"):
+            detail_id_keys = ["cityId", "cityID", "settlementId", "settlementID"]
+        elif source_id_key.lower().startswith("town"):
+            detail_id_keys = ["townId", "townID", "settlementId", "settlementID"]
+        else:
+            detail_id_keys = ["settlementId", "settlementID"]
+
+        payload_variants: List[Dict[str, Any]] = []
+        seen_payloads = set()
+
+        for detail_id_key in detail_id_keys:
+            payload = {**payload_base, detail_id_key: sid}
+            payload_sig = tuple(sorted(payload.items()))
+            if payload_sig not in seen_payloads:
+                payload_variants.append(payload)
+                seen_payloads.add(payload_sig)
+
+        for detail_id_key in detail_id_keys:
+            payload = {
                 "accountID": str(base["accountId"]),
                 "token": base["token"],
                 "kingdomID": int(base["kingdomId"]),
-                "settlementID": sid,
-            },
-        ]
+                detail_id_key: sid,
+            }
+            payload_sig = tuple(sorted(payload.items()))
+            if payload_sig not in seen_payloads:
+                payload_variants.append(payload)
+                seen_payloads.add(payload_sig)
 
         for p in payload_variants:
             try:
@@ -1003,6 +1029,8 @@ def _fetch_settlements_live(conn_row: Dict[str, Any]) -> List[Dict[str, Any]]:
         s["buildings"] = sid_to_buildings.get(int(s["settlement_id"]), [])
 
     for s in settlements:
+        if "detail_id_key" in s:
+            del s["detail_id_key"]
         if "raw" in s:
             del s["raw"]
     return settlements

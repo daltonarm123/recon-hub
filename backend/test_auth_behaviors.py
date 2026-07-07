@@ -107,6 +107,50 @@ class AuthBehaviorTests(unittest.TestCase):
         self.assertEqual(auth_kg._is_admin_identity("random-user-id", "elixer"), True)
         self.assertEqual(auth_kg._is_admin_identity("random-user-id", "Elixer"), True)
 
+    def test_fetch_settlements_live_uses_source_city_id_for_detail_requests(self):
+        conn_row = {"account_id": 32, "kingdom_id": 41, "token_enc": "enc-token"}
+        original_decrypt = auth_kg._decrypt_token
+        original_post = auth_kg._kg_post_json
+        try:
+            auth_kg._decrypt_token = lambda token: "live-token"
+
+            def fake_post(url, payload):
+                if "GetSettlements" in url:
+                    return {
+                        "cities": [
+                            {
+                                "cityId": 917,
+                                "cityName": "MINI DUDE 2",
+                                "accountId": 32,
+                            }
+                        ]
+                    }
+                if "GetSettlementBuildings" in url:
+                    if payload.get("cityId") == 917:
+                        return {
+                            "cityBuildings": [
+                                {
+                                    "buildingType": "Lumber Mill",
+                                    "level": 5,
+                                    "effectText": "+5% Wood",
+                                }
+                            ]
+                        }
+                    return {"cityBuildings": []}
+                return {}
+
+            auth_kg._kg_post_json = fake_post
+
+            settlements = auth_kg._fetch_settlements_live(conn_row)
+
+            self.assertEqual(len(settlements), 1)
+            self.assertEqual(settlements[0]["settlement_id"], 917)
+            self.assertEqual(len(settlements[0]["buildings"]), 1)
+            self.assertEqual(settlements[0]["buildings"][0]["building_type"], "Lumber Mill")
+        finally:
+            auth_kg._decrypt_token = original_decrypt
+            auth_kg._kg_post_json = original_post
+
 
 if __name__ == "__main__":
     unittest.main()
