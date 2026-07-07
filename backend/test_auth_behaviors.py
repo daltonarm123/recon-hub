@@ -6,6 +6,9 @@ from fastapi import HTTPException, Request
 import auth_kg
 
 
+TEST_KG_PASSWORD = "testpassword123"
+
+
 class FakeConn:
     def __init__(self):
         self.executed = []
@@ -235,7 +238,7 @@ class AuthBehaviorTests(unittest.TestCase):
 
         try:
             auth_kg.httpx.Client = FakeClient
-            cred = auth_kg._kg_login_credential("user@example.com", "testpassword123")
+            cred = auth_kg._kg_login_credential("user@example.com", TEST_KG_PASSWORD)
             self.assertEqual(cred["token"], "kg-token")
             self.assertEqual(cred["account_id"], 32)
             self.assertEqual(cred["kingdom_id"], 41)
@@ -275,7 +278,7 @@ class AuthBehaviorTests(unittest.TestCase):
             auth_kg.httpx.Client = FakeClient
             auth_kg._kg_post_json = lambda url, payload: {"kingdoms": [{"id": "41"}]}
 
-            cred = auth_kg._kg_login_credential("user@example.com", "testpassword123")
+            cred = auth_kg._kg_login_credential("user@example.com", TEST_KG_PASSWORD)
 
             self.assertEqual(cred["token"], "kg-token")
             self.assertEqual(cred["account_id"], 32)

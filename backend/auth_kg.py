@@ -1,4 +1,5 @@
 import json
+import logging
 import os
 import re
 import time
@@ -18,6 +19,8 @@ from psycopg.rows import dict_row
 from pydantic import BaseModel, Field
 
 from db_dsn import resolve_database_dsn
+
+logger = logging.getLogger(__name__)
 
 class AuthLoginBody(BaseModel):
     username: str = Field(..., min_length=3)
@@ -756,6 +759,7 @@ def _extract_login_token(parsed: Dict[str, Any]) -> Tuple[str, Optional[int], Op
 
 
 def _first_non_none(d: Dict[str, Any], *keys: str) -> Any:
+    """Return the first non-None value from a dictionary for the provided keys."""
     if not isinstance(d, dict):
         return None
     for key in keys:
@@ -766,6 +770,7 @@ def _first_non_none(d: Dict[str, Any], *keys: str) -> Any:
 
 
 def _resolve_login_kingdom_id(login_url: str, account_id: int, token: str) -> Optional[int]:
+    """Fetch KG kingdoms for a login token and return the first kingdom id found."""
     try:
         kingdoms = _kg_post_json(
             f"{_origin_for_url(login_url)}/WebService/Kingdoms.asmx/GetKingdoms",
@@ -774,7 +779,8 @@ def _resolve_login_kingdom_id(login_url: str, account_id: int, token: str) -> Op
                 "token": token,
             },
         )
-    except Exception:
+    except Exception as exc:
+        logger.debug("Failed to resolve KG login kingdom id", exc_info=True)
         return None
 
     for row in _extract_list(kingdoms, ["kingdoms", "Kingdoms"]):
@@ -784,12 +790,13 @@ def _resolve_login_kingdom_id(login_url: str, account_id: int, token: str) -> Op
         try:
             if kingdom_id is not None:
                 return int(kingdom_id)
-        except Exception:
+        except (TypeError, ValueError):
             continue
     return None
 
 
 def _kg_login_page_url(login_url: str) -> str:
+    """Build the browser login page URL from the KG API login URL."""
     return f"{_origin_for_url(login_url)}/login"
 
 
