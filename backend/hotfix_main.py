@@ -1,9 +1,6 @@
-"""Application entrypoint with a narrow KingdomGame login compatibility patch.
+"""Application entrypoint with production compatibility extensions."""
 
-KingdomGame's login endpoint can return HTTP 500 when the pre-auth request
-contains the World-Id header. Authenticated game-data requests still require
-that header, so only the login-header helper is changed here.
-"""
+import threading
 
 import auth_kg
 
@@ -16,4 +13,10 @@ def _login_headers_without_world_id(url: str):
 
 auth_kg._kg_login_headers = _login_headers_without_world_id
 
-from main import app  # noqa: E402,F401  (patch must run before app/router import)
+from main import app  # noqa: E402  (patch must run before app/router import)
+from admin_reset_ui import install_admin_reset_ui  # noqa: E402
+from password_reset import ensure_password_reset_table, router as password_reset_router  # noqa: E402
+
+app.include_router(password_reset_router)
+install_admin_reset_ui(app)
+threading.Thread(target=ensure_password_reset_table, daemon=True, name="password-reset-db-init").start()
