@@ -1,0 +1,72 @@
+name: Collapse Logic Episode 2 Relay
+on:
+  pull_request:
+    branches: [main]
+jobs:
+  relay:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Install ffmpeg
+        run: sudo apt-get update && sudo apt-get install -y ffmpeg
+      - name: Download Deep voice clips and reusable visual assets
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p audio normalized assets
+          curl -fL --retry 3 'https://storage.googleapis.com/adm--audio-playback--7d--public/mcp-preview/c9615c82-5e8a-4180-91fc-2b90c9c135a1.mp3' -o audio/01.mp3
+          curl -fL --retry 3 'https://storage.googleapis.com/adm--audio-playback--7d--public/mcp-preview/5adf88ef-e1f9-456a-a13c-f26ed50db573.mp3' -o audio/02.mp3
+          curl -fL --retry 3 'https://storage.googleapis.com/adm--audio-playback--7d--public/mcp-preview/2c20047a-b8ba-4247-a462-ce8019212e83.mp3' -o audio/03.mp3
+          curl -fL --retry 3 'https://storage.googleapis.com/adm--audio-playback--7d--public/mcp-preview/ae5fa915-cf03-4fd3-9129-874c95cb1f7c.mp3' -o audio/04.mp3
+          curl -fL --retry 3 'https://storage.googleapis.com/adm--audio-playback--7d--public/mcp-preview/90e5303c-c556-4fd6-adbf-b8798ea7af7c.mp3' -o audio/05.mp3
+          curl -fL --retry 3 'https://storage.googleapis.com/adm--audio-playback--7d--public/mcp-preview/be4411da-ab25-400b-9e42-d450a6262e07.mp3' -o audio/06.mp3
+          curl -fL --retry 3 'https://storage.googleapis.com/adm--audio-playback--7d--public/mcp-preview/347f71ab-6c2c-40e7-9801-80f9c70b6bc6.mp3' -o audio/07.mp3
+          curl -fL --retry 3 'https://storage.googleapis.com/adm--audio-playback--7d--public/mcp-preview/ef14bdd1-0b7a-4020-bbd9-c2a976bc274f.mp3' -o audio/08.mp3
+          curl -fL --retry 3 'https://storage.googleapis.com/adm--audio-playback--7d--public/mcp-preview/fdab8fdd-a5be-42af-a137-226d0c853261.mp3' -o audio/09.mp3
+          curl -fL --retry 3 'https://storage.googleapis.com/adm--audio-playback--7d--public/mcp-preview/a23fbdb4-9535-409c-b9bc-d2eaed978229.mp3' -o audio/10.mp3
+          curl -fL --retry 3 'https://storage.googleapis.com/adm--audio-playback--7d--public/mcp-preview/91502f76-5788-4d34-8cef-3d1356b7415f.mp3' -o audio/11.mp3
+          curl -fL --retry 3 'https://storage.googleapis.com/adm--audio-playback--7d--public/mcp-preview/9c6f1f58-3b30-47db-871b-d7b6e20ef10a.mp3' -o audio/12.mp3
+          curl -fL --retry 3 'https://storage.googleapis.com/adm--audio-playback--7d--public/mcp-preview/62cdba49-fe50-4e7c-b868-f4195e1f77a6.mp3' -o audio/13.mp3
+          curl -fL --retry 3 'https://storage.googleapis.com/adm--audio-playback--7d--public/mcp-preview/6c2e0890-11be-4e5e-9ba2-f483881e62fa.mp3' -o audio/14.mp3
+          curl -fL --retry 3 'https://storage.googleapis.com/adm--audio-playback--7d--public/mcp-preview/f8d0c78d-2742-4080-8181-38150bd27aa3.mp3' -o audio/15.mp3
+          curl -fL --retry 3 'https://storage.googleapis.com/adm--audio-playback--7d--public/mcp-preview/bcc48221-535d-4c27-8fb0-6bef1dab76a4.mp3' -o audio/16.mp3
+          curl -fL --retry 3 'https://upload.wikimedia.org/wikipedia/commons/f/f2/Tacoma_Narrows_Bridge_destruction.ogv' -o assets/collapse_public_domain.ogv
+          curl -fL --retry 3 'https://upload.wikimedia.org/wikipedia/commons/e/eb/Spinning_the_first_wire_of_the_Tacoma_Narrows_Bridge%2C_Tacoma%2C_Washington_%285018161352%29.jpg' -o assets/spinning_first_wire.jpg
+          curl -fL --retry 3 'https://live.staticflickr.com/4099/4861196200_d66d710d62_o.jpg' -o assets/opening_day.jpg
+          curl -fL --retry 3 'https://upload.wikimedia.org/wikipedia/commons/1/1a/Tacoma_Narrows_Bridge_2009.jpg' -o assets/modern_bridges.jpg
+          curl -fL --retry 3 'https://commons.wikimedia.org/wiki/Special:Redirect/file/Tacoma%20Narrows%20still.png' -o assets/collapse_still.png
+          curl -fL --retry 3 'https://commons.wikimedia.org/wiki/Special:Redirect/file/Tacoma%20Narrows%20Bridge%20opening%20program%20June%2030%2C%201940.jpg' -o assets/opening_program.jpg
+          file assets/*
+      - name: Normalize and stitch narration
+        shell: bash
+        run: |
+          set -euo pipefail
+          ffmpeg -y -f lavfi -i anullsrc=r=48000:cl=stereo -t 0.30 -c:a libmp3lame -b:a 192k normalized/silence.mp3
+          : > normalized/list.txt
+          for i in $(seq -w 1 16); do
+            ffmpeg -y -i "audio/${i}.mp3" -ar 48000 -ac 2 -c:a libmp3lame -b:a 192k "normalized/${i}.mp3"
+            echo "file '${i}.mp3'" >> normalized/list.txt
+            if [ "$i" != "16" ]; then echo "file 'silence.mp3'" >> normalized/list.txt; fi
+          done
+          (cd normalized && ffmpeg -y -f concat -safe 0 -i list.txt -c copy episode2_deep_voice.mp3)
+          ffprobe -v error -show_entries format=duration -of default=nw=1:nk=1 normalized/episode2_deep_voice.mp3
+      - name: Write licensing note
+        shell: bash
+        run: |
+          cat > assets/LICENSES.txt <<'EOF'
+          collapse_public_domain.ogv — Barney Elliot / Prelinger Archives — explicitly released to the public domain via Wikimedia Commons.
+          collapse_still.png — still from the same Prelinger public-domain film — public domain via Wikimedia Commons.
+          opening_day.jpg — University of Washington Libraries Digital Collections — released into the public domain / no known copyright restrictions via Wikimedia Commons.
+          spinning_first_wire.jpg — University of Washington Libraries Digital Collections — no known copyright restrictions via Wikimedia Commons.
+          modern_bridges.jpg — Lderendi — released into the public domain via Wikimedia Commons.
+          opening_program.jpg — 1940 Tacoma Narrows Bridge opening program — public domain in the U.S. via Wikimedia Commons.
+          EOF
+      - name: Upload episode 2 relay artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: collapse-logic-episode2-relay
+          path: |
+            normalized/episode2_deep_voice.mp3
+            normalized/0*.mp3
+            normalized/1*.mp3
+            assets/
+          if-no-files-found: error
