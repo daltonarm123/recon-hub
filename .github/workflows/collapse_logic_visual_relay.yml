@@ -1,0 +1,40 @@
+name: Collapse Logic Visual Relay
+on:
+  pull_request:
+    branches: [main]
+jobs:
+  relay:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download reusable Vasa visuals
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p visuals
+          curl -fL --retry 3 'https://upload.wikimedia.org/wikipedia/commons/1/14/Vasa_from_port1.jpg' -o visuals/01_vasa_port_public_domain.jpg
+          curl -fL --retry 3 'https://upload.wikimedia.org/wikipedia/commons/4/43/Vasa_museum_Stockholm.jpg' -o visuals/02_vasa_museum_cc0.jpg
+          curl -fL --retry 3 'https://upload.wikimedia.org/wikipedia/commons/5/5e/Vasa_stern_color_model.jpg' -o visuals/03_stern_color_model_ccby3.jpg
+          curl -fL --retry 3 'https://upload.wikimedia.org/wikipedia/commons/5/5f/Vasa_model_showing_colour_scheme_of_decorated_stern.jpg' -o visuals/04_color_model_ccby4.jpg
+          curl -fL --retry 3 'https://upload.wikimedia.org/wikipedia/commons/6/69/EU-SE-Stockholm-Djurg%C3%A5rden-Vasa_Museum-Vasa_inclined_plane.JPG' -o visuals/05_inclined_plane_public_domain.jpg
+          curl -fL --retry 3 'https://upload.wikimedia.org/wikipedia/commons/a/a0/EU-SE-Stockholm-Djurg%C3%A5rden-Vasa_Museum.JPG' -o visuals/06_museum_pieces_public_domain.jpg
+          curl -fL --retry 3 'https://upload.wikimedia.org/wikipedia/commons/6/60/Vasas_hull_profile.jpg' -o visuals/07_hull_profile_public_domain.jpg
+          curl -fL --retry 3 'https://upload.wikimedia.org/wikipedia/commons/1/1a/EU-SE-Stockholm-Djurg%C3%A5rden-Vasa_Museum-1st_floor.JPG' -o visuals/08_first_floor_public_domain.jpg
+          curl -fL --retry 3 'https://upload.wikimedia.org/wikipedia/commons/0/0f/Vasaskultpurrepliker.jpg' -o visuals/09_sculpture_replicas_public_domain.jpg
+          cat > visuals/LICENSES.txt <<'EOF'
+          01 Vasa from port1.jpg — Peter Isotalo — Public domain — Wikimedia Commons
+          02 Vasa museum Stockholm.jpg — Anver Hisham — CC0 1.0 — Wikimedia Commons
+          03 Vasa stern color model.jpg — Peter Isotalo — CC BY 3.0 — Wikimedia Commons
+          04 Vasa model showing colour scheme of decorated stern.jpg — Anneli Karlsson / Vasamuseet — CC BY 4.0 — Wikimedia Commons
+          05 EU-SE-Stockholm-Djurgården-Vasa Museum-Vasa inclined plane.JPG — Dmitry G — Public domain — Wikimedia Commons
+          06 EU-SE-Stockholm-Djurgården-Vasa Museum.JPG — Dmitry G — Public domain — Wikimedia Commons
+          07 Vasas hull profile.jpg — Peter Isotalo — Public domain — Wikimedia Commons
+          08 EU-SE-Stockholm-Djurgården-Vasa Museum-1st floor.JPG — Dmitry G — Public domain — Wikimedia Commons
+          09 Vasaskultpurrepliker.jpg — Peter Isotalo — Public domain — Wikimedia Commons
+          EOF
+          file visuals/*
+      - name: Upload visuals
+        uses: actions/upload-artifact@v4
+        with:
+          name: collapse-logic-vasa-visuals
+          path: visuals/
+          if-no-files-found: error
