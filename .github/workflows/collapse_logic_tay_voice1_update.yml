@@ -1,0 +1,16 @@
+name: Collapse Logic Tay Updated Hook Relay
+on:
+  pull_request:
+    branches: [main]
+jobs:
+  relay:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download updated hook
+        run: |
+          mkdir -p relay
+          curl -L --retry 3 'https://storage.googleapis.com/adm--audio-playback--7d--public/mcp-preview/8adc8b7d-9b30-4f29-85b9-8066878b8405.mp3' -o relay/voice_01_updated.mp3
+      - uses: actions/upload-artifact@v4
+        with:
+          name: collapse-logic-tay-updated-hook
+          path: relay
