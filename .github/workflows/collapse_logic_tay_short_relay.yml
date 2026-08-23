@@ -1,0 +1,26 @@
+name: Collapse Logic Tay Short Relay
+on:
+  pull_request:
+    branches: [main]
+jobs:
+  relay:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download narration and public-domain visuals
+        run: |
+          set -euxo pipefail
+          mkdir -p relay
+          curl -L --retry 3 'https://storage.googleapis.com/adm--audio-playback--7d--public/mcp-preview/ccfed9cc-65cb-482f-82f2-eb732d187e42.mp3' -o relay/voice_01.mp3
+          curl -L --retry 3 'https://storage.googleapis.com/adm--audio-playback--7d--public/mcp-preview/f91e12ff-2e88-4584-9fc4-77601608c1a6.mp3' -o relay/voice_02.mp3
+          curl -L --retry 3 'https://storage.googleapis.com/adm--audio-playback--7d--public/mcp-preview/f2a54272-b031-4375-9df4-f8e2e468551d.mp3' -o relay/voice_03.mp3
+          curl -L --retry 3 -A 'Mozilla/5.0' 'https://commons.wikimedia.org/wiki/Special:Redirect/file/Original%20Tay%20Bridge%20from%20south%20before%20collapse%20%28user%20restored%20version%29.jpg' -o relay/tay_before_south.jpg
+          curl -L --retry 3 -A 'Mozilla/5.0' 'https://commons.wikimedia.org/wiki/Special:Redirect/file/Original%20Tay%20Bridge%20from%20north%20before%20collapse%20%28user%20restored%20version%29.jpg' -o relay/tay_before_north.jpg
+          curl -L --retry 3 -A 'Mozilla/5.0' 'https://commons.wikimedia.org/wiki/Special:Redirect/file/Tay%20Bridge%20from%20south%20after%20accident.jpg' -o relay/tay_after.jpg
+          curl -L --retry 3 -A 'Mozilla/5.0' 'https://commons.wikimedia.org/wiki/Special:Redirect/file/Fallen%20girders%2C%20Tay%20Bridge.jpg' -o relay/fallen_girders.jpg
+          curl -L --retry 3 -A 'Mozilla/5.0' 'https://commons.wikimedia.org/wiki/Special:Redirect/file/Wreckage%20salvaged%20from%20the%20collapsed%20Tay%20Bridge%2011.jpg' -o relay/wreckage.jpg
+          curl -L --retry 3 -A 'Mozilla/5.0' 'https://commons.wikimedia.org/wiki/Special:Redirect/file/Part%20of%20the%20train%20salvaged%20from%20the%20Tay.jpg' -o relay/train_wreck.jpg
+          file relay/*
+      - uses: actions/upload-artifact@v4
+        with:
+          name: collapse-logic-tay-short-assets
+          path: relay
