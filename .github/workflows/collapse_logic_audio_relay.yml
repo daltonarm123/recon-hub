@@ -1,0 +1,50 @@
+name: Collapse Logic Audio Relay
+on:
+  push:
+    branches: [collapse-logic-audio-relay]
+jobs:
+  relay:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Install ffmpeg
+        run: sudo apt-get update && sudo apt-get install -y ffmpeg
+      - name: Download approved Deep voice clips
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p audio normalized
+          curl -fL --retry 3 'https://storage.googleapis.com/adm--audio-playback--7d--public/mcp-preview/355f8e55-808d-44e9-ba6e-4043620b0364.mp3' -o audio/01.mp3
+          curl -fL --retry 3 'https://storage.googleapis.com/adm--audio-playback--7d--public/mcp-preview/fa8b90f3-c77f-42fc-bb36-ce881bd5b19e.mp3' -o audio/02.mp3
+          curl -fL --retry 3 'https://storage.googleapis.com/adm--audio-playback--7d--public/mcp-preview/1252d341-8d57-42cc-b095-c5c9fef1d38e.mp3' -o audio/03.mp3
+          curl -fL --retry 3 'https://storage.googleapis.com/adm--audio-playback--7d--public/mcp-preview/8520b551-4757-476d-b529-acd6e2fd479d.mp3' -o audio/04.mp3
+          curl -fL --retry 3 'https://storage.googleapis.com/adm--audio-playback--7d--public/mcp-preview/e555fecd-6088-4084-9a3a-eee9cdc0f115.mp3' -o audio/05.mp3
+          curl -fL --retry 3 'https://storage.googleapis.com/adm--audio-playback--7d--public/mcp-preview/f7a0fbdf-f4b3-42e8-99d2-454962f8984e.mp3' -o audio/06.mp3
+          curl -fL --retry 3 'https://storage.googleapis.com/adm--audio-playback--7d--public/mcp-preview/0fe0adf1-0612-4880-9cd6-62926d3f0b5d.mp3' -o audio/07.mp3
+          curl -fL --retry 3 'https://storage.googleapis.com/adm--audio-playback--7d--public/mcp-preview/ea08cda6-8196-415a-abc2-7e90b5514e4e.mp3' -o audio/08.mp3
+          curl -fL --retry 3 'https://storage.googleapis.com/adm--audio-playback--7d--public/mcp-preview/7b2ba70e-866f-4aaa-9c4d-cd10acc9e4b0.mp3' -o audio/09.mp3
+          curl -fL --retry 3 'https://storage.googleapis.com/adm--audio-playback--7d--public/mcp-preview/3726e48e-fbb9-4c4f-b9bd-7b49f1126d32.mp3' -o audio/10.mp3
+          curl -fL --retry 3 'https://storage.googleapis.com/adm--audio-playback--7d--public/mcp-preview/d51d17f1-28f2-48ae-8903-e35cb8c52fff.mp3' -o audio/11.mp3
+          curl -fL --retry 3 'https://storage.googleapis.com/adm--audio-playback--7d--public/mcp-preview/170a7342-e5f0-4831-885c-d145f2f553c2.mp3' -o audio/12.mp3
+          curl -fL --retry 3 'https://storage.googleapis.com/adm--audio-playback--7d--public/mcp-preview/39ab2e30-227f-4ee6-b174-14443616edee.mp3' -o audio/13.mp3
+          curl -fL --retry 3 'https://storage.googleapis.com/adm--audio-playback--7d--public/mcp-preview/064af157-21ff-44c1-a7a4-e75306939175.mp3' -o audio/14.mp3
+          curl -fL --retry 3 'https://storage.googleapis.com/adm--audio-playback--7d--public/mcp-preview/e6591548-8930-42c5-b959-cf484c2c71fa.mp3' -o audio/15.mp3
+          for f in audio/*.mp3; do ffprobe -v error -show_entries format=duration -of default=nw=1:nk=1 "$f"; done
+      - name: Normalize and stitch
+        shell: bash
+        run: |
+          set -euo pipefail
+          ffmpeg -y -f lavfi -i anullsrc=r=48000:cl=stereo -t 0.30 -c:a libmp3lame -b:a 192k normalized/silence.mp3
+          : > normalized/list.txt
+          for i in $(seq -w 1 15); do
+            ffmpeg -y -i "audio/${i}.mp3" -ar 48000 -ac 2 -c:a libmp3lame -b:a 192k "normalized/${i}.mp3"
+            echo "file '${i}.mp3'" >> normalized/list.txt
+            if [ "$i" != "15" ]; then echo "file 'silence.mp3'" >> normalized/list.txt; fi
+          done
+          (cd normalized && ffmpeg -y -f concat -safe 0 -i list.txt -c copy collapse_logic_deep_voice.mp3)
+          ffprobe -v error -show_entries format=duration -of default=nw=1:nk=1 normalized/collapse_logic_deep_voice.mp3
+      - name: Upload combined narration
+        uses: actions/upload-artifact@v4
+        with:
+          name: collapse-logic-deep-voice
+          path: normalized/collapse_logic_deep_voice.mp3
+          if-no-files-found: error
