@@ -1,0 +1,16 @@
+name: Collapse Logic Tay Updated CTA Relay
+on:
+  pull_request:
+    branches: [main]
+jobs:
+  relay:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download updated CTA
+        run: |
+          mkdir -p relay
+          curl -L --retry 3 'https://storage.googleapis.com/adm--audio-playback--7d--public/mcp-preview/757c0528-851e-49b8-9f43-af75891993e3.mp3' -o relay/voice_03_updated.mp3
+      - uses: actions/upload-artifact@v4
+        with:
+          name: collapse-logic-tay-updated-cta
+          path: relay
