@@ -2,6 +2,8 @@ name: Collapse Logic Audio Relay
 on:
   push:
     branches: [collapse-logic-audio-relay]
+  pull_request:
+    branches: [main]
 jobs:
   relay:
     runs-on: ubuntu-latest
